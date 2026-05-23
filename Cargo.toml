@@ -1,0 +1,60 @@
+[package]
+name    = "rustarmic"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "0BSD"
+description = "High-performance ARM64 (AArch64) → x86_64 dynamic recompiler / JIT, inspired by dynarmic"
+repository = "https://github.com/Mythrax/rustarmic"
+readme  = "README.md"
+keywords = ["jit", "aarch64", "arm64", "emulator", "recompiler"]
+categories = ["emulators", "compilers"]
+
+[lib]
+name = "rustarmic"
+path = "src/lib.rs"
+
+[dependencies]
+iced-x86 = { version = "1.21", default-features = false, features = ["std", "decoder", "encoder", "block_encoder", "code_asm"] }
+region   = "3"
+bitflags = "2"
+smallvec = { version = "1", features = ["union"] }
+thiserror = "2"
+# Unicorn is opt-in: building it requires libclang (LLVM) on the host. Enable
+# with `--features unicorn` to run the differential tests in `tests/`.
+unicorn-engine = { version = "2", optional = true }
+
+[dev-dependencies]
+rand = "0.8"
+rand_chacha = "0.3"
+
+[features]
+default = []
+unicorn = ["dep:unicorn-engine"]
+
+[profile.release]
+opt-level   = 3
+lto         = "fat"
+codegen-units = 1
+panic       = "abort"
+debug       = 1
+
+[profile.bench]
+opt-level   = 3
+lto         = "fat"
+codegen-units = 1
+debug       = 1
+
+[[test]]
+name = "unicorn_diff"
+path = "tests/unicorn_diff.rs"
+required-features = ["unicorn"]
+
+[[test]]
+name = "fuzz_random"
+path = "tests/fuzz_random.rs"
+required-features = ["unicorn"]
+
+[[test]]
+name = "smoke"
+path = "tests/smoke.rs"
