@@ -142,38 +142,24 @@ impl<'b> IrEmitter<'b> {
         self.push(Armlet::new(op, ty).with_args(&[a, b]))
     }
 
-    /// ADDS — both produces the integer result *and* sets a flag-sibling that
-    /// the optimizer can hoist into NZCV. We return only the data result;
-    /// callers grab the flag value as the next slot.
-    pub fn adds(&mut self, a: ValueRef, b: ValueRef, size: RegSize) -> (ValueRef, ValueRef) {
+    pub fn adds(&mut self, a: ValueRef, b: ValueRef, size: RegSize) -> ValueRef {
         let (op, ty) = match size {
             RegSize::W => (Op::AddsFlags32, Ty::U32),
             RegSize::X => (Op::AddsFlags64, Ty::U64),
         };
-        let result = self.push(Armlet::new(op, ty)
+        self.push(Armlet::new(op, ty)
             .with_args(&[a, b])
-            .with_flags(ArmletFlags::NZCV_LIVE));
-        // The `AddsFlags*` result carries an implicit NZCV side-result that
-        // the backend computes alongside. We expose it via a separate Get on
-        // the same ValueRef + an NZCV typed view.
-        let flag_view = self.push(Armlet::new(Op::Identity, Ty::Nzcv)
-            .with_args(&[result])
-            .with_flags(ArmletFlags::NZCV_LIVE));
-        (result, flag_view)
+            .with_flags(ArmletFlags::NZCV_LIVE))
     }
 
-    pub fn subs(&mut self, a: ValueRef, b: ValueRef, size: RegSize) -> (ValueRef, ValueRef) {
+    pub fn subs(&mut self, a: ValueRef, b: ValueRef, size: RegSize) -> ValueRef {
         let (op, ty) = match size {
             RegSize::W => (Op::SubsFlags32, Ty::U32),
             RegSize::X => (Op::SubsFlags64, Ty::U64),
         };
-        let result = self.push(Armlet::new(op, ty)
+        self.push(Armlet::new(op, ty)
             .with_args(&[a, b])
-            .with_flags(ArmletFlags::NZCV_LIVE));
-        let flag_view = self.push(Armlet::new(Op::Identity, Ty::Nzcv)
-            .with_args(&[result])
-            .with_flags(ArmletFlags::NZCV_LIVE));
-        (result, flag_view)
+            .with_flags(ArmletFlags::NZCV_LIVE))
     }
 
     pub fn and(&mut self, a: ValueRef, b: ValueRef, size: RegSize) -> ValueRef {

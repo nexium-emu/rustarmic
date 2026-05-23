@@ -167,6 +167,7 @@ impl Op {
         use Op::*;
         if matches!(self,
             SetX | SetW | SetSp | SetNzcv | SetV
+            | AddsFlags32 | AddsFlags64 | SubsFlags32 | SubsFlags64
             | Mrs | Msr | Brk | Svc | Hvc | Hint | MemoryBarrier
         ) {
             return true;

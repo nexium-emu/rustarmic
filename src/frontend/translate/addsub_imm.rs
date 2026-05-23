@@ -32,8 +32,7 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ADDSUB_IMM) -> Result<InstStatus>
     let b = em.const_u64(imm);
 
     if set_flags {
-        let (result, flag) = if sub { em.subs(a, b, size) } else { em.adds(a, b, size) };
-        em.set_nzcv(flag);
+        let result = if sub { em.subs(a, b, size) } else { em.adds(a, b, size) };
         em.set_gpr(rd, result, size);
     } else {
         let result = if sub { em.sub(a, b, size) } else { em.add(a, b, size) };

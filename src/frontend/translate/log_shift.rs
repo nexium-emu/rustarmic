@@ -62,8 +62,7 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: LOG_SHIFT) -> Result<InstStatus> 
 
     if matches!(op, LogOp::Ands | LogOp::Bics) {
         let zero = em.const_u64(0);
-        let (_, flag) = em.subs(result, zero, size);
-        em.set_nzcv(flag);
+        em.subs(result, zero, size);
     }
 
     em.set_x(rd, result);
