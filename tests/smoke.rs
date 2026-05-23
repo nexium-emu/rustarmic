@@ -2,6 +2,9 @@
 //! these compare JIT output against hand-computed expected register state,
 //! which keeps the default `cargo test` runnable without libclang/LLVM.
 
+#[allow(dead_code)]
+mod common;
+
 use rustarmic::{CpuContext, ExitReason, Jit, JitConfig, Memory};
 
 const CODE_BASE: u64 = 0x1000;

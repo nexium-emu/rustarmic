@@ -39,7 +39,7 @@ impl Allocation {
     /// rbp - 48..  : value slots
     /// ```
     pub fn build(block: &Block) -> Self {
-        const SAVED_SIZE: i32 = 56;
+        const SAVED_SIZE: i32 = 40;
         let n = block.code.len();
         let mut slots = vec![ValueLoc { stack_offset: 0, width: 0 }; n];
         let mut next_offset: i32 = SAVED_SIZE;

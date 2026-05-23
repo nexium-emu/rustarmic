@@ -1,7 +1,13 @@
 use iced_x86::code_asm::*;
 
 use crate::arch::{Cond, NUM_GPRS, ZR_ENCODING};
-use crate::backend::abi::{CTX_REG, SCRATCH0, SCRATCH1, SCRATCH2, SCRATCH3};
+use crate::backend::abi::{
+    ARG3_REG, CALL_PRECALL_SUB, CTX_REG, SCRATCH0, SCRATCH1, SCRATCH2, SCRATCH3,
+};
+use crate::jit::memory::{
+    addr_mem_read8, addr_mem_read16, addr_mem_read32, addr_mem_read64,
+    addr_mem_write8, addr_mem_write16, addr_mem_write32, addr_mem_write64,
+};
 use crate::backend::reg_alloc::{Allocation, ValueLoc};
 use crate::error::{Error, Result};
 use crate::ir::{Armlet, Block, Op, Ty, ValueRef};
@@ -339,14 +345,14 @@ fn emit_flagged_addsub(asm: &mut CodeAssembler, alloc: &Allocation, a: Armlet, d
 
     asm.movzx(eax, r8b)?;
     asm.shl(eax, 3i32)?;
-    asm.movzx(esi, r9b)?;
-    asm.shl(esi, 2i32)?;
-    asm.or(eax, esi)?;
-    asm.movzx(esi, r10b)?;
-    asm.shl(esi, 1i32)?;
-    asm.or(eax, esi)?;
-    asm.movzx(esi, r11b)?;
-    asm.or(eax, esi)?;
+    asm.movzx(ecx, r9b)?;
+    asm.shl(ecx, 2i32)?;
+    asm.or(eax, ecx)?;
+    asm.movzx(ecx, r10b)?;
+    asm.shl(ecx, 1i32)?;
+    asm.or(eax, ecx)?;
+    asm.movzx(ecx, r11b)?;
+    asm.or(eax, ecx)?;
 
     asm.mov(byte_ptr(CTX_REG + cpu_offsets::nzcv() as i32), al)?;
     Ok(())
@@ -355,19 +361,23 @@ fn emit_flagged_addsub(asm: &mut CodeAssembler, alloc: &Allocation, a: Armlet, d
 fn emit_load(asm: &mut CodeAssembler, alloc: &Allocation, a: Armlet, dst: Option<ValueLoc>, bytes: u32) -> Result<()> {
     let addr_loc = alloc.loc(a.args[0]);
     let d = dst.unwrap();
-    asm.mov(SCRATCH2, qword_ptr(rbp - addr_loc.stack_offset))?;
-    asm.mov(SCRATCH0, qword_ptr(CTX_REG + cpu_offsets::mem_base() as i32))?;
-    asm.add(SCRATCH0, SCRATCH2)?;
-    match bytes {
-        1 => { asm.movzx(eax, byte_ptr(SCRATCH0))?;
-               asm.mov(dword_ptr(rbp - d.stack_offset), eax)?; }
-        2 => { asm.movzx(eax, word_ptr(SCRATCH0))?;
-               asm.mov(dword_ptr(rbp - d.stack_offset), eax)?; }
-        4 => { asm.mov(eax, dword_ptr(SCRATCH0))?;
-               asm.mov(dword_ptr(rbp - d.stack_offset), eax)?; }
-        8 => { asm.mov(SCRATCH1, qword_ptr(SCRATCH0))?;
-               asm.mov(qword_ptr(rbp - d.stack_offset), SCRATCH1)?; }
+    asm.mov(SCRATCH1, qword_ptr(rbp - addr_loc.stack_offset))?;
+    asm.mov(ARG3_REG, CTX_REG)?;
+    let fn_addr = match bytes {
+        1 => addr_mem_read8(),
+        2 => addr_mem_read16(),
+        4 => addr_mem_read32(),
+        8 => addr_mem_read64(),
         _ => return Err(Error::Backend("unsupported load width".into())),
+    };
+    asm.sub(rsp, CALL_PRECALL_SUB)?;
+    asm.mov(SCRATCH0, fn_addr as i64)?;
+    asm.call(SCRATCH0)?;
+    asm.add(rsp, CALL_PRECALL_SUB)?;
+    match bytes {
+        1 | 2 | 4 => { asm.mov(dword_ptr(rbp - d.stack_offset), eax)?; }
+        8         => { asm.mov(qword_ptr(rbp - d.stack_offset), SCRATCH0)?; }
+        _ => unreachable!(),
     }
     Ok(())
 }
@@ -375,20 +385,24 @@ fn emit_load(asm: &mut CodeAssembler, alloc: &Allocation, a: Armlet, dst: Option
 fn emit_store(asm: &mut CodeAssembler, alloc: &Allocation, a: Armlet, bytes: u32) -> Result<()> {
     let addr_loc = alloc.loc(a.args[0]);
     let val_loc  = alloc.loc(a.args[1]);
-    asm.mov(SCRATCH2, qword_ptr(rbp - addr_loc.stack_offset))?;
-    asm.mov(SCRATCH0, qword_ptr(CTX_REG + cpu_offsets::mem_base() as i32))?;
-    asm.add(SCRATCH0, SCRATCH2)?;
-    match bytes {
-        1 => { asm.mov(eax, dword_ptr(rbp - val_loc.stack_offset))?;
-               asm.mov(byte_ptr(SCRATCH0), al)?; }
-        2 => { asm.mov(eax, dword_ptr(rbp - val_loc.stack_offset))?;
-               asm.mov(word_ptr(SCRATCH0), ax)?; }
-        4 => { asm.mov(eax, dword_ptr(rbp - val_loc.stack_offset))?;
-               asm.mov(dword_ptr(SCRATCH0), eax)?; }
-        8 => { asm.mov(SCRATCH1, qword_ptr(rbp - val_loc.stack_offset))?;
-               asm.mov(qword_ptr(SCRATCH0), SCRATCH1)?; }
-        _ => return Err(Error::Backend("unsupported store width".into())),
+    if bytes == 8 {
+        asm.mov(SCRATCH3, qword_ptr(rbp - val_loc.stack_offset))?;
+    } else {
+        asm.mov(eax_from(SCRATCH3), dword_ptr(rbp - val_loc.stack_offset))?;
     }
+    asm.mov(SCRATCH1, qword_ptr(rbp - addr_loc.stack_offset))?;
+    asm.mov(ARG3_REG, CTX_REG)?;
+    let fn_addr = match bytes {
+        1 => addr_mem_write8(),
+        2 => addr_mem_write16(),
+        4 => addr_mem_write32(),
+        8 => addr_mem_write64(),
+        _ => return Err(Error::Backend("unsupported store width".into())),
+    };
+    asm.sub(rsp, CALL_PRECALL_SUB)?;
+    asm.mov(SCRATCH0, fn_addr as i64)?;
+    asm.call(SCRATCH0)?;
+    asm.add(rsp, CALL_PRECALL_SUB)?;
     Ok(())
 }
 
@@ -399,7 +413,7 @@ fn emit_csel(asm: &mut CodeAssembler, alloc: &Allocation, a: Armlet, dst: Option
     let d  = dst.unwrap();
     let cond = Cond::from_bits(a.imm as u8);
 
-    asm.mov(eax_from(SCRATCH3), dword_ptr(rbp - nz.stack_offset))?;
+    asm.mov(edx, dword_ptr(rbp - nz.stack_offset))?;
     let is_64 = matches!(a.op, Op::Csel64);
 
     emit_cond_check_byte(asm, cond)?;
