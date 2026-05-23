@@ -478,6 +478,50 @@ fn two_block_direct_branch_chains() {
 }
 
 #[test]
+fn cbnz_not_taken_falls_through() {
+    // movz x0, #0
+    // cbnz x0, +0xFC   ; x0==0 so NOT taken; fall through to brk
+    // brk #0
+    let code = build_code(&[
+        0xD2800000, // movz x0, #0
+        0xB50007E0, // cbnz x0, +0xFC (target 0x1100, not taken)
+        0xD4200000, // brk #0
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    let exit = run(code, &mut ctx);
+    assert!(matches!(exit, ExitReason::Brk(_)), "expected BRK, got {:?}", exit);
+}
+
+#[test]
+fn cbnz_loop_chains() {
+    // Two-block loop using CBNZ — exercises the taken side of the conditional
+    // chain (backward branch to .loop).
+    //
+    //   movz x0, #5           ; counter
+    //   movz x1, #0           ; accumulator
+    //   .loop:
+    //   add  x1, x1, x0       ; accum += counter
+    //   sub  x0, x0, #1       ; counter--
+    //   cbnz x0, .loop        ; if counter != 0, loop
+    //   brk  #0
+    let code = build_code(&[
+        0xD28000A0, // movz x0, #5             (PC 0x1000)
+        0xD2800001, // movz x1, #0             (PC 0x1004)
+        0x8B000021, // add x1, x1, x0          (PC 0x1008)  ; .loop
+        0xD1000400, // sub x0, x0, #1          (PC 0x100C)
+        0xB5FFFFC0, // cbnz x0, .loop          (PC 0x1010)  ; imm19 = -2 words
+        0xD4200000, // brk #0                  (PC 0x1014)
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    let exit = run(code, &mut ctx);
+    assert!(matches!(exit, ExitReason::Brk(_)), "expected BRK, got {:?}", exit);
+    assert_eq!(ctx.x[0], 0,  "counter ends at 0");
+    assert_eq!(ctx.x[1], 15, "accumulator = 5+4+3+2+1 = 15");
+}
+
+#[test]
 fn add_sub_chain_uses_constant_folding() {
     // movz x0, #100
     // add  x1, x0, #1
