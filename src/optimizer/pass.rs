@@ -103,6 +103,11 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
             Op::SetSp   => { reach_sp   = a.args[0]; }
             Op::SetNzcv => { reach_nzcv = a.args[0]; }
 
+            Op::AddsFlags32 | Op::AddsFlags64
+            | Op::SubsFlags32 | Op::SubsFlags64 => {
+                reach_nzcv = ValueRef::NONE;
+            }
+
             Op::ConstU32 => { scratch.consts[i] = Some(a.imm & 0xFFFF_FFFF); }
             Op::ConstU64 => { scratch.consts[i] = Some(a.imm); }
 
