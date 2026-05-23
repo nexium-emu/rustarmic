@@ -434,9 +434,8 @@ fn emit_div(
     let r = alloc.loc(a.args[1]);
     let d = dst.unwrap();
 
-    let mut lbl_zero     = asm.create_label();
-    let mut lbl_overflow = asm.create_label();
-    let mut lbl_done     = asm.create_label();
+    let mut lbl_zero = asm.create_label();
+    let mut lbl_done = asm.create_label();
 
     if is_64 {
         asm.mov(rax, qword_ptr(rbp - l.stack_offset))?;
@@ -450,7 +449,7 @@ fn emit_div(
             asm.jne(lbl_do_div)?;
             asm.mov(rdx, i64::MIN)?;
             asm.cmp(rax, rdx)?;
-            asm.je(lbl_overflow)?;
+            asm.je(lbl_done)?;
             asm.set_label(&mut lbl_do_div)?;
             asm.cqo()?;
             asm.idiv(rcx)?;
@@ -458,9 +457,6 @@ fn emit_div(
             asm.xor(rdx, rdx)?;
             asm.div(rcx)?;
         }
-        asm.jmp(lbl_done)?;
-
-        asm.set_label(&mut lbl_overflow)?;
         asm.jmp(lbl_done)?;
 
         asm.set_label(&mut lbl_zero)?;
@@ -479,7 +475,7 @@ fn emit_div(
             asm.cmp(ecx, -1i32)?;
             asm.jne(lbl_do_div)?;
             asm.cmp(eax, i32::MIN)?;
-            asm.je(lbl_overflow)?;
+            asm.je(lbl_done)?;
             asm.set_label(&mut lbl_do_div)?;
             asm.cdq()?;
             asm.idiv(ecx)?;
@@ -487,9 +483,6 @@ fn emit_div(
             asm.xor(edx, edx)?;
             asm.div(ecx)?;
         }
-        asm.jmp(lbl_done)?;
-
-        asm.set_label(&mut lbl_overflow)?;
         asm.jmp(lbl_done)?;
 
         asm.set_label(&mut lbl_zero)?;
