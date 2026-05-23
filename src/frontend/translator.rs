@@ -48,6 +48,7 @@ pub fn translate_instruction(em: &mut IrEmitter<'_>, inst: u32) -> Result<InstSt
         Operation::CONDSEL(insn)          => translate::condsel::translate(em, insn),
         Operation::PCRELADDR(insn)        => translate::pcreladdr::translate(em, insn),
         Operation::EXTRACT(insn)          => translate::extract::translate(em, insn),
+        Operation::DP_1SRC(insn)          => translate::dp_1src::translate(em, insn),
         Operation::DP_2SRC(insn)          => translate::dp_2src::translate(em, insn),
         Operation::DP_3SRC(insn)          => translate::dp_3src::translate(em, insn),
         _ => Err(Error::Unsupported { pc: em.current_pc, opcode: inst }),

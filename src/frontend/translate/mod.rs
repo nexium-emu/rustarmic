@@ -18,5 +18,6 @@ pub mod bitfield;
 pub mod condsel;
 pub mod pcreladdr;
 pub mod extract;
+pub mod dp_1src;
 pub mod dp_2src;
 pub mod dp_3src;
