@@ -158,6 +158,24 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
         cursor = block.next_of(vr);
     }
 
+    use crate::ir::Terminal;
+    let term_vrs: [Option<ValueRef>; 2] = match block.terminal {
+        Terminal::ConditionalBranch { cond_nzcv, .. } => [Some(cond_nzcv), None],
+        Terminal::CompareBranchZero { value, .. }
+        | Terminal::TestBranchBit { value, .. } => [Some(value), None],
+        Terminal::IndirectBranch { target, .. } => [Some(target), None],
+        _ => [None, None],
+    };
+    for v in term_vrs {
+        if let Some(v) = v {
+            if v.is_some() {
+                let aidx = v.as_usize();
+                let u = &mut scratch.uses[aidx];
+                *u = u.saturating_add(1);
+            }
+        }
+    }
+
     let mut cursor = block.tail_vr();
     while let Some(vr) = cursor {
         let i = vr.as_usize();
