@@ -115,6 +115,16 @@ pub fn emit_armlet(
         Op::SDiv32 => emit_div(asm, alloc, a, dst, true,  false)?,
         Op::SDiv64 => emit_div(asm, alloc, a, dst, true,  true)?,
 
+        Op::Clz32 => emit_clz(asm, alloc, a, dst, false)?,
+        Op::Clz64 => emit_clz(asm, alloc, a, dst, true)?,
+        Op::Cls32 => emit_cls(asm, alloc, a, dst, false)?,
+        Op::Cls64 => emit_cls(asm, alloc, a, dst, true)?,
+        Op::Rbit32 => emit_rbit(asm, alloc, a, dst, false)?,
+        Op::Rbit64 => emit_rbit(asm, alloc, a, dst, true)?,
+        Op::Rev16  => emit_rev16(asm, alloc, a, dst, a.ty == Ty::U64)?,
+        Op::Rev32  => emit_rev32_within64(asm, alloc, a, dst)?,
+        Op::Rev64  => emit_bswap(asm, alloc, a, dst, a.ty == Ty::U64)?,
+
         Op::Lsl32 => emit_shift_32(asm, alloc, a, dst, ShiftKind::Lsl)?,
         Op::Lsl64 => emit_shift_64(asm, alloc, a, dst, ShiftKind::Lsl)?,
         Op::Lsr32 => emit_shift_32(asm, alloc, a, dst, ShiftKind::Lsr)?,
@@ -481,6 +491,234 @@ fn emit_div(
         asm.xor(eax, eax)?;
 
         asm.set_label(&mut lbl_done)?;
+        asm.mov(dword_ptr(rbp - d.stack_offset), eax)?;
+    }
+    Ok(())
+}
+
+fn emit_clz(
+    asm: &mut CodeAssembler,
+    alloc: &Allocation,
+    a: Armlet,
+    dst: Option<ValueLoc>,
+    is_64: bool,
+) -> Result<()> {
+    let s = alloc.loc(a.args[0]);
+    let d = dst.unwrap();
+    let mut lbl_zero = asm.create_label();
+    let mut lbl_done = asm.create_label();
+    if is_64 {
+        asm.mov(rax, qword_ptr(rbp - s.stack_offset))?;
+        asm.test(rax, rax)?;
+        asm.jz(lbl_zero)?;
+        asm.bsr(rcx, rax)?;
+        asm.mov(rax, 63i64)?;
+        asm.sub(rax, rcx)?;
+        asm.jmp(lbl_done)?;
+        asm.set_label(&mut lbl_zero)?;
+        asm.mov(rax, 64i64)?;
+        asm.set_label(&mut lbl_done)?;
+        asm.mov(qword_ptr(rbp - d.stack_offset), rax)?;
+    } else {
+        asm.mov(eax, dword_ptr(rbp - s.stack_offset))?;
+        asm.test(eax, eax)?;
+        asm.jz(lbl_zero)?;
+        asm.bsr(ecx, eax)?;
+        asm.mov(eax, 31i32)?;
+        asm.sub(eax, ecx)?;
+        asm.jmp(lbl_done)?;
+        asm.set_label(&mut lbl_zero)?;
+        asm.mov(eax, 32i32)?;
+        asm.set_label(&mut lbl_done)?;
+        asm.mov(dword_ptr(rbp - d.stack_offset), eax)?;
+    }
+    Ok(())
+}
+
+fn emit_cls(
+    asm: &mut CodeAssembler,
+    alloc: &Allocation,
+    a: Armlet,
+    dst: Option<ValueLoc>,
+    is_64: bool,
+) -> Result<()> {
+    let s = alloc.loc(a.args[0]);
+    let d = dst.unwrap();
+    let mut lbl_all_same = asm.create_label();
+    let mut lbl_done = asm.create_label();
+    if is_64 {
+        asm.mov(rax, qword_ptr(rbp - s.stack_offset))?;
+        asm.mov(rcx, rax)?;
+        asm.shl(rax, 1i32)?;
+        asm.xor(rax, rcx)?;
+        asm.test(rax, rax)?;
+        asm.jz(lbl_all_same)?;
+        asm.bsr(rcx, rax)?;
+        asm.mov(rax, 63i64)?;
+        asm.sub(rax, rcx)?;
+        asm.jmp(lbl_done)?;
+        asm.set_label(&mut lbl_all_same)?;
+        asm.mov(rax, 63i64)?;
+        asm.set_label(&mut lbl_done)?;
+        asm.mov(qword_ptr(rbp - d.stack_offset), rax)?;
+    } else {
+        asm.mov(eax, dword_ptr(rbp - s.stack_offset))?;
+        asm.mov(ecx, eax)?;
+        asm.shl(eax, 1i32)?;
+        asm.xor(eax, ecx)?;
+        asm.test(eax, eax)?;
+        asm.jz(lbl_all_same)?;
+        asm.bsr(ecx, eax)?;
+        asm.mov(eax, 31i32)?;
+        asm.sub(eax, ecx)?;
+        asm.jmp(lbl_done)?;
+        asm.set_label(&mut lbl_all_same)?;
+        asm.mov(eax, 31i32)?;
+        asm.set_label(&mut lbl_done)?;
+        asm.mov(dword_ptr(rbp - d.stack_offset), eax)?;
+    }
+    Ok(())
+}
+
+fn emit_rbit(
+    asm: &mut CodeAssembler,
+    alloc: &Allocation,
+    a: Armlet,
+    dst: Option<ValueLoc>,
+    is_64: bool,
+) -> Result<()> {
+    let s = alloc.loc(a.args[0]);
+    let d = dst.unwrap();
+    if is_64 {
+        asm.mov(rax, qword_ptr(rbp - s.stack_offset))?;
+        rbit64_inplace(asm)?;
+        asm.mov(qword_ptr(rbp - d.stack_offset), rax)?;
+    } else {
+        asm.mov(eax, dword_ptr(rbp - s.stack_offset))?;
+        rbit32_inplace(asm)?;
+        asm.mov(dword_ptr(rbp - d.stack_offset), eax)?;
+    }
+    Ok(())
+}
+
+fn rbit64_inplace(asm: &mut CodeAssembler) -> Result<()> {
+    asm.mov(rcx, rax)?;
+    asm.shr(rcx, 1i32)?;
+    asm.mov(rdx, 0x5555_5555_5555_5555i64)?;
+    asm.and(rcx, rdx)?;
+    asm.and(rax, rdx)?;
+    asm.shl(rax, 1i32)?;
+    asm.or(rax, rcx)?;
+
+    asm.mov(rcx, rax)?;
+    asm.shr(rcx, 2i32)?;
+    asm.mov(rdx, 0x3333_3333_3333_3333i64)?;
+    asm.and(rcx, rdx)?;
+    asm.and(rax, rdx)?;
+    asm.shl(rax, 2i32)?;
+    asm.or(rax, rcx)?;
+
+    asm.mov(rcx, rax)?;
+    asm.shr(rcx, 4i32)?;
+    asm.mov(rdx, 0x0F0F_0F0F_0F0F_0F0Fi64)?;
+    asm.and(rcx, rdx)?;
+    asm.and(rax, rdx)?;
+    asm.shl(rax, 4i32)?;
+    asm.or(rax, rcx)?;
+
+    asm.bswap(rax)?;
+    Ok(())
+}
+
+fn rbit32_inplace(asm: &mut CodeAssembler) -> Result<()> {
+    asm.mov(ecx, eax)?;
+    asm.shr(ecx, 1i32)?;
+    asm.and(ecx, 0x5555_5555_u32 as i32)?;
+    asm.and(eax, 0x5555_5555_u32 as i32)?;
+    asm.shl(eax, 1i32)?;
+    asm.or(eax, ecx)?;
+
+    asm.mov(ecx, eax)?;
+    asm.shr(ecx, 2i32)?;
+    asm.and(ecx, 0x3333_3333_u32 as i32)?;
+    asm.and(eax, 0x3333_3333_u32 as i32)?;
+    asm.shl(eax, 2i32)?;
+    asm.or(eax, ecx)?;
+
+    asm.mov(ecx, eax)?;
+    asm.shr(ecx, 4i32)?;
+    asm.and(ecx, 0x0F0F_0F0F_u32 as i32)?;
+    asm.and(eax, 0x0F0F_0F0F_u32 as i32)?;
+    asm.shl(eax, 4i32)?;
+    asm.or(eax, ecx)?;
+
+    asm.bswap(eax)?;
+    Ok(())
+}
+
+fn emit_rev16(
+    asm: &mut CodeAssembler,
+    alloc: &Allocation,
+    a: Armlet,
+    dst: Option<ValueLoc>,
+    is_64: bool,
+) -> Result<()> {
+    let s = alloc.loc(a.args[0]);
+    let d = dst.unwrap();
+    if is_64 {
+        asm.mov(rax, qword_ptr(rbp - s.stack_offset))?;
+        asm.mov(rcx, rax)?;
+        asm.shr(rcx, 8i32)?;
+        asm.mov(rdx, 0x00FF_00FF_00FF_00FFi64)?;
+        asm.and(rcx, rdx)?;
+        asm.and(rax, rdx)?;
+        asm.shl(rax, 8i32)?;
+        asm.or(rax, rcx)?;
+        asm.mov(qword_ptr(rbp - d.stack_offset), rax)?;
+    } else {
+        asm.mov(eax, dword_ptr(rbp - s.stack_offset))?;
+        asm.mov(ecx, eax)?;
+        asm.shr(ecx, 8i32)?;
+        asm.and(ecx, 0x00FF_00FF_u32 as i32)?;
+        asm.and(eax, 0x00FF_00FF_u32 as i32)?;
+        asm.shl(eax, 8i32)?;
+        asm.or(eax, ecx)?;
+        asm.mov(dword_ptr(rbp - d.stack_offset), eax)?;
+    }
+    Ok(())
+}
+
+fn emit_rev32_within64(
+    asm: &mut CodeAssembler,
+    alloc: &Allocation,
+    a: Armlet,
+    dst: Option<ValueLoc>,
+) -> Result<()> {
+    let s = alloc.loc(a.args[0]);
+    let d = dst.unwrap();
+    asm.mov(rax, qword_ptr(rbp - s.stack_offset))?;
+    asm.bswap(rax)?;
+    asm.rol(rax, 32i32)?;
+    asm.mov(qword_ptr(rbp - d.stack_offset), rax)?;
+    Ok(())
+}
+
+fn emit_bswap(
+    asm: &mut CodeAssembler,
+    alloc: &Allocation,
+    a: Armlet,
+    dst: Option<ValueLoc>,
+    is_64: bool,
+) -> Result<()> {
+    let s = alloc.loc(a.args[0]);
+    let d = dst.unwrap();
+    if is_64 {
+        asm.mov(rax, qword_ptr(rbp - s.stack_offset))?;
+        asm.bswap(rax)?;
+        asm.mov(qword_ptr(rbp - d.stack_offset), rax)?;
+    } else {
+        asm.mov(eax, dword_ptr(rbp - s.stack_offset))?;
+        asm.bswap(eax)?;
         asm.mov(dword_ptr(rbp - d.stack_offset), eax)?;
     }
     Ok(())
