@@ -110,6 +110,11 @@ pub fn emit_armlet(
         Op::Mul32 => emit_binop_32(asm, alloc, a, dst, BinKind::Imul)?,
         Op::Mul64 => emit_binop_64(asm, alloc, a, dst, BinKind::Imul)?,
 
+        Op::UDiv32 => emit_div(asm, alloc, a, dst, false, false)?,
+        Op::UDiv64 => emit_div(asm, alloc, a, dst, false, true)?,
+        Op::SDiv32 => emit_div(asm, alloc, a, dst, true,  false)?,
+        Op::SDiv64 => emit_div(asm, alloc, a, dst, true,  true)?,
+
         Op::Lsl32 => emit_shift_32(asm, alloc, a, dst, ShiftKind::Lsl)?,
         Op::Lsl64 => emit_shift_64(asm, alloc, a, dst, ShiftKind::Lsl)?,
         Op::Lsr32 => emit_shift_32(asm, alloc, a, dst, ShiftKind::Lsr)?,
@@ -399,6 +404,85 @@ fn emit_store(asm: &mut CodeAssembler, alloc: &Allocation, a: Armlet, bytes: u32
     asm.mov(SCRATCH0, fn_addr as i64)?;
     asm.call(SCRATCH0)?;
     asm.add(rsp, CALL_PRECALL_SUB)?;
+    Ok(())
+}
+
+fn emit_div(
+    asm: &mut CodeAssembler,
+    alloc: &Allocation,
+    a: Armlet,
+    dst: Option<ValueLoc>,
+    signed: bool,
+    is_64: bool,
+) -> Result<()> {
+    let l = alloc.loc(a.args[0]);
+    let r = alloc.loc(a.args[1]);
+    let d = dst.unwrap();
+
+    let mut lbl_zero     = asm.create_label();
+    let mut lbl_overflow = asm.create_label();
+    let mut lbl_done     = asm.create_label();
+
+    if is_64 {
+        asm.mov(rax, qword_ptr(rbp - l.stack_offset))?;
+        asm.mov(rcx, qword_ptr(rbp - r.stack_offset))?;
+        asm.test(rcx, rcx)?;
+        asm.jz(lbl_zero)?;
+
+        if signed {
+            let mut lbl_do_div = asm.create_label();
+            asm.cmp(rcx, -1i32)?;
+            asm.jne(lbl_do_div)?;
+            asm.mov(rdx, i64::MIN)?;
+            asm.cmp(rax, rdx)?;
+            asm.je(lbl_overflow)?;
+            asm.set_label(&mut lbl_do_div)?;
+            asm.cqo()?;
+            asm.idiv(rcx)?;
+        } else {
+            asm.xor(rdx, rdx)?;
+            asm.div(rcx)?;
+        }
+        asm.jmp(lbl_done)?;
+
+        asm.set_label(&mut lbl_overflow)?;
+        asm.jmp(lbl_done)?;
+
+        asm.set_label(&mut lbl_zero)?;
+        asm.xor(rax, rax)?;
+
+        asm.set_label(&mut lbl_done)?;
+        asm.mov(qword_ptr(rbp - d.stack_offset), rax)?;
+    } else {
+        asm.mov(eax, dword_ptr(rbp - l.stack_offset))?;
+        asm.mov(ecx, dword_ptr(rbp - r.stack_offset))?;
+        asm.test(ecx, ecx)?;
+        asm.jz(lbl_zero)?;
+
+        if signed {
+            let mut lbl_do_div = asm.create_label();
+            asm.cmp(ecx, -1i32)?;
+            asm.jne(lbl_do_div)?;
+            asm.cmp(eax, i32::MIN)?;
+            asm.je(lbl_overflow)?;
+            asm.set_label(&mut lbl_do_div)?;
+            asm.cdq()?;
+            asm.idiv(ecx)?;
+        } else {
+            asm.xor(edx, edx)?;
+            asm.div(ecx)?;
+        }
+        asm.jmp(lbl_done)?;
+
+        asm.set_label(&mut lbl_overflow)?;
+        asm.jmp(lbl_done)?;
+
+        asm.set_label(&mut lbl_zero)?;
+        asm.xor(eax, eax)?;
+
+        asm.set_label(&mut lbl_done)?;
+        asm.mov(dword_ptr(rbp - d.stack_offset), eax)?;
+    }
     Ok(())
 }
 
