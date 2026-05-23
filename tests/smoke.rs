@@ -359,6 +359,49 @@ fn rev_byte_swap() {
 }
 
 #[test]
+fn ccmp_imm_failed_cond_uses_nzcv_imm() {
+    // movz x0, #1
+    // movz x1, #2
+    // subs xzr, x0, x1     ; 1-2=-1 -> N=1,Z=0,C=0,V=0 (EQ fails)
+    // ccmp x0, #5, #0xA, eq ; cond EQ fails -> NZCV <- imm = 0xA = 0b1010 (N=1,Z=0,C=1,V=0)
+    // csinc x2, xzr, xzr, mi; cond MI (N=1) holds -> x2 = xzr = 0
+    let code = build_code(&[
+        0xD2800020, // movz x0, #1
+        0xD2800041, // movz x1, #2
+        0xEB01001F, // subs xzr, x0, x1
+        0xFA45080A, // ccmp x0, #5, #0xA, eq
+        0x9A9F47E2, // csinc x2, xzr, xzr, mi
+        0xD4200000,
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    run(code, &mut ctx);
+    assert_eq!(ctx.nzcv & 0xF, 0xA, "After CCMP-fail, NZCV should equal imm nibble 0xA");
+    assert_eq!(ctx.x[2], 0, "csinc on MI(N=1) should pick xzr (0)");
+}
+
+#[test]
+fn ccmp_imm_passed_cond_does_compare() {
+    // movz x0, #5 ; movz x1, #5
+    // subs xzr, x0, x1     ; Z=1 (EQ true)
+    // ccmp x0, #5, #0xF, eq ; EQ holds -> do compare 5-5=0 -> N=0,Z=1,C=1,V=0 = nibble 6
+    // csinc x2, xzr, xzr, ne; NE fails -> x2 = xzr+1 = 1
+    let code = build_code(&[
+        0xD28000A0, // movz x0, #5
+        0xD28000A1, // movz x1, #5
+        0xEB01001F, // subs xzr, x0, x1
+        0xFA45080F, // ccmp x0, #5, #0xF, eq
+        0x9A9F17E2, // csinc x2, xzr, xzr, ne
+        0xD4200000,
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    run(code, &mut ctx);
+    assert_eq!(ctx.nzcv & 0xF, 0b0110, "After CCMP-pass, NZCV should be compare-result (Z=1,C=1)");
+    assert_eq!(ctx.x[2], 1, "csinc on NE-fail should pick xzr+1 = 1");
+}
+
+#[test]
 fn add_sub_chain_uses_constant_folding() {
     // movz x0, #100
     // add  x1, x0, #1
