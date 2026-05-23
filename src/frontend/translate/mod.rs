@@ -1,12 +1,15 @@
 pub mod movewide;
 pub mod addsub_imm;
 pub mod addsub_shift;
+pub mod addsub_carry;
 pub mod addsub_ext;
 pub mod log_imm;
 pub mod log_shift;
 pub mod exception;
 pub mod ldst_pos;
 pub mod ldst_imm9;
+pub mod ldst_unscaled;
+pub mod ldst_regoff;
 pub mod ldstpair_off;
 pub mod ldstpair_indexed;
 pub mod branch_imm;
