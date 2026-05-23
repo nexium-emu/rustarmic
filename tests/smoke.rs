@@ -443,6 +443,41 @@ fn adc_no_carry_from_subs() {
 }
 
 #[test]
+fn two_block_direct_branch_chains() {
+    // Block A at 0x1000:
+    //   movz x0, #1         (PC 0x1000)
+    //   b 0x1100            (PC 0x1004, offset +0xFC bytes = +63 words = imm26 0x3F)
+    //
+    // Block B at 0x1100:
+    //   movz x1, #5
+    //   add  x1, x1, x0     ; x1 = 5 + 1 = 6
+    //   brk  #0
+    //
+    // First run translates A (patch site registered targeting 0x1100, not compiled).
+    // Falls back through chainable terminator: mov rax, 0x1100; ret.
+    // Dispatcher loops, translates B at 0x1100, install applies pending patch on A's
+    // terminator (rewrites the 5-byte jmp placeholder to point at B's host code).
+    // B executes, hits BRK.
+    //
+    // The visible result is the same with or without chaining — this test confirms
+    // the chainable-terminator format doesn't break correctness.
+
+    let mut code = vec![0u8; 0x10C];
+    code[0..4].copy_from_slice(&0xD2800020u32.to_le_bytes());   // movz x0, #1
+    code[4..8].copy_from_slice(&0x1400003Fu32.to_le_bytes());   // b 0x1100
+    code[0x100..0x104].copy_from_slice(&0xD28000A1u32.to_le_bytes()); // movz x1, #5
+    code[0x104..0x108].copy_from_slice(&0x8B000021u32.to_le_bytes()); // add x1, x1, x0
+    code[0x108..0x10C].copy_from_slice(&0xD4200000u32.to_le_bytes()); // brk #0
+
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    let exit = run(code, &mut ctx);
+    assert!(matches!(exit, ExitReason::Brk(_)), "expected BRK exit, got {:?}", exit);
+    assert_eq!(ctx.x[0], 1, "X0 from block A");
+    assert_eq!(ctx.x[1], 6, "X1 = 5 + 1 from block B (after branch from A)");
+}
+
+#[test]
 fn add_sub_chain_uses_constant_folding() {
     // movz x0, #100
     // add  x1, x0, #1
