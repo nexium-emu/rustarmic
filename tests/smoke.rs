@@ -162,6 +162,118 @@ fn madd_three_operand() {
 }
 
 #[test]
+fn udiv_normal_case() {
+    // movz x0, #100
+    // movz x1, #7
+    // udiv x2, x0, x1   ; 100 / 7 = 14
+    let code = build_code(&[
+        0xD2800C80, // movz x0, #100
+        0xD28000E1, // movz x1, #7
+        0x9AC10802, // udiv x2, x0, x1
+        0xD4200000,
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    run(code, &mut ctx);
+    assert_eq!(ctx.x[2], 14, "100 / 7 should be 14");
+}
+
+#[test]
+fn udiv_by_zero_returns_zero() {
+    // movz x0, #100
+    // movz x1, #0
+    // udiv x2, x0, x1   ; divisor 0 -> AArch64 returns 0 (no trap)
+    let code = build_code(&[
+        0xD2800C80, // movz x0, #100
+        0xD2800001, // movz x1, #0
+        0x9AC10802, // udiv x2, x0, x1
+        0xD4200000,
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    run(code, &mut ctx);
+    assert_eq!(ctx.x[2], 0, "UDIV by zero must return 0, not trap");
+}
+
+#[test]
+fn sdiv_normal_negative() {
+    // movz x0, #100 ; neg x0, x0  -> x0 = -100
+    // movz x1, #4
+    // sdiv x2, x0, x1   ; -100 / 4 = -25
+    let code = build_code(&[
+        0xD2800C80, // movz x0, #100
+        0xCB0003E0, // neg x0, x0    (sub x0, xzr, x0)
+        0xD2800081, // movz x1, #4
+        0x9AC10C02, // sdiv x2, x0, x1
+        0xD4200000,
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    run(code, &mut ctx);
+    assert_eq!(ctx.x[2] as i64, -25, "SDIV -100 / 4 should be -25");
+}
+
+#[test]
+fn sdiv_by_zero_returns_zero() {
+    // movz x0, #100
+    // movz x1, #0
+    // sdiv x2, x0, x1   ; AArch64 returns 0
+    let code = build_code(&[
+        0xD2800C80, // movz x0, #100
+        0xD2800001, // movz x1, #0
+        0x9AC10C02, // sdiv x2, x0, x1
+        0xD4200000,
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    run(code, &mut ctx);
+    assert_eq!(ctx.x[2], 0, "SDIV by zero must return 0, not trap");
+}
+
+#[test]
+fn sdiv_int_min_by_neg_one_returns_int_min() {
+    // movz/movk x0 to 0x8000_0000_0000_0000 (INT_MIN_64)
+    // movz x1, #1 ; neg x1, x1 -> x1 = -1
+    // sdiv x2, x0, x1   ; AArch64 returns x0 unchanged (= INT_MIN), no overflow trap
+    let code = build_code(&[
+        0xD2A00000_u32 ^ 0,  // we need x0 = 0x8000_0000_0000_0000
+        // movz x0, #0, lsl #0 → 0xD2800000
+        // movk x0, #0x8000, lsl #48 → 0xF2F00000
+        // Use single MOVZ with lsl #48: movz x0, #0x8000, lsl #48 → 0xD2F00000
+        0xD2F00000,
+        0xD2800021, // movz x1, #1
+        0xCB0103E1, // neg x1, x1    (sub x1, xzr, x1)
+        0x9AC10C02, // sdiv x2, x0, x1
+        0xD4200000,
+    ]);
+    let code = code[4..].to_vec();
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    run(code, &mut ctx);
+    assert_eq!(ctx.x[0], 0x8000_0000_0000_0000, "X0 should be INT_MIN_64");
+    assert_eq!(ctx.x[1] as i64, -1, "X1 should be -1");
+    assert_eq!(ctx.x[2], 0x8000_0000_0000_0000,
+        "SDIV INT_MIN / -1 must return INT_MIN unchanged (no overflow trap)");
+}
+
+#[test]
+fn lslv_variable_shift() {
+    // movz x0, #1
+    // movz x1, #5
+    // lslv x2, x0, x1   ; x2 = 1 << 5 = 32
+    let code = build_code(&[
+        0xD2800020, // movz x0, #1
+        0xD28000A1, // movz x1, #5
+        0x9AC12002, // lslv x2, x0, x1
+        0xD4200000,
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    run(code, &mut ctx);
+    assert_eq!(ctx.x[2], 32, "1 << 5 should be 32");
+}
+
+#[test]
 fn add_sub_chain_uses_constant_folding() {
     // movz x0, #100
     // add  x1, x0, #1
