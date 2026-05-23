@@ -20,6 +20,7 @@
 //!   scratch within an armlet.
 
 pub mod abi;
+pub mod clobbers;
 pub mod reg_alloc;
 pub mod isel;
 pub mod prologue;
