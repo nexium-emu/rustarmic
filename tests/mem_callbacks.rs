@@ -8,8 +8,7 @@ static MEM: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 
 fn mem_init(size: usize) {
     let mut m = MEM.lock().unwrap();
-    m.clear();
-    m.resize(size, 0);
+    if m.len() < size { m.resize(size, 0); }
 }
 
 fn mem_read(addr: u64, bytes: usize) -> u64 {
@@ -83,8 +82,45 @@ fn run(code: Vec<u8>, ctx: &mut CpuContext) -> ExitReason {
 }
 
 #[test]
+fn ldxr_stxr_success_then_self_fail() {
+    mem_init(0x10000);
+    mem_write(DATA_BASE + 0x200, 0x12345678_9ABCDEF0, 8);
+
+    // movz x1, #0x200 ; movz x0, #(DATA_BASE>>... build address)
+    // Easier: put DATA_BASE+0x200 in X0 via ctx, then:
+    //   ldxr  x2, [x0]            ; x2 = mem; reservation set on x0
+    //   movz  x3, #0xAAAA
+    //   stxr  w4, x3, [x0]        ; should succeed -> w4 = 0
+    //   movz  x5, #0xBBBB
+    //   stxr  w6, x5, [x0]        ; reservation cleared by prev stxr -> w6 = 1
+    //   brk #0
+    let code = build_code(&[
+        0xC85F7C02, // ldxr x2, [x0]
+        0xD2955543, // movz x3, #0xAAAA
+        0xC8047C03, // stxr w4, x3, [x0]
+        0xD2977765, // movz x5, #0xBBBB
+        0xC8067C05, // stxr w6, x5, [x0]
+        0xD4200000, // brk #0
+    ]);
+
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.x[0] = DATA_BASE + 0x200;
+    let mut mem = CodeMem { bytes: code, base: CODE_BASE };
+    let mut jit = Jit::new(JitConfig::default()).expect("jit init");
+    let exit = jit.run(&mut ctx, &mut mem).unwrap_or(ExitReason::Stopped);
+    assert!(matches!(exit, ExitReason::Brk(_)), "expected BRK, got {:?}", exit);
+
+    assert_eq!(ctx.x[2], 0x12345678_9ABCDEF0, "ldxr loaded original value");
+    assert_eq!(ctx.x[4], 0, "first stxr must succeed (reservation held)");
+    assert_eq!(ctx.x[6], 1, "second stxr must fail (reservation cleared)");
+    assert_eq!(mem_read(DATA_BASE + 0x200, 8), 0xAAAA,
+        "memory should hold first stxr's value, not second's");
+}
+
+#[test]
 fn str_then_ldr_round_trip() {
-    mem_init(0x1000);
+    mem_init(0x10000);
 
     let mut ctx = CpuContext::default();
     ctx.pc = CODE_BASE;
