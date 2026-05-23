@@ -402,6 +402,47 @@ fn ccmp_imm_passed_cond_does_compare() {
 }
 
 #[test]
+fn adc_carries_from_subs() {
+    // movz x0, #10 ; movz x1, #5
+    // subs xzr, x0, x1   ; 10 - 5 = 5, no borrow -> C=1
+    // movz x2, #100 ; movz x3, #1
+    // adc  x4, x2, x3    ; x4 = 100 + 1 + C(=1) = 102
+    let code = build_code(&[
+        0xD2800140, // movz x0, #10
+        0xD28000A1, // movz x1, #5
+        0xEB01001F, // subs xzr, x0, x1
+        0xD2800C82, // movz x2, #100
+        0xD2800023, // movz x3, #1
+        0x9A030044, // adc x4, x2, x3
+        0xD4200000,
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    run(code, &mut ctx);
+    assert_eq!(ctx.x[4], 102, "ADC should add 100 + 1 + carry(=1) = 102");
+}
+
+#[test]
+fn adc_no_carry_from_subs() {
+    // movz x0, #5 ; movz x1, #10
+    // subs xzr, x0, x1   ; 5 - 10 underflows -> C=0
+    // adc x4, x2, x3 with x2=100, x3=1 -> 100 + 1 + 0 = 101
+    let code = build_code(&[
+        0xD28000A0, // movz x0, #5
+        0xD2800141, // movz x1, #10
+        0xEB01001F, // subs xzr, x0, x1
+        0xD2800C82, // movz x2, #100
+        0xD2800023, // movz x3, #1
+        0x9A030044, // adc x4, x2, x3
+        0xD4200000,
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    run(code, &mut ctx);
+    assert_eq!(ctx.x[4], 101, "ADC without carry should be 100 + 1 = 101");
+}
+
+#[test]
 fn add_sub_chain_uses_constant_folding() {
     // movz x0, #100
     // add  x1, x0, #1
