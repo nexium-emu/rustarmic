@@ -1,15 +1,13 @@
-//! Drive a translation pass over a guest PC range.
+use disarm64::decoder;
+use disarm64::decoder::Operation;
 
 use crate::error::{Error, Result};
-use crate::frontend::decoder::{classify, DecodeClass};
 use crate::frontend::translate;
 use crate::ir::{Block, IrEmitter, Terminal};
 
 #[derive(Clone, Copy, Debug)]
 pub struct TranslateOptions {
-    /// Maximum number of guest instructions to fold into a single block.
     pub max_insts: u32,
-    /// Whether to follow direct branches across blocks (multi-block).
     pub multiblock: bool,
 }
 
@@ -19,30 +17,31 @@ impl Default for TranslateOptions {
     }
 }
 
-/// Outcome of translating a single guest instruction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InstStatus {
-    /// Continue translating; PC advances by 4.
     Continue,
-    /// Block terminator was emitted; stop translating.
     Terminator,
 }
 
-/// Translate a single 32-bit guest instruction into Armlets.
 pub fn translate_instruction(em: &mut IrEmitter<'_>, inst: u32) -> Result<InstStatus> {
-    let cls = classify(inst);
-    match cls {
-        DecodeClass::DataProcImm   => translate::data_proc_imm::translate(em, inst),
-        DecodeClass::DataProcReg   => translate::data_proc_reg::translate(em, inst),
-        DecodeClass::BranchSysExc  => translate::branch::translate(em, inst),
-        DecodeClass::LoadStore     => translate::load_store::translate(em, inst),
-        DecodeClass::DataProcFloat => Err(Error::Unsupported { pc: em.current_pc, opcode: inst }),
-        DecodeClass::Sve | DecodeClass::Sme | DecodeClass::Reserved =>
-            Err(Error::Unsupported { pc: em.current_pc, opcode: inst }),
+    let opcode = decoder::decode(inst)
+        .ok_or(Error::Decode { pc: em.current_pc, opcode: inst })?;
+
+    match opcode.operation {
+        Operation::MOVEWIDE(insn)     => translate::movewide::translate(em, insn),
+        Operation::ADDSUB_IMM(insn)   => translate::addsub_imm::translate(em, insn),
+        Operation::ADDSUB_SHIFT(insn) => translate::addsub_shift::translate(em, insn),
+        Operation::LOG_IMM(insn)      => translate::log_imm::translate(em, insn),
+        Operation::LOG_SHIFT(insn)    => translate::log_shift::translate(em, insn),
+        Operation::EXCEPTION(insn)    => translate::exception::translate(em, insn),
+        Operation::LDST_POS(insn)     => translate::ldst_pos::translate(em, insn),
+        Operation::BRANCH_IMM(insn)   => translate::branch_imm::translate(em, insn),
+        Operation::BRANCH_REG(insn)   => translate::branch_reg::translate(em, insn),
+        Operation::CONDBRANCH(insn)   => translate::condbranch::translate(em, insn),
+        _ => Err(Error::Unsupported { pc: em.current_pc, opcode: inst }),
     }
 }
 
-/// Translate an entire basic block starting at `start_pc`.
 pub fn translate_block_into(
     block: &mut Block,
     start_pc: u64,

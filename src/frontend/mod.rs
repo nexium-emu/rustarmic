@@ -1,6 +1,5 @@
 //! AArch64 → Armlet translation.
 
-pub mod decoder;
 pub mod translator;
 pub mod translate;
 

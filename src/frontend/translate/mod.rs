@@ -1,6 +1,10 @@
-//! Per-class instruction translators.
-
-pub mod data_proc_imm;
-pub mod data_proc_reg;
-pub mod branch;
-pub mod load_store;
+pub mod movewide;
+pub mod addsub_imm;
+pub mod addsub_shift;
+pub mod log_imm;
+pub mod log_shift;
+pub mod exception;
+pub mod ldst_pos;
+pub mod branch_imm;
+pub mod branch_reg;
+pub mod condbranch;
