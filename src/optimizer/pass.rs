@@ -28,6 +28,10 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
     if n == 0 { return; }
     scratch.resize(n);
 
+    assume::assume!(unsafe: scratch.consts.len() == n);
+    assume::assume!(unsafe: scratch.uses.len()   == n);
+    assume::assume!(unsafe: block.code.len()     == n);
+
     let mut reach_x:    [ValueRef; NUM_GPRS] = [ValueRef::NONE; NUM_GPRS];
     let mut reach_sp:   ValueRef = ValueRef::NONE;
     let mut reach_nzcv: ValueRef = ValueRef::NONE;
@@ -35,6 +39,7 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
     let mut cursor = block.head_vr();
     while let Some(vr) = cursor {
         let i = vr.as_usize();
+        assume::assume!(unsafe: i < n);
         let next_cursor = block.next_of(vr);
 
         let mut a = block.code[i];
@@ -42,10 +47,12 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
         for slot in a.args.iter_mut() {
             if slot.is_none() { continue; }
             while slot.is_some() {
-                let pointed = &block.code[slot.as_usize()];
+                let sidx = slot.as_usize();
+                assume::assume!(unsafe: sidx < n);
+                let pointed = &block.code[sidx];
                 if pointed.op != Op::Identity { break; }
                 let nxt = pointed.args[0];
-                if nxt.is_none() || nxt.as_usize() >= slot.as_usize() { break; }
+                if nxt.is_none() || nxt.as_usize() >= sidx { break; }
                 *slot = nxt;
             }
         }
@@ -118,7 +125,9 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
             Op::Identity => {
                 let src = a.args[0];
                 if src.is_some() {
-                    scratch.consts[i] = scratch.consts[src.as_usize()];
+                    let sidx = src.as_usize();
+                    assume::assume!(unsafe: sidx < n);
+                    scratch.consts[i] = scratch.consts[sidx];
                 }
             }
             _ => {}
@@ -131,10 +140,13 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
     let mut cursor = block.head_vr();
     while let Some(vr) = cursor {
         let i = vr.as_usize();
+        assume::assume!(unsafe: i < n);
         let a = &block.code[i];
         for arg in a.args.iter() {
             if arg.is_some() {
-                let u = &mut scratch.uses[arg.as_usize()];
+                let aidx = arg.as_usize();
+                assume::assume!(unsafe: aidx < n);
+                let u = &mut scratch.uses[aidx];
                 *u = u.saturating_add(1);
             }
         }
@@ -144,6 +156,7 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
     let mut cursor = block.tail_vr();
     while let Some(vr) = cursor {
         let i = vr.as_usize();
+        assume::assume!(unsafe: i < n);
         let prev_cursor = block.prev_of(vr);
 
         let a = block.code[i];
@@ -154,7 +167,9 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
         if scratch.uses[i] == 0 {
             for arg in a.args {
                 if arg.is_some() {
-                    let u = &mut scratch.uses[arg.as_usize()];
+                    let aidx = arg.as_usize();
+                    assume::assume!(unsafe: aidx < n);
+                    let u = &mut scratch.uses[aidx];
                     *u = u.saturating_sub(1);
                 }
             }
