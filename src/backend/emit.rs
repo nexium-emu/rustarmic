@@ -22,8 +22,8 @@ pub fn emit_block(block: &Block) -> Result<EmittedBlock> {
 
     emit_prologue(&mut asm, alloc.frame_bytes)?;
 
-    for i in 0..block.code.len() {
-        emit_armlet(&mut asm, block, &alloc, i)?;
+    for (vr, _) in block.iter_live() {
+        emit_armlet(&mut asm, block, &alloc, vr.as_usize())?;
     }
 
     emit_terminator(&mut asm, block, &alloc)?;

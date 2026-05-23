@@ -39,29 +39,26 @@ impl Allocation {
     /// rbp - 48..  : value slots
     /// ```
     pub fn build(block: &Block) -> Self {
-        const SAVED_SIZE: i32 = 40; // five callee-saved 64-bit slots (rbx, r12..r15)
+        const SAVED_SIZE: i32 = 56;
         let n = block.code.len();
-        let mut slots = Vec::with_capacity(n);
-        let mut next_offset: i32 = SAVED_SIZE; // bytes consumed below rbp
+        let mut slots = vec![ValueLoc { stack_offset: 0, width: 0 }; n];
+        let mut next_offset: i32 = SAVED_SIZE;
 
-        for armlet in &block.code {
+        for (vr, armlet) in block.iter_live() {
             let width = match armlet.ty {
                 Ty::Void | Ty::U1 | Ty::U8 | Ty::U16 | Ty::U32 | Ty::Nzcv => 4,
                 Ty::U64  => 8,
                 Ty::U128 => 16,
             };
-            // 8-byte align the next slot for >=8-byte values; 4-byte align otherwise.
             let align = if width >= 8 { 8 } else { 4 };
             next_offset = (next_offset + align - 1) & -align;
             next_offset += width;
-            slots.push(ValueLoc {
+            slots[vr.as_usize()] = ValueLoc {
                 stack_offset: next_offset,
                 width: width as u8,
-            });
+            };
         }
 
-        // Round up to 16 bytes so the stack stays 16-byte aligned after our
-        // sub rsp inside the prologue.
         let frame_bytes = (next_offset + 15) & -16;
         Self { slots, frame_bytes }
     }

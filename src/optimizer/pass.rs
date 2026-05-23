@@ -1,14 +1,9 @@
-//! The single forward-then-DCE-backward optimization pass.
-
 use crate::arch::NUM_GPRS;
-use crate::ir::{Armlet, Block, Op, Ty, ValueRef};
+use crate::ir::{Block, Op, Ty, ValueRef};
 
-/// Reusable scratch buffers, kept alive across blocks to avoid reallocations.
 #[derive(Default)]
 pub struct Scratch {
-    /// Per-armlet use count, saturated at 255.
     uses: Vec<u8>,
-    /// Per-armlet constant value (if any) — `None` means non-constant or eliminated.
     consts: Vec<Option<u64>>,
 }
 
@@ -23,57 +18,39 @@ impl Scratch {
     }
 }
 
-/// Run the optimizer over `block`, allocating fresh scratch buffers.
 pub fn optimize(block: &mut Block) {
     let mut scratch = Scratch::new();
     optimize_with_scratch(block, &mut scratch);
 }
 
-/// Run the optimizer over `block`, reusing the provided scratch buffers.
 pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
     let n = block.code.len();
     if n == 0 { return; }
     scratch.resize(n);
 
-    // ── Forward pass ────────────────────────────────────────────────────────
-    //
-    // We track:
-    //   - reaching def for each guest GPR (NUM_GPRS slots) + SP + NZCV.
-    //   - latest constant per ValueRef in `scratch.consts`.
-    //
-    // Every armlet:
-    //   1. Resolve its args (copy/const prop).
-    //   2. If the op is pure and all operands are constants, fold to a Const*.
-    //   3. If it's a GetX/GetW/GetSp/GetNzcv with a known reaching def, rewrite
-    //      to an `Identity` of that def.
-    //   4. If it's a SetX/SetW/SetSp/SetNzcv, record the reaching def.
-    //
-    // We never touch indices, so SSA references remain valid throughout.
-
     let mut reach_x:    [ValueRef; NUM_GPRS] = [ValueRef::NONE; NUM_GPRS];
     let mut reach_sp:   ValueRef = ValueRef::NONE;
     let mut reach_nzcv: ValueRef = ValueRef::NONE;
 
-    for i in 0..n {
-        // First, resolve operands (read-only borrow needed).
+    let mut cursor = block.head_vr();
+    while let Some(vr) = cursor {
+        let i = vr.as_usize();
+        let next_cursor = block.next_of(vr);
+
         let mut a = block.code[i];
 
         for slot in a.args.iter_mut() {
             if slot.is_none() { continue; }
-            // Chase identity chains. SSA guarantees args[0].idx < idx so the
-            // loop terminates in at most `i` steps; in practice 1.
             while slot.is_some() {
                 let pointed = &block.code[slot.as_usize()];
                 if pointed.op != Op::Identity { break; }
-                let next = pointed.args[0];
-                if next.is_none() || next.as_usize() >= slot.as_usize() { break; }
-                *slot = next;
+                let nxt = pointed.args[0];
+                if nxt.is_none() || nxt.as_usize() >= slot.as_usize() { break; }
+                *slot = nxt;
             }
         }
 
-        // After operand resolution, attempt optimizations on the op itself.
         match a.op {
-            // ── GPR / state reads → identity to last writer ──────────────────
             Op::GetX => {
                 let reg = a.imm as usize;
                 if reg < NUM_GPRS {
@@ -88,11 +65,6 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
                 if reg < NUM_GPRS {
                     let def = reach_x[reg];
                     if def.is_some() {
-                        // Reading W view of a 64-bit def: mask low 32 bits.
-                        // The optimizer can't always insert a new armlet *before*
-                        // i without shifting indices, so we just lean on the
-                        // backend to do the mask. We still rewrite as identity
-                        // for value-numbering purposes.
                         a.become_identity(def);
                         a.ty = Ty::U32;
                     }
@@ -109,7 +81,6 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
                 }
             }
 
-            // ── GPR / state writes — record reaching def, keep armlet ────────
             Op::SetX => {
                 let reg = a.imm as usize;
                 if reg < NUM_GPRS {
@@ -119,20 +90,15 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
             Op::SetW => {
                 let reg = a.imm as usize;
                 if reg < NUM_GPRS {
-                    // Top half zeros, so the reaching def of the 64-bit reg
-                    // becomes the masked 32-bit value. We model this as the
-                    // raw ValueRef — the backend already knows W writes zero.
                     reach_x[reg] = a.args[0];
                 }
             }
             Op::SetSp   => { reach_sp   = a.args[0]; }
             Op::SetNzcv => { reach_nzcv = a.args[0]; }
 
-            // ── Constant materializations record into scratch ────────────────
             Op::ConstU32 => { scratch.consts[i] = Some(a.imm & 0xFFFF_FFFF); }
             Op::ConstU64 => { scratch.consts[i] = Some(a.imm); }
 
-            // ── Pure arithmetic — try to const-fold ──────────────────────────
             op if op.is_pure() => {
                 if let Some(folded) = try_fold(op, &a, &scratch.consts) {
                     match a.ty {
@@ -146,7 +112,6 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
             _ => {}
         }
 
-        // After folding, propagate any constant the rewritten armlet now is.
         match a.op {
             Op::ConstU32 => { scratch.consts[i] = Some(a.imm & 0xFFFF_FFFF); }
             Op::ConstU64 => { scratch.consts[i] = Some(a.imm); }
@@ -160,45 +125,46 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
         }
 
         block.code[i] = a;
+        cursor = next_cursor;
     }
 
-    // ── Backward DCE sweep ──────────────────────────────────────────────────
-    //
-    // Count uses (already populated by walking forward would have required
-    // another pass; we accept one final backward sweep to keep the use-set
-    // exact). Then mark dead armlets.
-
-    // Use counts
-    for i in 0..n {
-        let a = block.code[i];
-        if a.is_eliminated() { continue; }
+    let mut cursor = block.head_vr();
+    while let Some(vr) = cursor {
+        let i = vr.as_usize();
+        let a = &block.code[i];
         for arg in a.args.iter() {
             if arg.is_some() {
                 let u = &mut scratch.uses[arg.as_usize()];
                 *u = u.saturating_add(1);
             }
         }
+        cursor = block.next_of(vr);
     }
 
-    for i in (0..n).rev() {
-        let a = &mut block.code[i];
-        if a.is_eliminated() { continue; }
-        if a.op.has_side_effects() { continue; }
+    let mut cursor = block.tail_vr();
+    while let Some(vr) = cursor {
+        let i = vr.as_usize();
+        let prev_cursor = block.prev_of(vr);
+
+        let a = block.code[i];
+        if a.op.has_side_effects() {
+            cursor = prev_cursor;
+            continue;
+        }
         if scratch.uses[i] == 0 {
-            // Decrement use counts of operands before killing.
             for arg in a.args {
                 if arg.is_some() {
                     let u = &mut scratch.uses[arg.as_usize()];
                     *u = u.saturating_sub(1);
                 }
             }
-            a.mark_eliminated();
+            block.unlink(vr);
         }
+        cursor = prev_cursor;
     }
 }
 
-/// Constant-fold a pure armlet when all needed operands are constants.
-fn try_fold(op: Op, a: &Armlet, consts: &[Option<u64>]) -> Option<u64> {
+fn try_fold(op: Op, a: &crate::ir::Armlet, consts: &[Option<u64>]) -> Option<u64> {
     let get = |v: ValueRef| -> Option<u64> {
         if v.is_none() { None } else { consts[v.as_usize()] }
     };

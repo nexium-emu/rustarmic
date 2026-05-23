@@ -1,26 +1,15 @@
-//! Basic block: a flat `Vec<Armlet>` plus a terminator descriptor.
-
+use crate::ir::armlet::LINK_NONE;
 use crate::ir::{Armlet, Op, ValueRef};
 
-/// What happens at the end of this block — driven by the final terminator
-/// armlet but flattened here for convenience for the backend and chaining.
 #[derive(Clone, Copy, Debug)]
 pub enum Terminal {
-    /// We haven't translated a terminator yet.
     Invalid,
-    /// Falls through to `next_pc` because we hit our budget.
     LinkBlock { next_pc: u64 },
-    /// Direct branch to a known PC (unconditional, B / BL).
     DirectBranch { target_pc: u64, link: bool },
-    /// Conditional direct branch; one side known, fall-through PC also known.
     ConditionalBranch { cond_nzcv: ValueRef, cond_code: u8, taken_pc: u64, not_taken_pc: u64 },
-    /// CBZ/CBNZ.
     CompareBranchZero { value: ValueRef, inverse: bool, taken_pc: u64, not_taken_pc: u64 },
-    /// TBZ/TBNZ.
     TestBranchBit { value: ValueRef, bit: u8, inverse: bool, taken_pc: u64, not_taken_pc: u64 },
-    /// Indirect branch (BR/RET): target only known at runtime.
     IndirectBranch { target: ValueRef, link: bool, is_ret: bool },
-    /// SVC/BRK/HVC: deliver an exception then return to host dispatch.
     Exception { kind: ExceptionKind, imm: u32 },
 }
 
@@ -29,29 +18,25 @@ pub enum ExceptionKind {
     Svc, Brk, Hvc, UnknownInst,
 }
 
-/// A translation unit.
-///
-/// Holds the flat SSA stream plus enough context to feed the backend.
 pub struct Block {
-    /// SSA instructions. Indices into this vector are stable `ValueRef`s.
     pub code: Vec<Armlet>,
-    /// Guest PC of the first instruction translated into this block.
+    pub head: u32,
+    pub tail: u32,
     pub start_pc: u64,
-    /// Guest PC one past the last instruction (i.e. fall-through PC).
     pub end_pc: u64,
-    /// Block terminator descriptor (also reflected by the final armlet).
     pub terminal: Terminal,
-    /// Cycle count estimate (1 per guest insn for now).
     pub cycles: u32,
 }
 
 impl Block {
-    /// Initial capacity sized for a typical hot block (~32 guest insns → ~96 armlets).
     pub const INITIAL_CAPACITY: usize = 128;
+    pub const MAX_NODES: usize = 65_536;
 
     pub fn new(start_pc: u64) -> Self {
         Self {
             code: Vec::with_capacity(Self::INITIAL_CAPACITY),
+            head: LINK_NONE,
+            tail: LINK_NONE,
             start_pc,
             end_pc: start_pc,
             terminal: Terminal::Invalid,
@@ -59,20 +44,64 @@ impl Block {
         }
     }
 
-    /// Push a new armlet and return its SSA name.
     #[inline]
-    pub fn push(&mut self, armlet: Armlet) -> ValueRef {
+    pub fn push(&mut self, mut armlet: Armlet) -> ValueRef {
         let idx = self.code.len() as u32;
-        debug_assert!(idx < u32::MAX, "block too large");
+        debug_assert!((idx as usize) < Self::MAX_NODES, "block exceeded MAX_NODES");
+        armlet.prev = self.tail;
+        armlet.next = LINK_NONE;
         self.code.push(armlet);
+        if self.tail != LINK_NONE {
+            self.code[self.tail as usize].next = idx;
+        } else {
+            self.head = idx;
+        }
+        self.tail = idx;
         ValueRef::new(idx)
     }
 
     #[inline]
-    pub fn len(&self) -> usize { self.code.len() }
+    pub fn unlink(&mut self, v: ValueRef) {
+        let idx = v.idx();
+        let (prev, next) = {
+            let n = &self.code[idx as usize];
+            (n.prev, n.next)
+        };
+        if prev != LINK_NONE { self.code[prev as usize].next = next; }
+        else                 { self.head = next; }
+        if next != LINK_NONE { self.code[next as usize].prev = prev; }
+        else                 { self.tail = prev; }
+        let n = &mut self.code[idx as usize];
+        n.prev = LINK_NONE;
+        n.next = LINK_NONE;
+        n.op = Op::Void;
+        n.args = [ValueRef::NONE; 4];
+    }
+
+    #[inline] pub fn len(&self)      -> usize { self.code.len() }
+    #[inline] pub fn is_empty(&self) -> bool  { self.head == LINK_NONE }
 
     #[inline]
-    pub fn is_empty(&self) -> bool { self.code.is_empty() }
+    pub fn head_vr(&self) -> Option<ValueRef> {
+        (self.head != LINK_NONE).then(|| ValueRef::new(self.head))
+    }
+
+    #[inline]
+    pub fn tail_vr(&self) -> Option<ValueRef> {
+        (self.tail != LINK_NONE).then(|| ValueRef::new(self.tail))
+    }
+
+    #[inline]
+    pub fn next_of(&self, v: ValueRef) -> Option<ValueRef> {
+        let n = self.code[v.as_usize()].next;
+        (n != LINK_NONE).then(|| ValueRef::new(n))
+    }
+
+    #[inline]
+    pub fn prev_of(&self, v: ValueRef) -> Option<ValueRef> {
+        let p = self.code[v.as_usize()].prev;
+        (p != LINK_NONE).then(|| ValueRef::new(p))
+    }
 
     #[inline]
     pub fn get(&self, v: ValueRef) -> &Armlet {
@@ -84,12 +113,41 @@ impl Block {
         &mut self.code[v.as_usize()]
     }
 
-    /// Walk armlets in program order, skipping eliminated slots.
-    #[inline]
-    pub fn iter_live(&self) -> impl Iterator<Item = (ValueRef, &Armlet)> {
-        self.code.iter().enumerate().filter_map(|(i, a)| {
-            if a.is_eliminated() || a.op == Op::Void { None }
-            else { Some((ValueRef::new(i as u32), a)) }
-        })
+    pub fn iter_live(&self) -> LiveIter<'_> {
+        LiveIter { block: self, cursor: self.head_vr() }
+    }
+
+    pub fn iter_live_rev(&self) -> RevLiveIter<'_> {
+        RevLiveIter { block: self, cursor: self.tail_vr() }
+    }
+}
+
+pub struct LiveIter<'b> {
+    block: &'b Block,
+    cursor: Option<ValueRef>,
+}
+
+impl<'b> Iterator for LiveIter<'b> {
+    type Item = (ValueRef, &'b Armlet);
+    fn next(&mut self) -> Option<Self::Item> {
+        let v = self.cursor?;
+        let a = &self.block.code[v.as_usize()];
+        self.cursor = self.block.next_of(v);
+        Some((v, a))
+    }
+}
+
+pub struct RevLiveIter<'b> {
+    block: &'b Block,
+    cursor: Option<ValueRef>,
+}
+
+impl<'b> Iterator for RevLiveIter<'b> {
+    type Item = (ValueRef, &'b Armlet);
+    fn next(&mut self) -> Option<Self::Item> {
+        let v = self.cursor?;
+        let a = &self.block.code[v.as_usize()];
+        self.cursor = self.block.prev_of(v);
+        Some((v, a))
     }
 }
