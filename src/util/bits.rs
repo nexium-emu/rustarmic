@@ -24,7 +24,7 @@ pub const fn sign_extend(value: u64, bits: u32) -> i64 {
 /// Returns `Some((value, encoding_valid))` or `None` for reserved encodings.
 /// Reference: ARMv8 ARM J1-7282 "DecodeBitMasks".
 pub fn decode_bit_masks(n: u32, imms: u32, immr: u32, width: u32) -> Option<u64> {
-    debug_assert!(width == 32 || width == 64);
+    assume::assume!(unsafe: width == 32 || width == 64);
     let combined = (n << 6) | (!imms & 0x3f);
     let len = 31u32.checked_sub(combined.leading_zeros())?;
     if len < 1 { return None; }
@@ -34,11 +34,13 @@ pub fn decode_bit_masks(n: u32, imms: u32, immr: u32, width: u32) -> Option<u64>
     let s = imms & levels;
     let r = immr & levels;
 
-    if s == levels { return None; } // reserved
+    if s == levels { return None; }
 
     let esize = 1u32 << len;
+    assume::assume!(unsafe: esize <= width);
+    assume::assume!(unsafe: esize.is_power_of_two() && esize >= 2);
+
     let welem: u64 = (1u64 << (s + 1)) - 1;
-    // ROR welem by r within esize.
     let welem_rotated: u64 = if r == 0 {
         welem
     } else {
@@ -46,7 +48,6 @@ pub fn decode_bit_masks(n: u32, imms: u32, immr: u32, width: u32) -> Option<u64>
         ((welem >> r) | (welem << (esize - r))) & mask
     };
 
-    // Replicate to fill `width`.
     let mut out: u64 = 0;
     let mut filled = 0u32;
     let chunk = if esize == 64 { u64::MAX } else { (1u64 << esize) - 1 };
