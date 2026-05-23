@@ -11,8 +11,14 @@ pub struct CodeCache {
     region:   Allocation,
     cursor:   usize,
     capacity: usize,
-    table:    HashMap<u64, *const u8>,
+    table:    HashMap<u64, Entry>,
     pending:  HashMap<u64, Vec<*mut u8>>,
+}
+
+#[derive(Clone, Copy)]
+struct Entry {
+    host_ptr:    *const u8,
+    body_offset: u32,
 }
 
 unsafe impl Send for CodeCache {}
@@ -32,14 +38,15 @@ impl CodeCache {
     }
 
     pub fn lookup(&self, pc: u64) -> Option<*const u8> {
-        self.table.get(&pc).copied()
+        self.table.get(&pc).map(|e| e.host_ptr)
     }
 
     pub fn install(
         &mut self,
         guest_pc: u64,
         bytes: &[u8],
-        chain: Option<ChainSite>,
+        chains: &[ChainSite],
+        body_offset: u32,
     ) -> Result<*const u8> {
         let aligned_cursor = (self.cursor + 15) & !15;
         if aligned_cursor + bytes.len() > self.capacity {
@@ -55,18 +62,20 @@ impl CodeCache {
             dst as *const u8
         };
 
-        self.table.insert(guest_pc, host_ptr);
+        let body_addr = unsafe { host_ptr.add(body_offset as usize) };
+        self.table.insert(guest_pc, Entry { host_ptr, body_offset });
 
         if let Some(patches) = self.pending.remove(&guest_pc) {
             for patch_addr in patches {
-                unsafe { patch_to_jmp(patch_addr, host_ptr); }
+                unsafe { patch_to_jmp(patch_addr, body_addr); }
             }
         }
 
-        if let Some(c) = chain {
+        for c in chains {
             let patch_addr = unsafe { (host_ptr as *mut u8).add(c.patch_offset as usize) };
-            if let Some(&target_host) = self.table.get(&c.target_pc) {
-                unsafe { patch_to_jmp(patch_addr, target_host); }
+            if let Some(entry) = self.table.get(&c.target_pc) {
+                let target_body = unsafe { entry.host_ptr.add(entry.body_offset as usize) };
+                unsafe { patch_to_jmp(patch_addr, target_body); }
             } else {
                 self.pending.entry(c.target_pc).or_default().push(patch_addr);
             }
