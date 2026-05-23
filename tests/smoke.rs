@@ -274,6 +274,91 @@ fn lslv_variable_shift() {
 }
 
 #[test]
+fn clz_typical_and_zero() {
+    // movz x0, #0
+    // clz  x1, x0   ; should be 64
+    // movz x2, #1
+    // clz  x3, x2   ; should be 63
+    let code = build_code(&[
+        0xD2800000, // movz x0, #0
+        0xDAC01001, // clz x1, x0
+        0xD2800022, // movz x2, #1
+        0xDAC01043, // clz x3, x2
+        0xD4200000,
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    run(code, &mut ctx);
+    assert_eq!(ctx.x[1], 64, "CLZ(0) should be 64");
+    assert_eq!(ctx.x[3], 63, "CLZ(1) should be 63");
+}
+
+#[test]
+fn cls_typical_and_all_same() {
+    // movz x0, #0 ; cls x1, x0   ; all-same -> 63
+    // movz x2, #1 ; neg x2, x2   ; x2 = -1; cls x3, x2 -> 63
+    // movz/movk x4 = 0x80000000_00000000; cls x5, x4 -> 0 (just sign bit, no matches after)
+    let code = build_code(&[
+        0xD2800000, // movz x0, #0
+        0xDAC01401, // cls x1, x0
+        0xD2800022, // movz x2, #1
+        0xCB0203E2, // neg x2, x2
+        0xDAC01443, // cls x3, x2
+        0xD2F00004, // movz x4, #0x8000, lsl #48
+        0xDAC01485, // cls x5, x4
+        0xD4200000,
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    run(code, &mut ctx);
+    assert_eq!(ctx.x[1], 63, "CLS(0) should be 63 (all bits match sign)");
+    assert_eq!(ctx.x[3], 63, "CLS(-1) should be 63");
+    assert_eq!(ctx.x[5], 0,  "CLS(0x8000...0) should be 0");
+}
+
+#[test]
+fn rbit_reverses_bits() {
+    // movz x0, #1
+    // rbit x1, x0   ; bit 0 set -> bit 63 set -> 0x8000_0000_0000_0000
+    let code = build_code(&[
+        0xD2800020, // movz x0, #1
+        0xDAC00001, // rbit x1, x0
+        0xD4200000,
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    run(code, &mut ctx);
+    assert_eq!(ctx.x[1], 0x8000_0000_0000_0000, "RBIT(1) should be 0x8000_0000_0000_0000");
+}
+
+#[test]
+fn rev_byte_swap() {
+    // movz/movk to build x0 = 0x0123_4567_89AB_CDEF
+    // rev  x1, x0   ; bswap -> 0xEFCD_AB89_6745_2301
+    let code = build_code(&[
+        0xD29BDE60, // movz x0, #0xDEF3  -- placeholder, build full value via movk
+        // We'll construct 0x0123_4567_89AB_CDEF via four MOVK lanes.
+        // movz x0, #0xCDEF
+        // movk x0, #0x89AB, lsl #16
+        // movk x0, #0x4567, lsl #32
+        // movk x0, #0x0123, lsl #48
+        // Replace placeholder with correct encodings:
+        0xD299BDE0, // movz x0, #0xCDEF
+        0xF2B13560, // movk x0, #0x89AB, lsl #16
+        0xF2C8ACE0, // movk x0, #0x4567, lsl #32
+        0xF2E02460, // movk x0, #0x0123, lsl #48
+        0xDAC00C01, // rev x1, x0
+        0xD4200000,
+    ]);
+    let code = code[4..].to_vec();
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    run(code, &mut ctx);
+    assert_eq!(ctx.x[0], 0x0123_4567_89AB_CDEF);
+    assert_eq!(ctx.x[1], 0xEFCD_AB89_6745_2301, "REV should byte-swap whole register");
+}
+
+#[test]
 fn add_sub_chain_uses_constant_folding() {
     // movz x0, #100
     // add  x1, x0, #1
