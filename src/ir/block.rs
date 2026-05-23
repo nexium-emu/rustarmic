@@ -19,12 +19,12 @@ pub enum ExceptionKind {
 }
 
 pub struct Block {
+    pub terminal: Terminal,
     pub code: Vec<Armlet>,
-    pub head: u32,
-    pub tail: u32,
     pub start_pc: u64,
     pub end_pc: u64,
-    pub terminal: Terminal,
+    pub head: u32,
+    pub tail: u32,
     pub cycles: u32,
 }
 
@@ -34,14 +34,24 @@ impl Block {
 
     pub fn new(start_pc: u64) -> Self {
         Self {
+            terminal: Terminal::Invalid,
             code: Vec::with_capacity(Self::INITIAL_CAPACITY),
-            head: LINK_NONE,
-            tail: LINK_NONE,
             start_pc,
             end_pc: start_pc,
-            terminal: Terminal::Invalid,
+            head: LINK_NONE,
+            tail: LINK_NONE,
             cycles: 0,
         }
+    }
+
+    pub fn reset(&mut self, start_pc: u64) {
+        self.code.clear();
+        self.terminal = Terminal::Invalid;
+        self.start_pc = start_pc;
+        self.end_pc = start_pc;
+        self.head = LINK_NONE;
+        self.tail = LINK_NONE;
+        self.cycles = 0;
     }
 
     #[inline]

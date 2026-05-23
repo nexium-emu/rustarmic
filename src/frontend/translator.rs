@@ -43,17 +43,18 @@ pub fn translate_instruction(em: &mut IrEmitter<'_>, inst: u32) -> Result<InstSt
 }
 
 /// Translate an entire basic block starting at `start_pc`.
-pub fn translate_block(
+pub fn translate_block_into(
+    block: &mut Block,
     start_pc: u64,
     fetch: &mut dyn FnMut(u64) -> Option<u32>,
     opts: TranslateOptions,
-) -> Result<Block> {
-    let mut block = Block::new(start_pc);
+) -> Result<()> {
+    block.reset(start_pc);
     let mut pc = start_pc;
 
     for _ in 0..opts.max_insts {
         let inst = fetch(pc).ok_or(Error::GuestMemory { addr: pc })?;
-        let mut em = IrEmitter::new(&mut block, pc);
+        let mut em = IrEmitter::new(block, pc);
 
         match translate_instruction(&mut em, inst)? {
             InstStatus::Continue => {
@@ -63,13 +64,12 @@ pub fn translate_block(
             InstStatus::Terminator => {
                 block.cycles = block.cycles.saturating_add(1);
                 block.end_pc = pc.wrapping_add(4);
-                return Ok(block);
+                return Ok(());
             }
         }
     }
 
-    // Budget exhausted — emit a fall-through link to next PC.
     block.end_pc = pc;
     block.terminal = Terminal::LinkBlock { next_pc: pc };
-    Ok(block)
+    Ok(())
 }
