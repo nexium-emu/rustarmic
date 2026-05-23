@@ -96,3 +96,53 @@ pub enum RegSize {
     W = 32, // 32-bit (writes zero-extend in AArch64)
     X = 64, // 64-bit
 }
+
+/// Packed truth tables for each AArch64 condition code.
+///
+/// `COND_TRUTH[cond as usize]` is a `u16` where bit `n` is `1` iff the
+/// condition holds for NZCV value `n` (0..=15). The backend bakes this
+/// constant into emitted code and tests the bit at index `NZCV` to evaluate
+/// a condition in three x86 instructions (`mov` / `bt` / `setc`), replacing
+/// the ~12-instruction bit-extract-and-combine sequence.
+///
+/// Verified by `test_cond_truth_matches_check` in this module.
+pub const COND_TRUTH: [u16; 16] = [
+    0xF0F0, // EQ:  Z == 1
+    0x0F0F, // NE:  Z == 0
+    0xCCCC, // CS:  C == 1
+    0x3333, // CC:  C == 0
+    0xFF00, // MI:  N == 1
+    0x00FF, // PL:  N == 0
+    0xAAAA, // VS:  V == 1
+    0x5555, // VC:  V == 0
+    0x0C0C, // HI:  C && !Z
+    0xF3F3, // LS:  !(C && !Z)
+    0xAA55, // GE:  N == V
+    0x55AA, // LT:  N != V
+    0x0A05, // GT:  !Z && N==V
+    0xF5FA, // LE:  !(!Z && N==V)
+    0xFFFF, // AL:  always
+    0xFFFF, // NV:  always (deprecated to AL)
+];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cond_truth_matches_check() {
+        for cond_bits in 0..16u8 {
+            let cond = Cond::from_bits(cond_bits);
+            let tt = COND_TRUTH[cond as usize];
+            for nzcv in 0..16u8 {
+                let expected = Nzcv(nzcv).check(cond);
+                let actual = (tt >> nzcv) & 1 != 0;
+                assert_eq!(
+                    expected, actual,
+                    "cond={:?} nzcv={:04b}: truth-table says {}, check says {}",
+                    cond, nzcv, actual, expected
+                );
+            }
+        }
+    }
+}

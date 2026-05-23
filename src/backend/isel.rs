@@ -433,63 +433,9 @@ fn emit_csel(asm: &mut CodeAssembler, alloc: &Allocation, a: Armlet, dst: Option
 }
 
 pub fn emit_cond_check_byte(asm: &mut CodeAssembler, cond: Cond) -> Result<()> {
-    asm.mov(eax, edx)?;
-    asm.shr(eax, 3i32)?;
-    asm.and(eax, 1i32)?;
-
-    asm.mov(ecx, edx)?;
-    asm.shr(ecx, 2i32)?;
-    asm.and(ecx, 1i32)?;
-
-    asm.mov(r8d, edx)?;
-    asm.and(r8d, 1i32)?;
-
-    asm.shr(edx, 1i32)?;
-    asm.and(edx, 1i32)?;
-
-    match cond {
-        Cond::EQ => { asm.mov(eax, ecx)?; }
-        Cond::NE => { asm.mov(eax, ecx)?; asm.xor(eax, 1i32)?; }
-        Cond::CS => { asm.mov(eax, edx)?; }
-        Cond::CC => { asm.mov(eax, edx)?; asm.xor(eax, 1i32)?; }
-        Cond::MI => {}
-        Cond::PL => { asm.xor(eax, 1i32)?; }
-        Cond::VS => { asm.mov(eax, r8d)?; }
-        Cond::VC => { asm.mov(eax, r8d)?; asm.xor(eax, 1i32)?; }
-        Cond::HI => {
-            asm.mov(eax, ecx)?;
-            asm.xor(eax, 1i32)?;
-            asm.and(eax, edx)?;
-        }
-        Cond::LS => {
-            asm.mov(eax, ecx)?;
-            asm.xor(eax, 1i32)?;
-            asm.and(eax, edx)?;
-            asm.xor(eax, 1i32)?;
-        }
-        Cond::GE => {
-            asm.xor(eax, r8d)?;
-            asm.xor(eax, 1i32)?;
-        }
-        Cond::LT => {
-            asm.xor(eax, r8d)?;
-        }
-        Cond::GT => {
-            asm.xor(eax, r8d)?;
-            asm.xor(eax, 1i32)?;
-            asm.mov(esi, ecx)?;
-            asm.xor(esi, 1i32)?;
-            asm.and(eax, esi)?;
-        }
-        Cond::LE => {
-            asm.xor(eax, r8d)?;
-            asm.xor(eax, 1i32)?;
-            asm.mov(esi, ecx)?;
-            asm.xor(esi, 1i32)?;
-            asm.and(eax, esi)?;
-            asm.xor(eax, 1i32)?;
-        }
-        Cond::AL | Cond::NV => { asm.mov(eax, 1i32)?; }
-    }
+    let tt = crate::arch::COND_TRUTH[cond as usize] as i32;
+    asm.mov(eax, tt)?;
+    asm.bt(eax, edx)?;
+    asm.setc(al)?;
     Ok(())
 }
