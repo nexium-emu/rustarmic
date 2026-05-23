@@ -119,6 +119,35 @@ fn ldxr_stxr_success_then_self_fail() {
 }
 
 #[test]
+fn clrex_clears_reservation_so_stxr_fails() {
+    mem_init(0x10000);
+    mem_write(DATA_BASE + 0x300, 0xDEAD_BEEF_CAFE_BABE, 8);
+
+    // ldxr x2, [x0]   ; load + set reservation
+    // clrex           ; explicitly clear reservation
+    // movz x3, #0x11
+    // stxr w4, x3, [x0]  ; w4 must be 1 (no reservation)
+    let code = build_code(&[
+        0xC85F7C02, // ldxr x2, [x0]
+        0xD5033F5F, // clrex
+        0xD2800223, // movz x3, #0x11
+        0xC8047C03, // stxr w4, x3, [x0]
+        0xD4200000, // brk #0
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.x[0] = DATA_BASE + 0x300;
+    let mut mem = CodeMem { bytes: code, base: CODE_BASE };
+    let mut jit = Jit::new(JitConfig::default()).expect("jit init");
+    let exit = jit.run(&mut ctx, &mut mem).unwrap_or(ExitReason::Stopped);
+    assert!(matches!(exit, ExitReason::Brk(_)), "expected BRK");
+    assert_eq!(ctx.x[2], 0xDEAD_BEEF_CAFE_BABE, "ldxr loaded original");
+    assert_eq!(ctx.x[4], 1, "stxr must fail after clrex");
+    assert_eq!(mem_read(DATA_BASE + 0x300, 8), 0xDEAD_BEEF_CAFE_BABE,
+        "memory unchanged");
+}
+
+#[test]
 fn str_then_ldr_round_trip() {
     mem_init(0x10000);
 
