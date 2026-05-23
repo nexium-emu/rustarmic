@@ -101,6 +101,67 @@ fn movz_into_x5_and_orr_reg() {
 }
 
 #[test]
+fn ubfm_zero_extend_byte() {
+    // movz x0, #0x1234ABCD low half; we just need a value with high bits set
+    // movz x0, #0xCD; movz x1, #0xFF; and x2, x0, x1  is enough to test masking
+    // Instead, exercise UBFM directly with a known constant.
+    //
+    // movz x0, #0xFFFF
+    // ubfm x1, x0, #0, #7    ; extract bits [7:0] of x0 -> 0xFF
+    // brk #0
+    let code = build_code(&[
+        0xD29FFFE0, // movz x0, #0xFFFF
+        0xD3401C01, // ubfm x1, x0, #0, #7
+        0xD4200000,
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    run(code, &mut ctx);
+    assert_eq!(ctx.x[0], 0xFFFF);
+    assert_eq!(ctx.x[1], 0xFF, "UBFM should mask to low 8 bits");
+}
+
+#[test]
+fn csel_picks_based_on_nzcv() {
+    // movz x0, #100
+    // movz x1, #200
+    // subs xzr, x0, x1     ; sets flags: 100 - 200 negative, N=1
+    // csel x2, x0, x1, mi  ; cond MI true -> x2 = x0 = 100
+    // brk #0
+    let code = build_code(&[
+        0xD2800C80, // movz x0, #100
+        0xD2801901, // movz x1, #200
+        0xEB01001F, // subs xzr, x0, x1
+        0x9A814002, // csel x2, x0, x1, mi
+        0xD4200000,
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    run(code, &mut ctx);
+    assert_eq!(ctx.x[2], 100, "CSEL with MI should pick X0");
+}
+
+#[test]
+fn madd_three_operand() {
+    // movz x0, #5
+    // movz x1, #7
+    // movz x2, #3
+    // madd x3, x0, x1, x2   ; x3 = x2 + x0 * x1 = 3 + 5*7 = 38
+    // brk #0
+    let code = build_code(&[
+        0xD28000A0, // movz x0, #5
+        0xD28000E1, // movz x1, #7
+        0xD2800062, // movz x2, #3
+        0x9B010803, // madd x3, x0, x1, x2
+        0xD4200000,
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    run(code, &mut ctx);
+    assert_eq!(ctx.x[3], 38, "MADD should compute Ra + Rn*Rm");
+}
+
+#[test]
 fn add_sub_chain_uses_constant_folding() {
     // movz x0, #100
     // add  x1, x0, #1
