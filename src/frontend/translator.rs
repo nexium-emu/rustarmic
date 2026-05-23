@@ -41,6 +41,7 @@ pub fn translate_instruction(em: &mut IrEmitter<'_>, inst: u32) -> Result<InstSt
         Operation::LDST_UNSCALED(insn)    => translate::ldst_unscaled::translate(em, insn),
         Operation::LDST_REGOFF(insn)      => translate::ldst_regoff::translate(em, insn),
         Operation::LDSTEXCL(insn)         => translate::ldstexcl::translate(em, insn),
+        Operation::IC_SYSTEM(insn)        => translate::ic_system::translate(em, insn),
         Operation::LDSTPAIR_OFF(insn)     => translate::ldstpair_off::translate(em, insn),
         Operation::LDSTPAIR_INDEXED(insn) => translate::ldstpair_indexed::translate(em, insn),
         Operation::BRANCH_IMM(insn)       => translate::branch_imm::translate(em, insn),
