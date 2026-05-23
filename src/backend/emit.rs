@@ -1,17 +1,23 @@
-//! Top-level "compile a block" entry point.
-
 use iced_x86::code_asm::*;
+use iced_x86::BlockEncoderOptions;
 
 use crate::backend::abi::CTX_REG;
 use crate::backend::isel::{emit_armlet, emit_cond_check_byte};
 use crate::backend::prologue::{emit_epilogue, emit_prologue};
 use crate::backend::reg_alloc::Allocation;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::ir::{Block, Terminal};
 use crate::jit::context::cpu_offsets;
 
 pub struct EmittedBlock {
     pub code: Vec<u8>,
+    pub chain: Option<ChainSite>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ChainSite {
+    pub patch_offset: u32,
+    pub target_pc: u64,
 }
 
 const BITNESS: u32 = 64;
@@ -26,11 +32,36 @@ pub fn emit_block(block: &Block) -> Result<EmittedBlock> {
         emit_armlet(&mut asm, block, &alloc, vr.as_usize())?;
     }
 
-    emit_terminator(&mut asm, block, &alloc)?;
+    let mut patch_label = asm.create_label();
+    let chain_target = match block.terminal {
+        Terminal::LinkBlock { next_pc } |
+        Terminal::DirectBranch { target_pc: next_pc, link: _ } => {
+            asm.set_label(&mut patch_label)?;
+            asm.db(&[0xE9])?;
+            asm.dd(&[0u32])?;
+            asm.mov(rax, next_pc as i64)?;
+            Some(next_pc)
+        }
+        _ => {
+            emit_terminator(&mut asm, block, &alloc)?;
+            None
+        }
+    };
+
     emit_epilogue(&mut asm, alloc.frame_bytes)?;
 
-    let bytes = asm.assemble(0)?;
-    Ok(EmittedBlock { code: bytes })
+    let result = asm.assemble_options(0, BlockEncoderOptions::RETURN_NEW_INSTRUCTION_OFFSETS)
+        .map_err(|e| Error::Backend(e.to_string()))?;
+
+    let chain = if let Some(target_pc) = chain_target {
+        let patch_ip = result.label_ip(&patch_label)
+            .map_err(|e| Error::Backend(e.to_string()))?;
+        Some(ChainSite { patch_offset: patch_ip as u32, target_pc })
+    } else {
+        None
+    };
+
+    Ok(EmittedBlock { code: result.inner.code_buffer, chain })
 }
 
 fn emit_terminator(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation) -> Result<()> {
@@ -38,9 +69,8 @@ fn emit_terminator(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation) -
         Terminal::Invalid => {
             asm.mov(rax, block.end_pc as i64)?;
         }
-        Terminal::LinkBlock { next_pc } |
-        Terminal::DirectBranch { target_pc: next_pc, link: _ } => {
-            asm.mov(rax, next_pc as i64)?;
+        Terminal::LinkBlock { .. } | Terminal::DirectBranch { .. } => {
+            unreachable!("handled in caller");
         }
         Terminal::ConditionalBranch { cond_nzcv: _, cond_code, taken_pc, not_taken_pc } => {
             asm.movzx(edx, byte_ptr(CTX_REG + cpu_offsets::nzcv() as i32))?;

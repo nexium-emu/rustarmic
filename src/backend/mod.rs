@@ -25,4 +25,4 @@ pub mod isel;
 pub mod prologue;
 pub mod emit;
 
-pub use emit::{emit_block, EmittedBlock};
+pub use emit::{emit_block, ChainSite, EmittedBlock};

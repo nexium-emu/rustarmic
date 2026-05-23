@@ -1,17 +1,10 @@
-//! RWX code cache.
-//!
-//! Holds a single contiguous executable region. We bump-allocate compiled
-//! block bytes into it and remember a `guest_pc → host_ptr` map. When the
-//! cache fills up we currently bail (a full flush + retranslate is a future
-//! enhancement once we have block-linking patches to invalidate).
-
 use std::collections::HashMap;
 
 use region::{Allocation, Protection};
 
+use crate::backend::ChainSite;
 use crate::error::{Error, Result};
 
-/// Function pointer type emitted by the backend.
 pub type HostFn = unsafe extern "C" fn(*mut crate::jit::context::CpuContext) -> u64;
 
 pub struct CodeCache {
@@ -19,16 +12,13 @@ pub struct CodeCache {
     cursor:   usize,
     capacity: usize,
     table:    HashMap<u64, *const u8>,
+    pending:  HashMap<u64, Vec<*mut u8>>,
 }
 
 unsafe impl Send for CodeCache {}
 
 impl CodeCache {
     pub fn new(bytes: usize) -> Result<Self> {
-        // Allocate readable/writable/executable memory. `region::alloc` rounds
-        // to page size internally. We start RW and flip to RWX after the first
-        // install so the platform can keep us happy with stricter W^X policies
-        // when we later add the per-page protection toggle. For now: stay RWX.
         let allocation = region::alloc(bytes, Protection::READ_WRITE_EXECUTE)
             .map_err(|e| Error::HostAlloc(e.to_string()))?;
         let capacity = allocation.len();
@@ -37,6 +27,7 @@ impl CodeCache {
             cursor: 0,
             capacity,
             table: HashMap::new(),
+            pending: HashMap::new(),
         })
     }
 
@@ -44,26 +35,59 @@ impl CodeCache {
         self.table.get(&pc).copied()
     }
 
-    pub fn install(&mut self, guest_pc: u64, bytes: &[u8]) -> Result<*const u8> {
-        // 16-byte align for branch-predictor friendliness.
+    pub fn install(
+        &mut self,
+        guest_pc: u64,
+        bytes: &[u8],
+        chain: Option<ChainSite>,
+    ) -> Result<*const u8> {
         let aligned_cursor = (self.cursor + 15) & !15;
         if aligned_cursor + bytes.len() > self.capacity {
             return Err(Error::CodeCacheFull);
         }
-        // SAFETY: region is RWX, allocation guarantees the slice lives as long
-        // as `self`, and we hold exclusive `&mut self`.
-        unsafe {
+        let host_ptr = unsafe {
             let base = self.region.as_mut_ptr::<u8>();
             let dst = base.add(aligned_cursor);
             core::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len());
             self.cursor = aligned_cursor + bytes.len();
-            // i-cache flush is a no-op on x86_64 (coherent), but stay correct
-            // for future ARM hosts.
             #[cfg(target_arch = "x86_64")]
             { core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst); }
+            dst as *const u8
+        };
 
-            self.table.insert(guest_pc, dst as *const u8);
-            Ok(dst as *const u8)
+        self.table.insert(guest_pc, host_ptr);
+
+        if let Some(patches) = self.pending.remove(&guest_pc) {
+            for patch_addr in patches {
+                unsafe { patch_to_jmp(patch_addr, host_ptr); }
+            }
+        }
+
+        if let Some(c) = chain {
+            let patch_addr = unsafe { (host_ptr as *mut u8).add(c.patch_offset as usize) };
+            if let Some(&target_host) = self.table.get(&c.target_pc) {
+                unsafe { patch_to_jmp(patch_addr, target_host); }
+            } else {
+                self.pending.entry(c.target_pc).or_default().push(patch_addr);
+            }
+        }
+
+        Ok(host_ptr)
+    }
+}
+
+unsafe fn patch_to_jmp(patch_addr: *mut u8, target: *const u8) {
+    let rel = (target as isize).wrapping_sub((patch_addr as isize).wrapping_add(5));
+    if rel < i32::MIN as isize || rel > i32::MAX as isize {
+        return;
+    }
+    unsafe {
+        patch_addr.write(0xE9);
+        let rel_bytes = (rel as i32).to_le_bytes();
+        for i in 0..4 {
+            patch_addr.add(1 + i).write(rel_bytes[i]);
         }
     }
+    #[cfg(target_arch = "x86_64")]
+    { core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst); }
 }

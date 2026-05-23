@@ -69,7 +69,7 @@ impl Jit {
                 )?;
                 optimize_with_scratch(&mut self.block, &mut self.scratch);
                 let emitted = crate::backend::emit_block(&self.block)?;
-                self.cache.install(pc, &emitted.code)?
+                self.cache.install(pc, &emitted.code, emitted.chain)?
             };
 
             let next_pc = unsafe {
