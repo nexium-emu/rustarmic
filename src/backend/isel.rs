@@ -153,6 +153,11 @@ pub fn emit_armlet(
         Op::Store8 | Op::Store16 | Op::Store32 | Op::Store64 =>
             emit_store(asm, alloc, a, a.op.size_bytes())?,
 
+        Op::LoadEx8 | Op::LoadEx16 | Op::LoadEx32 | Op::LoadEx64 =>
+            emit_load_ex(asm, alloc, a, dst, a.op.size_bytes())?,
+        Op::StoreEx8 | Op::StoreEx16 | Op::StoreEx32 | Op::StoreEx64 =>
+            emit_store_ex(asm, alloc, a, dst, a.op.size_bytes())?,
+
         Op::Csel32 | Op::Csel64 => emit_csel(asm, alloc, a, dst)?,
 
         op if op.is_terminator() => {}
@@ -746,6 +751,88 @@ fn emit_bswap(
         asm.bswap(eax)?;
         asm.mov(dword_ptr(rbp - d.stack_offset), eax)?;
     }
+    Ok(())
+}
+
+fn emit_load_ex(
+    asm: &mut CodeAssembler,
+    alloc: &Allocation,
+    a: Armlet,
+    dst: Option<ValueLoc>,
+    bytes: u32,
+) -> Result<()> {
+    let addr_loc = alloc.loc(a.args[0]);
+    let d = dst.unwrap();
+    asm.mov(SCRATCH1, qword_ptr(rbp - addr_loc.stack_offset))?;
+    asm.mov(ARG3_REG, CTX_REG)?;
+    let fn_addr = match bytes {
+        1 => addr_mem_read8(),
+        2 => addr_mem_read16(),
+        4 => addr_mem_read32(),
+        8 => addr_mem_read64(),
+        _ => return Err(Error::Backend("unsupported ldex width".into())),
+    };
+    asm.sub(rsp, CALL_PRECALL_SUB)?;
+    asm.mov(SCRATCH0, fn_addr as i64)?;
+    asm.call(SCRATCH0)?;
+    asm.add(rsp, CALL_PRECALL_SUB)?;
+    match bytes {
+        1 | 2 | 4 => asm.mov(dword_ptr(rbp - d.stack_offset), eax)?,
+        8         => asm.mov(qword_ptr(rbp - d.stack_offset), SCRATCH0)?,
+        _ => unreachable!(),
+    }
+    asm.mov(SCRATCH1, qword_ptr(rbp - addr_loc.stack_offset))?;
+    asm.mov(qword_ptr(CTX_REG + cpu_offsets::exclusive_addr() as i32), SCRATCH1)?;
+    asm.mov(byte_ptr(CTX_REG + cpu_offsets::exclusive_size() as i32), bytes as i32)?;
+    Ok(())
+}
+
+fn emit_store_ex(
+    asm: &mut CodeAssembler,
+    alloc: &Allocation,
+    a: Armlet,
+    dst: Option<ValueLoc>,
+    bytes: u32,
+) -> Result<()> {
+    let addr_loc = alloc.loc(a.args[0]);
+    let val_loc  = alloc.loc(a.args[1]);
+    let d = dst.unwrap();
+
+    let mut lbl_fail = asm.create_label();
+    let mut lbl_done = asm.create_label();
+
+    asm.mov(SCRATCH1, qword_ptr(rbp - addr_loc.stack_offset))?;
+    asm.cmp(qword_ptr(CTX_REG + cpu_offsets::exclusive_addr() as i32), SCRATCH1)?;
+    asm.jne(lbl_fail)?;
+    asm.cmp(byte_ptr(CTX_REG + cpu_offsets::exclusive_size() as i32), bytes as i32)?;
+    asm.jne(lbl_fail)?;
+
+    if bytes == 8 {
+        asm.mov(SCRATCH3, qword_ptr(rbp - val_loc.stack_offset))?;
+    } else {
+        asm.mov(eax_from(SCRATCH3), dword_ptr(rbp - val_loc.stack_offset))?;
+    }
+    asm.mov(ARG3_REG, CTX_REG)?;
+    let fn_addr = match bytes {
+        1 => addr_mem_write8(),
+        2 => addr_mem_write16(),
+        4 => addr_mem_write32(),
+        8 => addr_mem_write64(),
+        _ => return Err(Error::Backend("unsupported stex width".into())),
+    };
+    asm.sub(rsp, CALL_PRECALL_SUB)?;
+    asm.mov(SCRATCH0, fn_addr as i64)?;
+    asm.call(SCRATCH0)?;
+    asm.add(rsp, CALL_PRECALL_SUB)?;
+    asm.xor(eax, eax)?;
+    asm.jmp(lbl_done)?;
+
+    asm.set_label(&mut lbl_fail)?;
+    asm.mov(eax, 1i32)?;
+
+    asm.set_label(&mut lbl_done)?;
+    asm.mov(byte_ptr(CTX_REG + cpu_offsets::exclusive_size() as i32), 0i32)?;
+    asm.mov(dword_ptr(rbp - d.stack_offset), eax)?;
     Ok(())
 }
 

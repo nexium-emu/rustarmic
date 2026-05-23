@@ -6,9 +6,11 @@ pub struct CpuContext {
     pub sp: u64,
     pub v: [[u64; 2]; NUM_VREGS],
     pub pc: u64,
+    pub exclusive_addr: u64,
     pub mem_base: *mut u8,
     pub nzcv: u8,
-    _pad0: [u8; 7],
+    pub exclusive_size: u8,
+    _pad0: [u8; 6],
 }
 
 unsafe impl Send for CpuContext {}
@@ -20,9 +22,11 @@ impl Default for CpuContext {
             sp: 0,
             v: [[0; 2]; NUM_VREGS],
             pc: 0,
+            exclusive_addr: 0,
             mem_base: core::ptr::null_mut(),
             nzcv: 0,
-            _pad0: [0; 7],
+            exclusive_size: 0,
+            _pad0: [0; 6],
         }
     }
 }
@@ -34,11 +38,13 @@ pub mod cpu_offsets {
     #[inline] pub const fn xreg(i: usize) -> usize {
         offset_of!(CpuContext, x) + i * core::mem::size_of::<u64>()
     }
-    #[inline] pub const fn sp()       -> usize { offset_of!(CpuContext, sp) }
-    #[inline] pub const fn pc()       -> usize { offset_of!(CpuContext, pc) }
-    #[inline] pub const fn nzcv()     -> usize { offset_of!(CpuContext, nzcv) }
+    #[inline] pub const fn sp()        -> usize { offset_of!(CpuContext, sp) }
+    #[inline] pub const fn pc()        -> usize { offset_of!(CpuContext, pc) }
+    #[inline] pub const fn nzcv()      -> usize { offset_of!(CpuContext, nzcv) }
     #[inline] pub const fn vreg(i: usize) -> usize {
         offset_of!(CpuContext, v) + i * 16
     }
     #[inline] pub const fn mem_base() -> usize { offset_of!(CpuContext, mem_base) }
+    #[inline] pub const fn exclusive_addr() -> usize { offset_of!(CpuContext, exclusive_addr) }
+    #[inline] pub const fn exclusive_size() -> usize { offset_of!(CpuContext, exclusive_size) }
 }
