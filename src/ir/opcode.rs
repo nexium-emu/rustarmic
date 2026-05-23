@@ -63,6 +63,10 @@ pub enum Op {
 
     UDiv8 = 0x190, UDiv16 = 0x191, UDiv32 = 0x192, UDiv64 = 0x193,
     SDiv8 = 0x194, SDiv16 = 0x195, SDiv32 = 0x196, SDiv64 = 0x197,
+    // AArch64 div semantics — backend MUST guard:
+    //   UDiv/SDiv: divisor == 0  -> result = 0       (no #DE trap)
+    //   SDiv only: dividend == INT_MIN && divisor == -1 -> result = dividend (no overflow trap)
+    // x86 IDIV/DIV raise #DE in both cases; emit branches/cmov to bypass.
 
     Zext = 0x1A0,
     Sext = 0x1A4,
