@@ -22,7 +22,7 @@ pub struct Armlet {
     pub imm:   u64,
 }
 
-pub const LINK_NONE: u32 = u32::MAX;
+pub const LINK_NONE: u32 = 0;
 
 const _: () = {
     assert!(core::mem::size_of::<Armlet>() == 40);

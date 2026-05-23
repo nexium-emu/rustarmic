@@ -33,9 +33,11 @@ impl Block {
     pub const MAX_NODES: usize = 65_536;
 
     pub fn new(start_pc: u64) -> Self {
+        let mut code = Vec::with_capacity(Self::INITIAL_CAPACITY);
+        code.push(Armlet::new(Op::Void, crate::ir::Ty::Void));
         Self {
             terminal: Terminal::Invalid,
-            code: Vec::with_capacity(Self::INITIAL_CAPACITY),
+            code,
             start_pc,
             end_pc: start_pc,
             head: LINK_NONE,
@@ -46,6 +48,7 @@ impl Block {
 
     pub fn reset(&mut self, start_pc: u64) {
         self.code.clear();
+        self.code.push(Armlet::new(Op::Void, crate::ir::Ty::Void));
         self.terminal = Terminal::Invalid;
         self.start_pc = start_pc;
         self.end_pc = start_pc;

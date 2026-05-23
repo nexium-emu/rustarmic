@@ -10,13 +10,12 @@
 pub struct ValueRef(pub u32);
 
 impl ValueRef {
-    /// Sentinel used in unused argument slots.
-    pub const NONE: ValueRef = ValueRef(u32::MAX);
+    pub const NONE: ValueRef = ValueRef(0);
 
     #[inline] pub const fn new(idx: u32) -> Self { Self(idx) }
     #[inline] pub const fn idx(self) -> u32     { self.0 }
-    #[inline] pub const fn is_none(self) -> bool { self.0 == u32::MAX }
-    #[inline] pub const fn is_some(self) -> bool { self.0 != u32::MAX }
+    #[inline] pub const fn is_none(self) -> bool { self.0 == 0 }
+    #[inline] pub const fn is_some(self) -> bool { self.0 != 0 }
     #[inline] pub const fn as_usize(self) -> usize { self.0 as usize }
 }
 
