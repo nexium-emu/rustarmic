@@ -142,6 +142,7 @@ pub enum Op {
     Svc            = 0x710,
     Hvc            = 0x714,
     MemoryBarrier  = 0x718,
+    Clrex          = 0x71C,
 }
 
 impl Op {
@@ -172,7 +173,7 @@ impl Op {
         if matches!(self,
             SetX | SetW | SetSp | SetNzcv | SetV
             | AddsFlags32 | AddsFlags64 | SubsFlags32 | SubsFlags64
-            | Mrs | Msr | Brk | Svc | Hvc | Hint | MemoryBarrier
+            | Mrs | Msr | Brk | Svc | Hvc | Hint | MemoryBarrier | Clrex
         ) {
             return true;
         }

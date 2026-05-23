@@ -164,6 +164,10 @@ pub fn emit_armlet(
 
         Op::Hint | Op::MemoryBarrier => {}
 
+        Op::Clrex => {
+            asm.mov(byte_ptr(CTX_REG + cpu_offsets::exclusive_size() as i32), 0i32)?;
+        }
+
         other => return Err(Error::Unsupported {
             pc: block.start_pc,
             opcode: other as u32,
