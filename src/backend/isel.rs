@@ -1,23 +1,12 @@
-//! Per-opcode instruction selection. Each opcode translates to a tiny x86
-//! sequence that:
-//!
-//! 1. Loads operands from their stack slots into scratch registers.
-//! 2. Performs the work.
-//! 3. Stores the result back to the destination slot.
-//!
-//! Stack offsets are negative from `rbp`; the helper `slot(off)` builds the
-//! correctly-sized memory operand based on the slot width.
-
 use iced_x86::code_asm::*;
 
 use crate::arch::{Cond, NUM_GPRS, ZR_ENCODING};
-use crate::backend::abi::{CTX_REG, SCRATCH1, SCRATCH2, SCRATCH3};
+use crate::backend::abi::{CTX_REG, SCRATCH0, SCRATCH1, SCRATCH2, SCRATCH3};
 use crate::backend::reg_alloc::{Allocation, ValueLoc};
 use crate::error::{Error, Result};
 use crate::ir::{Armlet, Block, Op, Ty, ValueRef};
 use crate::jit::context::cpu_offsets;
 
-/// Emit the body of a single armlet.
 pub fn emit_armlet(
     asm: &mut CodeAssembler,
     block: &Block,
@@ -36,8 +25,8 @@ pub fn emit_armlet(
         Op::Identity => {
             if let Some(d) = dst {
                 let src_loc = alloc.loc(a.args[0]);
-                load_int(asm, SCRATCH1, src_loc)?;
-                store_int(asm, d, SCRATCH1)?;
+                load_int(asm, SCRATCH0, src_loc)?;
+                store_int(asm, d, SCRATCH0)?;
             }
         }
 
@@ -48,45 +37,43 @@ pub fn emit_armlet(
         }
         Op::ConstU64 => {
             let d = dst.unwrap();
-            asm.mov(SCRATCH1, a.imm as i64)?;
-            asm.mov(qword_ptr(rbp - d.stack_offset), SCRATCH1)?;
+            asm.mov(SCRATCH0, a.imm as i64)?;
+            asm.mov(qword_ptr(rbp - d.stack_offset), SCRATCH0)?;
         }
 
-        // ── GPR I/O ─────────────────────────────────────────────────────────
         Op::GetX => {
             let d = dst.unwrap();
             let reg = a.imm as usize;
-            load_guest_x(asm, SCRATCH1, reg)?;
-            store_int(asm, d, SCRATCH1)?;
+            load_guest_x(asm, SCRATCH0, reg)?;
+            store_int(asm, d, SCRATCH0)?;
         }
         Op::GetW => {
             let d = dst.unwrap();
             let reg = a.imm as usize;
-            load_guest_x(asm, SCRATCH1, reg)?;
+            load_guest_x(asm, SCRATCH0, reg)?;
             asm.mov(dword_ptr(rbp - d.stack_offset), eax)?;
         }
         Op::SetX => {
             let reg = a.imm as usize;
             let src_loc = alloc.loc(a.args[0]);
-            load_int(asm, SCRATCH1, src_loc)?;
-            store_guest_x(asm, reg, SCRATCH1)?;
+            load_int(asm, SCRATCH0, src_loc)?;
+            store_guest_x(asm, reg, SCRATCH0)?;
         }
         Op::SetW => {
             let reg = a.imm as usize;
             let src_loc = alloc.loc(a.args[0]);
-            // 32-bit load into EAX zero-extends into RAX; store as 64-bit.
             asm.mov(eax, dword_ptr(rbp - src_loc.stack_offset))?;
-            store_guest_x(asm, reg, SCRATCH1)?;
+            store_guest_x(asm, reg, SCRATCH0)?;
         }
         Op::GetSp => {
             let d = dst.unwrap();
-            asm.mov(SCRATCH1, qword_ptr(CTX_REG + cpu_offsets::sp() as i32))?;
-            store_int(asm, d, SCRATCH1)?;
+            asm.mov(SCRATCH0, qword_ptr(CTX_REG + cpu_offsets::sp() as i32))?;
+            store_int(asm, d, SCRATCH0)?;
         }
         Op::SetSp => {
             let src_loc = alloc.loc(a.args[0]);
-            load_int(asm, SCRATCH1, src_loc)?;
-            asm.mov(qword_ptr(CTX_REG + cpu_offsets::sp() as i32), SCRATCH1)?;
+            load_int(asm, SCRATCH0, src_loc)?;
+            asm.mov(qword_ptr(CTX_REG + cpu_offsets::sp() as i32), SCRATCH0)?;
         }
         Op::GetNzcv => {
             let d = dst.unwrap();
@@ -100,11 +87,10 @@ pub fn emit_armlet(
         }
         Op::GetPc => {
             let d = dst.unwrap();
-            asm.mov(SCRATCH1, a.imm as i64)?;
-            store_int(asm, d, SCRATCH1)?;
+            asm.mov(SCRATCH0, a.imm as i64)?;
+            store_int(asm, d, SCRATCH0)?;
         }
 
-        // ── Integer ALU ────────────────────────────────────────────────────
         Op::Add32 => emit_binop_32(asm, alloc, a, dst, BinKind::Add)?,
         Op::Add64 => emit_binop_64(asm, alloc, a, dst, BinKind::Add)?,
         Op::Sub32 => emit_binop_32(asm, alloc, a, dst, BinKind::Sub)?,
@@ -132,12 +118,10 @@ pub fn emit_armlet(
         Op::Neg32 => emit_unop_32(asm, alloc, a, dst, UnopKind::Neg)?,
         Op::Neg64 => emit_unop_64(asm, alloc, a, dst, UnopKind::Neg)?,
 
-        // ── ADDS/SUBS — compute result and store NZCV ───────────────────────
         Op::AddsFlags32 | Op::AddsFlags64 | Op::SubsFlags32 | Op::SubsFlags64 => {
             emit_flagged_addsub(asm, alloc, a, dst)?;
         }
 
-        // ── Memory ─────────────────────────────────────────────────────────
         Op::Load8  => emit_load(asm, alloc, a, dst, 1)?,
         Op::Load16 => emit_load(asm, alloc, a, dst, 2)?,
         Op::Load32 => emit_load(asm, alloc, a, dst, 4)?,
@@ -147,13 +131,10 @@ pub fn emit_armlet(
         Op::Store32 => emit_store(asm, alloc, a, 4)?,
         Op::Store64 => emit_store(asm, alloc, a, 8)?,
 
-        // ── Csel ────────────────────────────────────────────────────────────
         Op::Csel32 | Op::Csel64 => emit_csel(asm, alloc, a, dst)?,
 
-        // ── Terminators are handled separately by emit_block ────────────────
         op if op.is_terminator() => {}
 
-        // ── Hints / barriers: no-op ─────────────────────────────────────────
         Op::Hint | Op::MemoryBarrier => {}
 
         other => return Err(Error::Unsupported {
@@ -164,8 +145,6 @@ pub fn emit_armlet(
 
     Ok(())
 }
-
-// ─── Helpers ────────────────────────────────────────────────────────────────
 
 fn load_int(asm: &mut CodeAssembler, reg: AsmRegister64, loc: ValueLoc) -> Result<()> {
     match loc.width {
@@ -185,8 +164,13 @@ fn store_int(asm: &mut CodeAssembler, loc: ValueLoc, reg: AsmRegister64) -> Resu
 
 #[inline]
 fn eax_from(r: AsmRegister64) -> AsmRegister32 {
-    if r == rax { eax } else if r == r10 { r10d } else if r == r11 { r11d }
-    else if r == rcx { ecx } else if r == rdx { edx } else if r == r8 { r8d } else if r == r9 { r9d }
+    if r == rax { eax }
+    else if r == rcx { ecx }
+    else if r == rdx { edx }
+    else if r == rsi { esi }
+    else if r == rdi { edi }
+    else if r == r8  { r8d }
+    else if r == r9  { r9d }
     else { panic!("no 32-bit alias mapped for register"); }
 }
 
@@ -242,9 +226,9 @@ fn emit_binop_32(asm: &mut CodeAssembler, alloc: &Allocation, a: Armlet, dst: Op
     let l = alloc.loc(a.args[0]);
     let r = alloc.loc(a.args[1]);
     let d = dst.unwrap();
-    asm.mov(eax, dword_ptr(rbp - l.stack_offset))?;
-    asm.mov(r10d, dword_ptr(rbp - r.stack_offset))?;
-    apply_bin_32(asm, k, eax, r10d)?;
+    asm.mov(eax,                 dword_ptr(rbp - l.stack_offset))?;
+    asm.mov(eax_from(SCRATCH1),  dword_ptr(rbp - r.stack_offset))?;
+    apply_bin_32(asm, k, eax, eax_from(SCRATCH1))?;
     asm.mov(dword_ptr(rbp - d.stack_offset), eax)?;
     Ok(())
 }
@@ -253,10 +237,10 @@ fn emit_binop_64(asm: &mut CodeAssembler, alloc: &Allocation, a: Armlet, dst: Op
     let l = alloc.loc(a.args[0]);
     let r = alloc.loc(a.args[1]);
     let d = dst.unwrap();
-    asm.mov(SCRATCH1, qword_ptr(rbp - l.stack_offset))?;
-    asm.mov(SCRATCH2, qword_ptr(rbp - r.stack_offset))?;
-    apply_bin_64(asm, k, SCRATCH1, SCRATCH2)?;
-    asm.mov(qword_ptr(rbp - d.stack_offset), SCRATCH1)?;
+    asm.mov(SCRATCH0, qword_ptr(rbp - l.stack_offset))?;
+    asm.mov(SCRATCH1, qword_ptr(rbp - r.stack_offset))?;
+    apply_bin_64(asm, k, SCRATCH0, SCRATCH1)?;
+    asm.mov(qword_ptr(rbp - d.stack_offset), SCRATCH0)?;
     Ok(())
 }
 
@@ -278,12 +262,12 @@ fn emit_unop_32(asm: &mut CodeAssembler, alloc: &Allocation, a: Armlet, dst: Opt
 fn emit_unop_64(asm: &mut CodeAssembler, alloc: &Allocation, a: Armlet, dst: Option<ValueLoc>, k: UnopKind) -> Result<()> {
     let l = alloc.loc(a.args[0]);
     let d = dst.unwrap();
-    asm.mov(SCRATCH1, qword_ptr(rbp - l.stack_offset))?;
+    asm.mov(SCRATCH0, qword_ptr(rbp - l.stack_offset))?;
     match k {
-        UnopKind::Not => asm.not(SCRATCH1)?,
-        UnopKind::Neg => asm.neg(SCRATCH1)?,
+        UnopKind::Not => asm.not(SCRATCH0)?,
+        UnopKind::Neg => asm.neg(SCRATCH0)?,
     }
-    asm.mov(qword_ptr(rbp - d.stack_offset), SCRATCH1)?;
+    asm.mov(qword_ptr(rbp - d.stack_offset), SCRATCH0)?;
     Ok(())
 }
 
@@ -310,15 +294,15 @@ fn emit_shift_64(asm: &mut CodeAssembler, alloc: &Allocation, a: Armlet, dst: Op
     let l = alloc.loc(a.args[0]);
     let r = alloc.loc(a.args[1]);
     let d = dst.unwrap();
-    asm.mov(SCRATCH1, qword_ptr(rbp - l.stack_offset))?;
+    asm.mov(SCRATCH0, qword_ptr(rbp - l.stack_offset))?;
     asm.mov(rcx, qword_ptr(rbp - r.stack_offset))?;
     match kind {
-        ShiftKind::Lsl => asm.shl(SCRATCH1, cl)?,
-        ShiftKind::Lsr => asm.shr(SCRATCH1, cl)?,
-        ShiftKind::Asr => asm.sar(SCRATCH1, cl)?,
-        ShiftKind::Ror => asm.ror(SCRATCH1, cl)?,
+        ShiftKind::Lsl => asm.shl(SCRATCH0, cl)?,
+        ShiftKind::Lsr => asm.shr(SCRATCH0, cl)?,
+        ShiftKind::Asr => asm.sar(SCRATCH0, cl)?,
+        ShiftKind::Ror => asm.ror(SCRATCH0, cl)?,
     }
-    asm.mov(qword_ptr(rbp - d.stack_offset), SCRATCH1)?;
+    asm.mov(qword_ptr(rbp - d.stack_offset), SCRATCH0)?;
     Ok(())
 }
 
@@ -331,41 +315,38 @@ fn emit_flagged_addsub(asm: &mut CodeAssembler, alloc: &Allocation, a: Armlet, d
     let is_sub = matches!(a.op, Op::SubsFlags32 | Op::SubsFlags64);
 
     if is_64 {
-        asm.mov(SCRATCH1, qword_ptr(rbp - l.stack_offset))?;
-        asm.mov(SCRATCH2, qword_ptr(rbp - r.stack_offset))?;
-        if is_sub { asm.sub(SCRATCH1, SCRATCH2)?; }
-        else      { asm.add(SCRATCH1, SCRATCH2)?; }
-        asm.mov(qword_ptr(rbp - d.stack_offset), SCRATCH1)?;
+        asm.mov(SCRATCH0, qword_ptr(rbp - l.stack_offset))?;
+        asm.mov(SCRATCH1, qword_ptr(rbp - r.stack_offset))?;
+        if is_sub { asm.sub(SCRATCH0, SCRATCH1)?; }
+        else      { asm.add(SCRATCH0, SCRATCH1)?; }
+        asm.mov(qword_ptr(rbp - d.stack_offset), SCRATCH0)?;
     } else {
         asm.mov(eax, dword_ptr(rbp - l.stack_offset))?;
-        asm.mov(r10d, dword_ptr(rbp - r.stack_offset))?;
-        if is_sub { asm.sub(eax, r10d)?; }
-        else      { asm.add(eax, r10d)?; }
+        asm.mov(eax_from(SCRATCH1), dword_ptr(rbp - r.stack_offset))?;
+        if is_sub { asm.sub(eax, eax_from(SCRATCH1))?; }
+        else      { asm.add(eax, eax_from(SCRATCH1))?; }
         asm.mov(dword_ptr(rbp - d.stack_offset), eax)?;
     }
 
-    // AArch64 NZCV from EFLAGS:
-    //   N = SF, Z = ZF, V = OF
-    //   C: ADD → CF; SUB → !CF.
-    asm.sets(dl)?;
-    asm.sete(dh)?;
-    asm.setc(cl)?;
-    asm.seto(ch)?;
+    asm.sets(r8b)?;
+    asm.sete(r9b)?;
+    asm.setc(r10b)?;
+    asm.seto(r11b)?;
 
     if is_sub {
-        asm.xor(cl, 1i32)?;
+        asm.xor(r10b, 1i32)?;
     }
 
-    asm.movzx(eax, dl)?;
+    asm.movzx(eax, r8b)?;
     asm.shl(eax, 3i32)?;
-    asm.movzx(r10d, dh)?;
-    asm.shl(r10d, 2i32)?;
-    asm.or(eax, r10d)?;
-    asm.movzx(r10d, cl)?;
-    asm.shl(r10d, 1i32)?;
-    asm.or(eax, r10d)?;
-    asm.movzx(r10d, ch)?;
-    asm.or(eax, r10d)?;
+    asm.movzx(esi, r9b)?;
+    asm.shl(esi, 2i32)?;
+    asm.or(eax, esi)?;
+    asm.movzx(esi, r10b)?;
+    asm.shl(esi, 1i32)?;
+    asm.or(eax, esi)?;
+    asm.movzx(esi, r11b)?;
+    asm.or(eax, esi)?;
 
     asm.mov(byte_ptr(CTX_REG + cpu_offsets::nzcv() as i32), al)?;
     Ok(())
@@ -374,18 +355,18 @@ fn emit_flagged_addsub(asm: &mut CodeAssembler, alloc: &Allocation, a: Armlet, d
 fn emit_load(asm: &mut CodeAssembler, alloc: &Allocation, a: Armlet, dst: Option<ValueLoc>, bytes: u32) -> Result<()> {
     let addr_loc = alloc.loc(a.args[0]);
     let d = dst.unwrap();
-    asm.mov(SCRATCH3, qword_ptr(rbp - addr_loc.stack_offset))?;
-    asm.mov(SCRATCH1, qword_ptr(CTX_REG + cpu_offsets::mem_base() as i32))?;
-    asm.add(SCRATCH1, SCRATCH3)?;
+    asm.mov(SCRATCH2, qword_ptr(rbp - addr_loc.stack_offset))?;
+    asm.mov(SCRATCH0, qword_ptr(CTX_REG + cpu_offsets::mem_base() as i32))?;
+    asm.add(SCRATCH0, SCRATCH2)?;
     match bytes {
-        1 => { asm.movzx(eax, byte_ptr(SCRATCH1))?;
+        1 => { asm.movzx(eax, byte_ptr(SCRATCH0))?;
                asm.mov(dword_ptr(rbp - d.stack_offset), eax)?; }
-        2 => { asm.movzx(eax, word_ptr(SCRATCH1))?;
+        2 => { asm.movzx(eax, word_ptr(SCRATCH0))?;
                asm.mov(dword_ptr(rbp - d.stack_offset), eax)?; }
-        4 => { asm.mov(eax, dword_ptr(SCRATCH1))?;
+        4 => { asm.mov(eax, dword_ptr(SCRATCH0))?;
                asm.mov(dword_ptr(rbp - d.stack_offset), eax)?; }
-        8 => { asm.mov(SCRATCH2, qword_ptr(SCRATCH1))?;
-               asm.mov(qword_ptr(rbp - d.stack_offset), SCRATCH2)?; }
+        8 => { asm.mov(SCRATCH1, qword_ptr(SCRATCH0))?;
+               asm.mov(qword_ptr(rbp - d.stack_offset), SCRATCH1)?; }
         _ => return Err(Error::Backend("unsupported load width".into())),
     }
     Ok(())
@@ -394,18 +375,18 @@ fn emit_load(asm: &mut CodeAssembler, alloc: &Allocation, a: Armlet, dst: Option
 fn emit_store(asm: &mut CodeAssembler, alloc: &Allocation, a: Armlet, bytes: u32) -> Result<()> {
     let addr_loc = alloc.loc(a.args[0]);
     let val_loc  = alloc.loc(a.args[1]);
-    asm.mov(SCRATCH3, qword_ptr(rbp - addr_loc.stack_offset))?;
-    asm.mov(SCRATCH1, qword_ptr(CTX_REG + cpu_offsets::mem_base() as i32))?;
-    asm.add(SCRATCH1, SCRATCH3)?;
+    asm.mov(SCRATCH2, qword_ptr(rbp - addr_loc.stack_offset))?;
+    asm.mov(SCRATCH0, qword_ptr(CTX_REG + cpu_offsets::mem_base() as i32))?;
+    asm.add(SCRATCH0, SCRATCH2)?;
     match bytes {
         1 => { asm.mov(eax, dword_ptr(rbp - val_loc.stack_offset))?;
-               asm.mov(byte_ptr(SCRATCH1), al)?; }
+               asm.mov(byte_ptr(SCRATCH0), al)?; }
         2 => { asm.mov(eax, dword_ptr(rbp - val_loc.stack_offset))?;
-               asm.mov(word_ptr(SCRATCH1), ax)?; }
+               asm.mov(word_ptr(SCRATCH0), ax)?; }
         4 => { asm.mov(eax, dword_ptr(rbp - val_loc.stack_offset))?;
-               asm.mov(dword_ptr(SCRATCH1), eax)?; }
-        8 => { asm.mov(SCRATCH2, qword_ptr(rbp - val_loc.stack_offset))?;
-               asm.mov(qword_ptr(SCRATCH1), SCRATCH2)?; }
+               asm.mov(dword_ptr(SCRATCH0), eax)?; }
+        8 => { asm.mov(SCRATCH1, qword_ptr(rbp - val_loc.stack_offset))?;
+               asm.mov(qword_ptr(SCRATCH0), SCRATCH1)?; }
         _ => return Err(Error::Backend("unsupported store width".into())),
     }
     Ok(())
@@ -418,7 +399,7 @@ fn emit_csel(asm: &mut CodeAssembler, alloc: &Allocation, a: Armlet, dst: Option
     let d  = dst.unwrap();
     let cond = Cond::from_bits(a.imm as u8);
 
-    asm.mov(r10d, dword_ptr(rbp - nz.stack_offset))?;
+    asm.mov(eax_from(SCRATCH3), dword_ptr(rbp - nz.stack_offset))?;
     let is_64 = matches!(a.op, Op::Csel64);
 
     emit_cond_check_byte(asm, cond)?;
@@ -430,37 +411,34 @@ fn emit_csel(asm: &mut CodeAssembler, alloc: &Allocation, a: Armlet, dst: Option
         asm.mov(qword_ptr(rbp - d.stack_offset), SCRATCH1)?;
     } else {
         asm.mov(eax, dword_ptr(rbp - r.stack_offset))?;
-        asm.mov(r10d, dword_ptr(rbp - l.stack_offset))?;
-        asm.cmovne(eax, r10d)?;
+        asm.mov(eax_from(SCRATCH1), dword_ptr(rbp - l.stack_offset))?;
+        asm.cmovne(eax, eax_from(SCRATCH1))?;
         asm.mov(dword_ptr(rbp - d.stack_offset), eax)?;
     }
     Ok(())
 }
 
-/// Materialize the boolean result of an AArch64 condition into AL.
-/// Caller must have loaded the NZCV nibble into the low 4 bits of r10d.
 pub fn emit_cond_check_byte(asm: &mut CodeAssembler, cond: Cond) -> Result<()> {
-    asm.mov(eax, r10d)?;
+    asm.mov(eax, edx)?;
     asm.shr(eax, 3i32)?;
-    asm.and(eax, 1i32)?;     // eax = N
+    asm.and(eax, 1i32)?;
 
-    asm.mov(ecx, r10d)?;
+    asm.mov(ecx, edx)?;
     asm.shr(ecx, 2i32)?;
-    asm.and(ecx, 1i32)?;     // ecx = Z
+    asm.and(ecx, 1i32)?;
 
-    asm.mov(edx, r10d)?;
+    asm.mov(r8d, edx)?;
+    asm.and(r8d, 1i32)?;
+
     asm.shr(edx, 1i32)?;
-    asm.and(edx, 1i32)?;     // edx = C
-
-    asm.mov(r8d, r10d)?;
-    asm.and(r8d, 1i32)?;     // r8d = V
+    asm.and(edx, 1i32)?;
 
     match cond {
         Cond::EQ => { asm.mov(eax, ecx)?; }
         Cond::NE => { asm.mov(eax, ecx)?; asm.xor(eax, 1i32)?; }
         Cond::CS => { asm.mov(eax, edx)?; }
         Cond::CC => { asm.mov(eax, edx)?; asm.xor(eax, 1i32)?; }
-        Cond::MI => { /* eax already = N */ }
+        Cond::MI => {}
         Cond::PL => { asm.xor(eax, 1i32)?; }
         Cond::VS => { asm.mov(eax, r8d)?; }
         Cond::VC => { asm.mov(eax, r8d)?; asm.xor(eax, 1i32)?; }
@@ -485,16 +463,16 @@ pub fn emit_cond_check_byte(asm: &mut CodeAssembler, cond: Cond) -> Result<()> {
         Cond::GT => {
             asm.xor(eax, r8d)?;
             asm.xor(eax, 1i32)?;
-            asm.mov(r10d, ecx)?;
-            asm.xor(r10d, 1i32)?;
-            asm.and(eax, r10d)?;
+            asm.mov(esi, ecx)?;
+            asm.xor(esi, 1i32)?;
+            asm.and(eax, esi)?;
         }
         Cond::LE => {
             asm.xor(eax, r8d)?;
             asm.xor(eax, 1i32)?;
-            asm.mov(r10d, ecx)?;
-            asm.xor(r10d, 1i32)?;
-            asm.and(eax, r10d)?;
+            asm.mov(esi, ecx)?;
+            asm.xor(esi, 1i32)?;
+            asm.and(eax, esi)?;
             asm.xor(eax, 1i32)?;
         }
         Cond::AL | Cond::NV => { asm.mov(eax, 1i32)?; }

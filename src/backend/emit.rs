@@ -43,7 +43,7 @@ fn emit_terminator(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation) -
             asm.mov(rax, next_pc as i64)?;
         }
         Terminal::ConditionalBranch { cond_nzcv: _, cond_code, taken_pc, not_taken_pc } => {
-            asm.movzx(r10d, byte_ptr(CTX_REG + cpu_offsets::nzcv() as i32))?;
+            asm.movzx(edx, byte_ptr(CTX_REG + cpu_offsets::nzcv() as i32))?;
             emit_cond_check_byte(asm, crate::arch::Cond::from_bits(cond_code))?;
             asm.test(al, al)?;
             asm.mov(rax, not_taken_pc as i64)?;
