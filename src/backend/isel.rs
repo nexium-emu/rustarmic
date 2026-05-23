@@ -128,14 +128,10 @@ pub fn emit_armlet(
             emit_flagged_addsub(asm, alloc, a, dst)?;
         }
 
-        Op::Load8  => emit_load(asm, alloc, a, dst, 1)?,
-        Op::Load16 => emit_load(asm, alloc, a, dst, 2)?,
-        Op::Load32 => emit_load(asm, alloc, a, dst, 4)?,
-        Op::Load64 => emit_load(asm, alloc, a, dst, 8)?,
-        Op::Store8  => emit_store(asm, alloc, a, 1)?,
-        Op::Store16 => emit_store(asm, alloc, a, 2)?,
-        Op::Store32 => emit_store(asm, alloc, a, 4)?,
-        Op::Store64 => emit_store(asm, alloc, a, 8)?,
+        Op::Load8 | Op::Load16 | Op::Load32 | Op::Load64 =>
+            emit_load(asm, alloc, a, dst, a.op.size_bytes())?,
+        Op::Store8 | Op::Store16 | Op::Store32 | Op::Store64 =>
+            emit_store(asm, alloc, a, a.op.size_bytes())?,
 
         Op::Csel32 | Op::Csel64 => emit_csel(asm, alloc, a, dst)?,
 

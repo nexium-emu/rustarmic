@@ -1,221 +1,197 @@
-//! Armlet opcodes.
-//!
-//! Kept as a single `#[repr(u16)]` enum so it sits inside the 32-byte Armlet
-//! without bloating it. New opcodes go in the matching category — keep the
-//! list dense and avoid holes so the compiler can build dense match tables.
-
 #[repr(u16)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Op {
-    // ─── Pseudo / SSA bookkeeping ───────────────────────────────────────────
-    /// No-op, produced when an instruction has been DCE'd in place.
-    Void = 0,
-    /// %dst = %src — used by copy propagation. Lowered to nothing by the backend.
-    Identity,
-    /// 32-bit immediate (value packed in `Armlet::imm`).
-    ConstU32,
-    /// 64-bit immediate (value packed in `Armlet::imm`).
-    ConstU64,
-    /// 128-bit immediate (low half in `imm`, high half in `args[3]` re-used as raw bits — see armlet.rs helpers).
-    ConstU128,
+    Void     = 0x000,
+    Identity = 0x004,
 
-    // ─── Guest CPU state I/O ────────────────────────────────────────────────
-    /// Read 64-bit guest GPR. `imm` = register encoding (0..=30).
-    GetX,
-    /// Write 64-bit guest GPR. `args[0]` = value, `imm` = reg.
-    SetX,
-    /// Read 32-bit view of guest GPR (low 32 bits). `imm` = reg.
-    GetW,
-    /// Write 32-bit value into guest GPR, zero-extending the top half. `args[0]` = value, `imm` = reg.
-    SetW,
-    /// Read SP.
-    GetSp,
-    /// Write SP. `args[0]` = value.
-    SetSp,
-    /// Read NZCV as a 4-bit packed value.
-    GetNzcv,
-    /// Write NZCV. `args[0]` = packed nibble (U8 or NZCV-typed).
-    SetNzcv,
-    /// Read guest PC. `imm` = absolute guest PC value (PC is statically known per armlet).
-    GetPc,
-    /// Read 128-bit vector reg. `imm` = reg (0..=31).
-    GetV,
-    /// Write 128-bit vector reg. `args[0]` = value, `imm` = reg.
-    SetV,
+    ConstU32 = 0x012,
+    ConstU64 = 0x013,
+    ConstU128 = 0x014,
 
-    // ─── Integer ALU ────────────────────────────────────────────────────────
-    /// %dst = %a + %b (no flags).
-    Add32, Add64,
-    /// %dst = %a - %b (no flags).
-    Sub32, Sub64,
-    /// %dst = %a + %b + carry. `args[2]` = carry (U1).
-    Adc32, Adc64,
-    /// %dst = %a - %b - !carry. `args[2]` = carry (U1).
-    Sbc32, Sbc64,
-    /// Like Add/Sub but produces an NZCV-typed sibling via `GetNzcvFromOp` consumers.
-    AddsFlags32, AddsFlags64,
-    SubsFlags32, SubsFlags64,
+    GetX     = 0x020,
+    SetX     = 0x024,
+    GetW     = 0x028,
+    SetW     = 0x02C,
+    GetSp    = 0x030,
+    SetSp    = 0x034,
+    GetNzcv  = 0x038,
+    SetNzcv  = 0x03C,
+    GetPc    = 0x040,
+    GetV     = 0x044,
+    SetV     = 0x048,
 
-    And32, And64,
-    Or32, Or64,
-    Eor32, Eor64,
-    Bic32, Bic64,
-    Orn32, Orn64,
-    Eon32, Eon64,
-    Not32, Not64,
-    Neg32, Neg64,
+    Add8  = 0x100, Add16 = 0x101, Add32 = 0x102, Add64 = 0x103,
+    Sub8  = 0x104, Sub16 = 0x105, Sub32 = 0x106, Sub64 = 0x107,
+    Adc8  = 0x108, Adc16 = 0x109, Adc32 = 0x10A, Adc64 = 0x10B,
+    Sbc8  = 0x10C, Sbc16 = 0x10D, Sbc32 = 0x10E, Sbc64 = 0x10F,
 
-    /// Logical shifts and rotates. `args[1]` = shift amount (U8 or U32/U64).
-    Lsl32, Lsl64,
-    Lsr32, Lsr64,
-    Asr32, Asr64,
-    Ror32, Ror64,
+    AddsFlags8  = 0x110, AddsFlags16 = 0x111, AddsFlags32 = 0x112, AddsFlags64 = 0x113,
+    SubsFlags8  = 0x114, SubsFlags16 = 0x115, SubsFlags32 = 0x116, SubsFlags64 = 0x117,
 
-    /// Bitfield ops. `imm` = (immr << 8) | imms.
-    Ubfm32, Ubfm64,
-    Sbfm32, Sbfm64,
-    Bfm32,  Bfm64,
-    /// EXTR (also covers ROR-imm at translate time). `args[0]` = hi, `args[1]` = lo, `imm` = lsb.
-    Extr32, Extr64,
+    And8 = 0x118, And16 = 0x119, And32 = 0x11A, And64 = 0x11B,
+    Or8  = 0x11C, Or16  = 0x11D, Or32  = 0x11E, Or64  = 0x11F,
+    Eor8 = 0x120, Eor16 = 0x121, Eor32 = 0x122, Eor64 = 0x123,
+    Bic8 = 0x124, Bic16 = 0x125, Bic32 = 0x126, Bic64 = 0x127,
+    Orn8 = 0x128, Orn16 = 0x129, Orn32 = 0x12A, Orn64 = 0x12B,
+    Eon8 = 0x12C, Eon16 = 0x12D, Eon32 = 0x12E, Eon64 = 0x12F,
 
-    Mul32, Mul64,
-    /// MADD: %a * %b + %c.
-    Madd32, Madd64,
-    /// MSUB: %c - %a * %b.
-    Msub32, Msub64,
-    /// 64×64 → upper 64 of 128-bit product.
-    UMulH64, SMulH64,
-    /// 32×32 → 64.
-    UMull32, SMull32,
-    /// 32×32 → 64 then add 64.
-    UMAddl, SMAddl,
-    /// 32×32 → 64 then subtract from 64.
-    UMSubl, SMSubl,
+    Not8 = 0x130, Not16 = 0x131, Not32 = 0x132, Not64 = 0x133,
+    Neg8 = 0x134, Neg16 = 0x135, Neg32 = 0x136, Neg64 = 0x137,
 
-    UDiv32, UDiv64,
-    SDiv32, SDiv64,
+    Lsl8 = 0x140, Lsl16 = 0x141, Lsl32 = 0x142, Lsl64 = 0x143,
+    Lsr8 = 0x144, Lsr16 = 0x145, Lsr32 = 0x146, Lsr64 = 0x147,
+    Asr8 = 0x148, Asr16 = 0x149, Asr32 = 0x14A, Asr64 = 0x14B,
+    Ror8 = 0x14C, Ror16 = 0x14D, Ror32 = 0x14E, Ror64 = 0x14F,
 
-    /// Zero/Sign extend. The destination type encodes the target width.
-    Zext, Sext,
+    Ubfm8 = 0x150, Ubfm16 = 0x151, Ubfm32 = 0x152, Ubfm64 = 0x153,
+    Sbfm8 = 0x154, Sbfm16 = 0x155, Sbfm32 = 0x156, Sbfm64 = 0x157,
+    Bfm8  = 0x158, Bfm16  = 0x159, Bfm32  = 0x15A, Bfm64  = 0x15B,
+    Extr8 = 0x15C, Extr16 = 0x15D, Extr32 = 0x15E, Extr64 = 0x15F,
 
-    Clz32, Clz64,
-    Cls32, Cls64,
-    Rbit32, Rbit64,
-    Rev16, Rev32, Rev64,
+    Mul8  = 0x160, Mul16  = 0x161, Mul32  = 0x162, Mul64  = 0x163,
+    Madd8 = 0x164, Madd16 = 0x165, Madd32 = 0x166, Madd64 = 0x167,
+    Msub8 = 0x168, Msub16 = 0x169, Msub32 = 0x16A, Msub64 = 0x16B,
 
-    // ─── Compare / select ───────────────────────────────────────────────────
-    /// Conditional select — `args[0]`=true val, `args[1]`=false val, `imm` low byte = Cond, `args[2]`=NZCV.
-    Csel32, Csel64,
-    Csinc32, Csinc64,
-    Csinv32, Csinv64,
-    Csneg32, Csneg64,
+    UMulH64 = 0x16F,
+    SMulH64 = 0x173,
+    UMull32 = 0x176,
+    SMull32 = 0x17A,
+    UMAddl  = 0x17C,
+    SMAddl  = 0x180,
+    UMSubl  = 0x184,
+    SMSubl  = 0x188,
 
-    /// CCMP / CCMN. `args[0]`=a, `args[1]`=b, `args[2]`=NZCV, `imm` low byte=Cond, next byte=nzcv to use on fail.
-    CcmpReg32, CcmpReg64,
-    CcmpImm32, CcmpImm64,
-    CcmnReg32, CcmnReg64,
-    CcmnImm32, CcmnImm64,
+    UDiv8 = 0x190, UDiv16 = 0x191, UDiv32 = 0x192, UDiv64 = 0x193,
+    SDiv8 = 0x194, SDiv16 = 0x195, SDiv32 = 0x196, SDiv64 = 0x197,
 
-    // ─── Branches / terminators ─────────────────────────────────────────────
-    /// Unconditional direct branch. `imm` = absolute target PC. Always terminator.
-    Branch,
-    /// BL — link register set then branch. `imm` = target PC. Stores return PC into X30.
-    BranchLink,
-    /// Indirect branch through register value. `args[0]` = target.
-    BranchIndirect,
-    /// BLR — indirect with link.
-    BranchIndirectLink,
-    /// RET — indirect, hints x86 return stack.
-    Ret,
-    /// Conditional branch. `args[0]` = NZCV. `imm` low byte = Cond, high 56 bits = target PC.
-    BranchCond,
-    /// CBZ / CBNZ. `args[0]` = test value, `imm` = target PC, flags bit indicates inverse.
-    CbZ, CbNz,
-    /// TBZ / TBNZ. `args[0]` = test value, `imm` = (target_pc << 8) | bit_index, flags indicate inverse.
-    TbZ, TbNz,
+    Zext = 0x1A0,
+    Sext = 0x1A4,
 
-    // ─── Memory ─────────────────────────────────────────────────────────────
-    /// Load. `args[0]` = address (U64). Destination type encodes width.
-    Load8, Load16, Load32, Load64, Load128,
-    /// Sign-extending load. Destination width controlled by `Ty`.
-    LoadS8, LoadS16, LoadS32,
-    /// Store. `args[0]` = address (U64), `args[1]` = value.
-    Store8, Store16, Store32, Store64, Store128,
+    Clz8  = 0x1A8, Clz16  = 0x1A9, Clz32  = 0x1AA, Clz64  = 0x1AB,
+    Cls8  = 0x1AC, Cls16  = 0x1AD, Cls32  = 0x1AE, Cls64  = 0x1AF,
+    Rbit8 = 0x1B0, Rbit16 = 0x1B1, Rbit32 = 0x1B2, Rbit64 = 0x1B3,
+    Rev16 = 0x1B5, Rev32 = 0x1B6, Rev64 = 0x1B7,
 
-    /// Acquire/release variants. Backend inserts host fences as needed.
-    LoadAcq32, LoadAcq64,
-    StoreRel32, StoreRel64,
+    Csel8   = 0x200, Csel16   = 0x201, Csel32   = 0x202, Csel64   = 0x203,
+    Csinc8  = 0x204, Csinc16  = 0x205, Csinc32  = 0x206, Csinc64  = 0x207,
+    Csinv8  = 0x208, Csinv16  = 0x209, Csinv32  = 0x20A, Csinv64  = 0x20B,
+    Csneg8  = 0x20C, Csneg16  = 0x20D, Csneg32  = 0x20E, Csneg64  = 0x20F,
 
-    /// Exclusive load. `args[0]` = address. Latches address into context.
-    LoadEx32, LoadEx64,
-    /// Exclusive store. `args[0]` = address, `args[1]` = value. Returns U32 (0=success).
-    StoreEx32, StoreEx64,
+    CcmpReg8 = 0x210, CcmpReg16 = 0x211, CcmpReg32 = 0x212, CcmpReg64 = 0x213,
+    CcmpImm8 = 0x214, CcmpImm16 = 0x215, CcmpImm32 = 0x216, CcmpImm64 = 0x217,
+    CcmnReg8 = 0x218, CcmnReg16 = 0x219, CcmnReg32 = 0x21A, CcmnReg64 = 0x21B,
+    CcmnImm8 = 0x21C, CcmnImm16 = 0x21D, CcmnImm32 = 0x21E, CcmnImm64 = 0x21F,
 
-    /// Pair load/store. `args[0]` = address, `args[1]` = (store: value2 / load: unused).
-    /// Two destination types implied: for load the result is U128 holding {hi,lo}; for store
-    /// the values come from args[1] (lo) and args[2] (hi).
-    LoadPair32, LoadPair64,
-    StorePair32, StorePair64,
+    Branch              = 0x300,
+    BranchLink          = 0x304,
+    BranchIndirect      = 0x308,
+    BranchIndirectLink  = 0x30C,
+    Ret                 = 0x310,
+    BranchCond          = 0x314,
+    CbZ                 = 0x318,
+    CbNz                = 0x31C,
+    TbZ                 = 0x320,
+    TbNz                = 0x324,
 
-    // ─── FP / NEON (initial subset) ─────────────────────────────────────────
-    Fmov32, Fmov64,
-    Fadd32, Fadd64,
-    Fsub32, Fsub64,
-    Fmul32, Fmul64,
-    Fdiv32, Fdiv64,
-    Fneg32, Fneg64,
-    Fabs32, Fabs64,
-    Fsqrt32, Fsqrt64,
-    Fcmp32, Fcmp64,
+    Load8  = 0x400, Load16  = 0x401, Load32  = 0x402, Load64  = 0x403,
+    Load128 = 0x404,
 
-    /// Vector lane ops (initial — extend later).
-    VecAdd, VecSub, VecMul, VecAnd, VecOr, VecEor,
-    VecDup,
-    /// INS / UMOV / SMOV.
-    Ins, Umov, Smov,
+    LoadS8 = 0x408, LoadS16 = 0x409, LoadS32 = 0x40A,
 
-    // ─── System ─────────────────────────────────────────────────────────────
-    /// Read system register. `imm` = encoded sysreg id.
-    Mrs,
-    /// Write system register.
-    Msr,
-    /// Hint (NOP/YIELD/WFE/...). `imm` = hint code.
-    Hint,
-    /// BRK — software breakpoint. Terminator.
-    Brk,
-    /// SVC — supervisor call. Terminator (returns to host).
-    Svc,
-    /// HVC — hypervisor call. Terminator.
-    Hvc,
-    /// DMB/DSB/ISB. `imm` = barrier kind.
-    MemoryBarrier,
+    Store8 = 0x40C, Store16 = 0x40D, Store32 = 0x40E, Store64 = 0x40F,
+    Store128 = 0x410,
 
-    // ─── Sentinel ───────────────────────────────────────────────────────────
-    /// One past the last opcode — used for dense table sizing. NEVER construct.
-    __Count,
+    LoadAcq8  = 0x418, LoadAcq16  = 0x419, LoadAcq32  = 0x41A, LoadAcq64  = 0x41B,
+    StoreRel8 = 0x41C, StoreRel16 = 0x41D, StoreRel32 = 0x41E, StoreRel64 = 0x41F,
+
+    LoadEx8  = 0x420, LoadEx16  = 0x421, LoadEx32  = 0x422, LoadEx64  = 0x423,
+    StoreEx8 = 0x424, StoreEx16 = 0x425, StoreEx32 = 0x426, StoreEx64 = 0x427,
+
+    LoadPair8  = 0x428, LoadPair16  = 0x429, LoadPair32  = 0x42A, LoadPair64  = 0x42B,
+    StorePair8 = 0x42C, StorePair16 = 0x42D, StorePair32 = 0x42E, StorePair64 = 0x42F,
+
+    Fmov32 = 0x502, Fmov64 = 0x503,
+    Fadd32 = 0x506, Fadd64 = 0x507,
+    Fsub32 = 0x50A, Fsub64 = 0x50B,
+    Fmul32 = 0x50E, Fmul64 = 0x50F,
+    Fdiv32 = 0x512, Fdiv64 = 0x513,
+    Fneg32 = 0x516, Fneg64 = 0x517,
+    Fabs32 = 0x51A, Fabs64 = 0x51B,
+    Fsqrt32 = 0x51E, Fsqrt64 = 0x51F,
+    Fcmp32 = 0x522, Fcmp64 = 0x523,
+
+    VecAdd  = 0x600,
+    VecSub  = 0x604,
+    VecMul  = 0x608,
+    VecAnd  = 0x60C,
+    VecOr   = 0x610,
+    VecEor  = 0x614,
+    VecDup  = 0x618,
+    Ins     = 0x61C,
+    Umov    = 0x620,
+    Smov    = 0x624,
+
+    Mrs            = 0x700,
+    Msr            = 0x704,
+    Hint           = 0x708,
+    Brk            = 0x70C,
+    Svc            = 0x710,
+    Hvc            = 0x714,
+    MemoryBarrier  = 0x718,
 }
 
 impl Op {
-    /// True if the op may produce externally-observable side effects.
-    /// DCE must not eliminate side-effecting armlets even when their result is unused.
+    #[inline] pub const fn raw(self) -> u16 { self as u16 }
+
     #[inline]
-    pub const fn has_side_effects(self) -> bool {
-        use Op::*;
-        matches!(self,
-            SetX | SetW | SetSp | SetNzcv | SetV
-            | Store8 | Store16 | Store32 | Store64 | Store128
-            | StoreRel32 | StoreRel64
-            | StoreEx32 | StoreEx64
-            | StorePair32 | StorePair64
-            | LoadEx32 | LoadEx64
-            | Msr | Brk | Svc | Hvc | Hint | MemoryBarrier
-            | Branch | BranchLink | BranchIndirect | BranchIndirectLink
-            | Ret | BranchCond | CbZ | CbNz | TbZ | TbNz
-        )
+    pub const fn base(self) -> u16 {
+        (self as u16) & !0b11
     }
 
-    /// True if the op is a block terminator.
     #[inline]
+    pub const fn size_log2(self) -> u32 {
+        ((self as u16) & 0b11) as u32
+    }
+
+    #[inline]
+    pub const fn size_bytes(self) -> u32 {
+        1u32 << self.size_log2()
+    }
+
+    #[inline]
+    pub const fn size_bits(self) -> u32 {
+        8u32 << self.size_log2()
+    }
+
+    pub const fn has_side_effects(self) -> bool {
+        use Op::*;
+        if matches!(self,
+            SetX | SetW | SetSp | SetNzcv | SetV
+            | Mrs | Msr | Brk | Svc | Hvc | Hint | MemoryBarrier
+        ) {
+            return true;
+        }
+        match self.base() {
+            b if b == Store8.base()     => true,
+            b if b == Store128 as u16   => true,
+            b if b == StoreRel8.base()  => true,
+            b if b == StoreEx8.base()   => true,
+            b if b == LoadEx8.base()    => true,
+            b if b == StorePair8.base() => true,
+            b if b == Branch.base()
+              || b == BranchLink.base()
+              || b == BranchIndirect.base()
+              || b == BranchIndirectLink.base()
+              || b == Ret.base()
+              || b == BranchCond.base()
+              || b == CbZ.base()
+              || b == CbNz.base()
+              || b == TbZ.base()
+              || b == TbNz.base() => true,
+            _ => false,
+        }
+    }
+
     pub const fn is_terminator(self) -> bool {
         use Op::*;
         matches!(self,
@@ -225,17 +201,65 @@ impl Op {
         )
     }
 
-    /// True if the op is pure (no side effects, deterministic in its args).
-    /// Used by constant-folding/value-numbering inside the optimizer.
-    #[inline]
     pub const fn is_pure(self) -> bool {
-        !self.has_side_effects() && !matches!(self,
-            Op::GetX | Op::GetW | Op::GetSp | Op::GetNzcv | Op::GetV
-            | Op::Load8 | Op::Load16 | Op::Load32 | Op::Load64 | Op::Load128
-            | Op::LoadS8 | Op::LoadS16 | Op::LoadS32
-            | Op::LoadAcq32 | Op::LoadAcq64
-            | Op::LoadPair32 | Op::LoadPair64
-            | Op::Mrs
-        )
+        use Op::*;
+        if self.has_side_effects() {
+            return false;
+        }
+        if matches!(self,
+            GetX | GetW | GetSp | GetNzcv | GetV | Mrs
+        ) {
+            return false;
+        }
+        match self.base() {
+            b if b == Load8.base() => false,
+            b if b == Load128 as u16 => false,
+            b if b == LoadS8.base() => false,
+            b if b == LoadAcq8.base() => false,
+            b if b == LoadPair8.base() => false,
+            _ => true,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sized_families_encode_size_in_low_bits() {
+        let cases: &[(Op, u32)] = &[
+            (Op::Add8,  1), (Op::Add16,  2), (Op::Add32,  4), (Op::Add64,  8),
+            (Op::Sub8,  1), (Op::Sub64,  8),
+            (Op::Lsl8,  1), (Op::Lsl16,  2), (Op::Lsl32,  4), (Op::Lsl64,  8),
+            (Op::Lsr64, 8), (Op::Asr32,  4), (Op::Ror16,  2),
+            (Op::Load8, 1), (Op::Load16, 2), (Op::Load32, 4), (Op::Load64, 8),
+            (Op::Store8, 1), (Op::Store64, 8),
+            (Op::Csel32, 4), (Op::Csel64, 8),
+            (Op::AddsFlags32, 4), (Op::SubsFlags64, 8),
+        ];
+        for &(op, bytes) in cases {
+            assert_eq!(op.size_bytes(), bytes,
+                "{:?}: expected size_bytes={}, got {}", op, bytes, op.size_bytes());
+            assert_eq!(op.size_bits(), bytes * 8);
+        }
+    }
+
+    #[test]
+    fn family_bases_are_4_aligned_and_match_across_sizes() {
+        assert_eq!(Op::Add8.base(), Op::Add64.base());
+        assert_eq!(Op::Sub8.base(), Op::Sub64.base());
+        assert_eq!(Op::Lsl8.base(), Op::Lsl64.base());
+        assert_eq!(Op::Load8.base(), Op::Load64.base());
+        assert_eq!(Op::Store8.base(), Op::Store64.base());
+
+        assert_ne!(Op::Add64.base(), Op::Sub64.base());
+        assert_ne!(Op::Lsl32.base(), Op::Lsr32.base());
+        assert_ne!(Op::Lsl32.base(), Op::Asr32.base());
+
+        assert_eq!(Op::Add64 as u16 & 0b11, 3);
+        assert_eq!(Op::Add32 as u16 & 0b11, 2);
+        assert_eq!(Op::Add16 as u16 & 0b11, 1);
+        assert_eq!(Op::Add8  as u16 & 0b11, 0);
     }
 }
