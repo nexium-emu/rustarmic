@@ -21,6 +21,7 @@ bitflags = "2"
 smallvec = { version = "1", features = ["union"] }
 thiserror = "2"
 assume   = "0.5"
+disarm64 = { version = "0.1", default-features = false, features = ["full"] }
 # Unicorn is opt-in: building it requires libclang (LLVM) on the host. Enable
 # with `--features unicorn` to run the differential tests in `tests/`.
 unicorn-engine = { version = "2", optional = true }
