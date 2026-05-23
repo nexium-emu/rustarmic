@@ -110,6 +110,11 @@ pub fn emit_armlet(
         Op::Mul32 => emit_binop_32(asm, alloc, a, dst, BinKind::Imul)?,
         Op::Mul64 => emit_binop_64(asm, alloc, a, dst, BinKind::Imul)?,
 
+        Op::Adc32 => emit_adc_sbc(asm, alloc, a, dst, false, false)?,
+        Op::Adc64 => emit_adc_sbc(asm, alloc, a, dst, false, true)?,
+        Op::Sbc32 => emit_adc_sbc(asm, alloc, a, dst, true,  false)?,
+        Op::Sbc64 => emit_adc_sbc(asm, alloc, a, dst, true,  true)?,
+
         Op::UDiv32 => emit_div(asm, alloc, a, dst, false, false)?,
         Op::UDiv64 => emit_div(asm, alloc, a, dst, false, true)?,
         Op::SDiv32 => emit_div(asm, alloc, a, dst, true,  false)?,
@@ -491,6 +496,33 @@ fn emit_div(
         asm.xor(eax, eax)?;
 
         asm.set_label(&mut lbl_done)?;
+        asm.mov(dword_ptr(rbp - d.stack_offset), eax)?;
+    }
+    Ok(())
+}
+
+fn emit_adc_sbc(
+    asm: &mut CodeAssembler,
+    alloc: &Allocation,
+    a: Armlet,
+    dst: Option<ValueLoc>,
+    is_sub: bool,
+    is_64: bool,
+) -> Result<()> {
+    let l = alloc.loc(a.args[0]);
+    let r = alloc.loc(a.args[1]);
+    let d = dst.unwrap();
+    asm.bt(dword_ptr(CTX_REG + cpu_offsets::nzcv() as i32), 1i32)?;
+    if is_sub { asm.cmc()?; }
+    if is_64 {
+        asm.mov(rax, qword_ptr(rbp - l.stack_offset))?;
+        asm.mov(rcx, qword_ptr(rbp - r.stack_offset))?;
+        if is_sub { asm.sbb(rax, rcx)?; } else { asm.adc(rax, rcx)?; }
+        asm.mov(qword_ptr(rbp - d.stack_offset), rax)?;
+    } else {
+        asm.mov(eax, dword_ptr(rbp - l.stack_offset))?;
+        asm.mov(ecx, dword_ptr(rbp - r.stack_offset))?;
+        if is_sub { asm.sbb(eax, ecx)?; } else { asm.adc(eax, ecx)?; }
         asm.mov(dword_ptr(rbp - d.stack_offset), eax)?;
     }
     Ok(())
