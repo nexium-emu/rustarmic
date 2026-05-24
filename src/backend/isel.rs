@@ -4,7 +4,10 @@ use crate::arch::{Cond, NUM_GPRS, ZR_ENCODING};
 use crate::backend::abi::{
     ARG3_REG, CALL_PRECALL_SUB, CTX_REG, SCRATCH0, SCRATCH1, SCRATCH2, SCRATCH3,
 };
-use crate::backend::operand::{gpr32, gpr64, load32, load64, store32, store64};
+use crate::backend::operand::{
+    gpr32, gpr64, load32, load64, load_xmm_d, load_xmm_s, store32, store64,
+    store_xmm_d, store_xmm_s,
+};
 use crate::backend::regalloc::{Allocation, Loc};
 use crate::error::{Error, Result};
 use crate::ir::{Armlet, Block, Op, Ty, ValueRef};
@@ -188,6 +191,15 @@ pub fn emit_armlet(
             emit_store_ex(asm, alloc, a, dst_vr, a.op.size_bytes())?,
 
         Op::Csel32 | Op::Csel64 => emit_csel(asm, alloc, a, dst_vr)?,
+
+        Op::Fadd32 => emit_fbinop_s(asm, alloc, a, dst_vr, FpBinKind::Add)?,
+        Op::Fadd64 => emit_fbinop_d(asm, alloc, a, dst_vr, FpBinKind::Add)?,
+        Op::Fsub32 => emit_fbinop_s(asm, alloc, a, dst_vr, FpBinKind::Sub)?,
+        Op::Fsub64 => emit_fbinop_d(asm, alloc, a, dst_vr, FpBinKind::Sub)?,
+        Op::Fmul32 => emit_fbinop_s(asm, alloc, a, dst_vr, FpBinKind::Mul)?,
+        Op::Fmul64 => emit_fbinop_d(asm, alloc, a, dst_vr, FpBinKind::Mul)?,
+        Op::Fdiv32 => emit_fbinop_s(asm, alloc, a, dst_vr, FpBinKind::Div)?,
+        Op::Fdiv64 => emit_fbinop_d(asm, alloc, a, dst_vr, FpBinKind::Div)?,
 
         op if op.is_terminator() => {}
 
@@ -802,6 +814,47 @@ fn scratch3_id() -> u8 {
     { 8 }
     #[cfg(not(target_os = "windows"))]
     { 2 }
+}
+
+#[derive(Clone, Copy)]
+enum FpBinKind { Add, Sub, Mul, Div }
+
+fn emit_fbinop_s(
+    asm: &mut CodeAssembler,
+    alloc: &Allocation,
+    a: Armlet,
+    dst: Option<ValueRef>,
+    k: FpBinKind,
+) -> Result<()> {
+    load_xmm_s(asm, alloc, a.args[0], xmm0)?;
+    load_xmm_s(asm, alloc, a.args[1], xmm1)?;
+    match k {
+        FpBinKind::Add => asm.addss(xmm0, xmm1)?,
+        FpBinKind::Sub => asm.subss(xmm0, xmm1)?,
+        FpBinKind::Mul => asm.mulss(xmm0, xmm1)?,
+        FpBinKind::Div => asm.divss(xmm0, xmm1)?,
+    }
+    if let Some(d) = dst { store_xmm_s(asm, alloc, d, xmm0)?; }
+    Ok(())
+}
+
+fn emit_fbinop_d(
+    asm: &mut CodeAssembler,
+    alloc: &Allocation,
+    a: Armlet,
+    dst: Option<ValueRef>,
+    k: FpBinKind,
+) -> Result<()> {
+    load_xmm_d(asm, alloc, a.args[0], xmm0)?;
+    load_xmm_d(asm, alloc, a.args[1], xmm1)?;
+    match k {
+        FpBinKind::Add => asm.addsd(xmm0, xmm1)?,
+        FpBinKind::Sub => asm.subsd(xmm0, xmm1)?,
+        FpBinKind::Mul => asm.mulsd(xmm0, xmm1)?,
+        FpBinKind::Div => asm.divsd(xmm0, xmm1)?,
+    }
+    if let Some(d) = dst { store_xmm_d(asm, alloc, d, xmm0)?; }
+    Ok(())
 }
 
 fn emit_mrs(

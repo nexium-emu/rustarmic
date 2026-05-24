@@ -14,6 +14,7 @@ pub mod ldstexcl;
 pub mod ic_system;
 pub mod lse_atomic;
 pub mod fp_dp1;
+pub mod fp_dp2;
 pub mod ldstpair_off;
 pub mod ldstpair_indexed;
 pub mod branch_imm;

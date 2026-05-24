@@ -108,6 +108,62 @@ pub fn store32(
     Ok(())
 }
 
+pub fn load_xmm_s(
+    asm: &mut CodeAssembler,
+    alloc: &Allocation,
+    vr: ValueRef,
+    dst: AsmRegisterXmm,
+) -> Result<()> {
+    match alloc.loc(vr) {
+        Loc::Reg(r) => asm.movd(dst, gpr32(r)).map_err(into_err)?,
+        Loc::Spill(off) => asm.movd(dst, dword_ptr(rbp - off)).map_err(into_err)?,
+        Loc::None => return Err(Error::Backend(format!("load_xmm_s from Loc::None ({:?})", vr))),
+    }
+    Ok(())
+}
+
+pub fn load_xmm_d(
+    asm: &mut CodeAssembler,
+    alloc: &Allocation,
+    vr: ValueRef,
+    dst: AsmRegisterXmm,
+) -> Result<()> {
+    match alloc.loc(vr) {
+        Loc::Reg(r) => asm.movq(dst, gpr64(r)).map_err(into_err)?,
+        Loc::Spill(off) => asm.movq(dst, qword_ptr(rbp - off)).map_err(into_err)?,
+        Loc::None => return Err(Error::Backend(format!("load_xmm_d from Loc::None ({:?})", vr))),
+    }
+    Ok(())
+}
+
+pub fn store_xmm_s(
+    asm: &mut CodeAssembler,
+    alloc: &Allocation,
+    vr: ValueRef,
+    src: AsmRegisterXmm,
+) -> Result<()> {
+    match alloc.loc(vr) {
+        Loc::Reg(r) => asm.movd(gpr32(r), src).map_err(into_err)?,
+        Loc::Spill(off) => asm.movd(dword_ptr(rbp - off), src).map_err(into_err)?,
+        Loc::None => {}
+    }
+    Ok(())
+}
+
+pub fn store_xmm_d(
+    asm: &mut CodeAssembler,
+    alloc: &Allocation,
+    vr: ValueRef,
+    src: AsmRegisterXmm,
+) -> Result<()> {
+    match alloc.loc(vr) {
+        Loc::Reg(r) => asm.movq(gpr64(r), src).map_err(into_err)?,
+        Loc::Spill(off) => asm.movq(qword_ptr(rbp - off), src).map_err(into_err)?,
+        Loc::None => {}
+    }
+    Ok(())
+}
+
 fn into_err(e: iced_x86::IcedError) -> Error {
     Error::Backend(e.to_string())
 }
