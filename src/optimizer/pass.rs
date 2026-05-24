@@ -1,5 +1,5 @@
 use crate::arch::NUM_GPRS;
-use crate::ir::{Block, Op, Ty, ValueRef};
+use crate::ir::{Armlet, Block, Op, Ty, ValueRef};
 
 #[derive(Default)]
 pub struct Scratch {
@@ -24,7 +24,7 @@ pub fn optimize(block: &mut Block) {
 }
 
 pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
-    let n = block.code.len();
+    let mut n = block.code.len();
     if n == 0 { return; }
     scratch.resize(n);
 
@@ -125,6 +125,33 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
             _ => {}
         }
 
+        // Mul-fold peephole: collapse `a * K1 ± a * K2` (constructed from
+        // chains of Mul/Lsl over a common base) into a single `a * K_total`
+        // when the chain already contains a Mul. This shortens the critical
+        // path on the common `((c*a)<<b)+a` idiom.
+        if matches!(a.op, Op::Add32 | Op::Add64 | Op::Sub32 | Op::Sub64) {
+            if let Some((base, coeff)) = try_mul_fold(&a, block, &scratch.consts) {
+                let (const_op, mul_op) = if a.op.size_bits() == 32 {
+                    (Op::ConstU32, Op::Mul32)
+                } else {
+                    (Op::ConstU64, Op::Mul64)
+                };
+                let const_vr = block.insert_before(
+                    vr,
+                    Armlet::new(const_op, a.ty).with_imm(coeff),
+                );
+                let mul_vr = block.insert_before(
+                    vr,
+                    Armlet::new(mul_op, a.ty).with_args(&[base, const_vr]),
+                );
+                a.become_identity(mul_vr);
+                n = block.code.len();
+                scratch.consts.resize(n, None);
+                scratch.uses.resize(n, 0);
+                scratch.consts[const_vr.as_usize()] = Some(coeff);
+            }
+        }
+
         match a.op {
             Op::ConstU32 => { scratch.consts[i] = Some(a.imm & 0xFFFF_FFFF); }
             Op::ConstU64 => { scratch.consts[i] = Some(a.imm); }
@@ -203,6 +230,82 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
     }
 }
 
+struct Term {
+    base: ValueRef,
+    coeff: u64,
+    has_mul: bool,
+}
+
+/// Walk `vr` back through chains of `Mul/Lsl/Identity` to extract a `(base,
+/// coefficient)` pair such that the node represents `base * coefficient`
+/// (modulo the bit width). `has_mul` records whether a Mul was traversed —
+/// the peephole only fires when at least one side already has a Mul, since
+/// otherwise the existing shift+add sequence is faster than a 3-cycle imul.
+fn extract_term(block: &Block, vr: ValueRef, consts: &[Option<u64>], bits: u32) -> Term {
+    let i = vr.as_usize();
+    if i >= block.code.len() || vr.is_none() {
+        return Term { base: vr, coeff: 1, has_mul: false };
+    }
+    let a = &block.code[i];
+    let get_c = |v: ValueRef| -> Option<u64> {
+        if v.is_none() { None } else { consts.get(v.as_usize()).copied().flatten() }
+    };
+    match a.op {
+        Op::Mul32 | Op::Mul64 if a.op.size_bits() == bits => {
+            if let Some(c) = get_c(a.args[0]) {
+                let inner = extract_term(block, a.args[1], consts, bits);
+                Term { base: inner.base, coeff: inner.coeff.wrapping_mul(c), has_mul: true }
+            } else if let Some(c) = get_c(a.args[1]) {
+                let inner = extract_term(block, a.args[0], consts, bits);
+                Term { base: inner.base, coeff: inner.coeff.wrapping_mul(c), has_mul: true }
+            } else {
+                Term { base: vr, coeff: 1, has_mul: false }
+            }
+        }
+        Op::Lsl32 | Op::Lsl64 if a.op.size_bits() == bits => {
+            if let Some(k) = get_c(a.args[1]) {
+                let inner = extract_term(block, a.args[0], consts, bits);
+                let shift = (k as u32) & (bits - 1);
+                Term {
+                    base: inner.base,
+                    coeff: inner.coeff.wrapping_shl(shift),
+                    has_mul: inner.has_mul,
+                }
+            } else {
+                Term { base: vr, coeff: 1, has_mul: false }
+            }
+        }
+        Op::Identity => extract_term(block, a.args[0], consts, bits),
+        _ => Term { base: vr, coeff: 1, has_mul: false },
+    }
+}
+
+fn try_mul_fold(
+    add: &Armlet,
+    block: &Block,
+    consts: &[Option<u64>],
+) -> Option<(ValueRef, u64)> {
+    let bits = add.op.size_bits();
+    let mask: u64 = if bits >= 64 { !0 } else { (1u64 << bits) - 1 };
+    let is_sub = matches!(add.op, Op::Sub32 | Op::Sub64);
+
+    let lhs = extract_term(block, add.args[0], consts, bits);
+    let rhs = extract_term(block, add.args[1], consts, bits);
+    if lhs.base != rhs.base || lhs.base.is_none() { return None; }
+    if !(lhs.has_mul || rhs.has_mul) { return None; }
+
+    let combined = if is_sub {
+        lhs.coeff.wrapping_sub(rhs.coeff)
+    } else {
+        lhs.coeff.wrapping_add(rhs.coeff)
+    } & mask;
+
+    // Skip degenerate cases that the rest of the optimizer (or DCE) handles
+    // better than emitting a Mul: 0 → const-fold to 0, 1 → identity.
+    if combined == 0 || combined == 1 { return None; }
+    Some((lhs.base, combined))
+}
+
 fn try_fold(op: Op, a: &crate::ir::Armlet, consts: &[Option<u64>]) -> Option<u64> {
     let get = |v: ValueRef| -> Option<u64> {
         if v.is_none() { None } else { consts[v.as_usize()] }
@@ -240,4 +343,84 @@ fn try_fold(op: Op, a: &crate::ir::Armlet, consts: &[Option<u64>]) -> Option<u64
         _ => return None,
     };
     Some(r)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::arch::RegSize;
+    use crate::ir::IrEmitter;
+
+    #[test]
+    fn mul_fold_collapses_mul_shift_add_chain() {
+        // Build: r = ((c * a) << b) + a, with c = 3, b = 2 → coefficient 13.
+        let mut block = Block::new(0x1000);
+        let mut em = IrEmitter::new(&mut block, 0x1000);
+        let a = em.get_x(0);
+        let c = em.const_u64(3);
+        let mul = em.push(Armlet::new(Op::Mul64, Ty::U64).with_args(&[a, c]));
+        let b = em.const_u64(2);
+        let shifted = em.push(Armlet::new(Op::Lsl64, Ty::U64).with_args(&[mul, b]));
+        let added = em.push(Armlet::new(Op::Add64, Ty::U64).with_args(&[shifted, a]));
+        em.set_x(1, added);
+
+        optimize(&mut block);
+
+        // The original Add should now be Identity, pointing at a freshly
+        // inserted Mul whose other operand is a const equal to 13.
+        let add_node = &block.code[added.as_usize()];
+        assert_eq!(add_node.op, Op::Identity, "Add should be rewritten to Identity");
+
+        let target = add_node.args[0];
+        let mul_node = &block.code[target.as_usize()];
+        assert_eq!(mul_node.op, Op::Mul64);
+        assert_eq!(mul_node.args[0], a, "Mul operand[0] should be the base");
+
+        let coeff_node = &block.code[mul_node.args[1].as_usize()];
+        assert_eq!(coeff_node.op, Op::ConstU64);
+        assert_eq!(coeff_node.imm, 13, "coefficient should be (3 << 2) + 1 = 13");
+    }
+
+    #[test]
+    fn mul_fold_skips_chain_without_mul() {
+        // (a << 2) + a — pure shift+add, no mul. Should NOT fold (folding into
+        // an imul would be slower than the 2-instruction shift+add).
+        let mut block = Block::new(0x1000);
+        let mut em = IrEmitter::new(&mut block, 0x1000);
+        let a = em.get_x(0);
+        let two = em.const_u64(2);
+        let shifted = em.push(Armlet::new(Op::Lsl64, Ty::U64).with_args(&[a, two]));
+        let added = em.push(Armlet::new(Op::Add64, Ty::U64).with_args(&[shifted, a]));
+        em.set_x(1, added);
+
+        optimize(&mut block);
+
+        let add_node = &block.code[added.as_usize()];
+        assert_eq!(add_node.op, Op::Add64, "no Mul in chain → leave as Add");
+    }
+
+    #[test]
+    fn mul_fold_handles_commutative_add() {
+        // a + (c * a) — same pattern, operands swapped.
+        let mut block = Block::new(0x1000);
+        let mut em = IrEmitter::new(&mut block, 0x1000);
+        let a = em.get_x(0);
+        let c = em.const_u64(7);
+        let mul = em.push(Armlet::new(Op::Mul64, Ty::U64).with_args(&[a, c]));
+        let added = em.push(Armlet::new(Op::Add64, Ty::U64).with_args(&[a, mul]));
+        em.set_x(1, added);
+
+        optimize(&mut block);
+
+        let add_node = &block.code[added.as_usize()];
+        assert_eq!(add_node.op, Op::Identity);
+        let mul_node = &block.code[add_node.args[0].as_usize()];
+        let coeff_node = &block.code[mul_node.args[1].as_usize()];
+        assert_eq!(coeff_node.imm, 8, "7 + 1 = 8");
+    }
+
+    // Suppress unused-warning for RegSize import (kept for symmetry with
+    // other tests if extended later).
+    #[allow(dead_code)]
+    fn _silence_unused(_: RegSize) {}
 }

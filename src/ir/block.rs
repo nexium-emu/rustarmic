@@ -73,6 +73,26 @@ impl Block {
         ValueRef::new(idx)
     }
 
+    /// Append a new armlet to `code` and splice it into the linked list
+    /// immediately before `before_vr`. Returns the new ValueRef. O(1).
+    #[inline]
+    pub fn insert_before(&mut self, before_vr: ValueRef, mut armlet: Armlet) -> ValueRef {
+        let new_idx = self.code.len() as u32;
+        debug_assert!((new_idx as usize) < Self::MAX_NODES, "block exceeded MAX_NODES");
+        let before_idx = before_vr.idx();
+        let prev = self.code[before_idx as usize].prev;
+        armlet.prev = prev;
+        armlet.next = before_idx;
+        self.code.push(armlet);
+        if prev != LINK_NONE {
+            self.code[prev as usize].next = new_idx;
+        } else {
+            self.head = new_idx;
+        }
+        self.code[before_idx as usize].prev = new_idx;
+        ValueRef::new(new_idx)
+    }
+
     #[inline]
     pub fn unlink(&mut self, v: ValueRef) {
         let idx = v.idx();

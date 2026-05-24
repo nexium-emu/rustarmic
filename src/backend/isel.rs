@@ -921,9 +921,10 @@ fn emit_scvtf(
     Ok(())
 }
 
-/// FNEG via sign-bit flip — `pcmpeqd; pslld/psllq; xorps/xorpd`. Three XMM
-/// ops, no GPR scratch, no memory constant. Matches ARM FNEG spec (just
-/// toggles bit 31/63, NaN payload preserved).
+/// FNEG via GPR `xor` against the sign bit. One instruction for 32-bit
+/// (imm32 fits); 64-bit needs a `mov rcx, imm64; xor rax, rcx` pair since
+/// `xor r64, imm32` would sign-extend. No XMM roundtrip — the value
+/// usually lives in a GPR already.
 fn emit_fneg(
     asm: &mut CodeAssembler,
     alloc: &Allocation,
@@ -932,23 +933,19 @@ fn emit_fneg(
     bits: u32,
 ) -> Result<()> {
     if bits == 64 {
-        load_xmm_d(asm, alloc, a.args[0], xmm0)?;
-        asm.pcmpeqd(xmm1, xmm1)?;
-        asm.psllq(xmm1, 63i32)?;
-        asm.xorpd(xmm0, xmm1)?;
-        if let Some(d) = dst { store_xmm_d(asm, alloc, d, xmm0)?; }
+        load64(asm, alloc, a.args[0], rax)?;
+        asm.mov(rcx, 0x8000_0000_0000_0000_u64 as i64)?;
+        asm.xor(rax, rcx)?;
+        if let Some(d) = dst { store64(asm, alloc, d, rax)?; }
     } else {
-        load_xmm_s(asm, alloc, a.args[0], xmm0)?;
-        asm.pcmpeqd(xmm1, xmm1)?;
-        asm.pslld(xmm1, 31i32)?;
-        asm.xorps(xmm0, xmm1)?;
-        if let Some(d) = dst { store_xmm_s(asm, alloc, d, xmm0)?; }
+        load32(asm, alloc, a.args[0], eax)?;
+        asm.xor(eax, 0x8000_0000_u32 as i32)?;
+        if let Some(d) = dst { store32(asm, alloc, d, eax)?; }
     }
     Ok(())
 }
 
-/// FABS via sign-bit clear — same `pcmpeqd` trick but `psrlq/psrld` to make
-/// the mask 0x7FFF…FFFF, then `andpd/andps`.
+/// FABS via GPR `and` clearing the sign bit. Same shape as FNEG.
 fn emit_fabs(
     asm: &mut CodeAssembler,
     alloc: &Allocation,
@@ -957,17 +954,14 @@ fn emit_fabs(
     bits: u32,
 ) -> Result<()> {
     if bits == 64 {
-        load_xmm_d(asm, alloc, a.args[0], xmm0)?;
-        asm.pcmpeqd(xmm1, xmm1)?;
-        asm.psrlq(xmm1, 1i32)?;
-        asm.andpd(xmm0, xmm1)?;
-        if let Some(d) = dst { store_xmm_d(asm, alloc, d, xmm0)?; }
+        load64(asm, alloc, a.args[0], rax)?;
+        asm.mov(rcx, 0x7FFF_FFFF_FFFF_FFFF_u64 as i64)?;
+        asm.and(rax, rcx)?;
+        if let Some(d) = dst { store64(asm, alloc, d, rax)?; }
     } else {
-        load_xmm_s(asm, alloc, a.args[0], xmm0)?;
-        asm.pcmpeqd(xmm1, xmm1)?;
-        asm.psrld(xmm1, 1i32)?;
-        asm.andps(xmm0, xmm1)?;
-        if let Some(d) = dst { store_xmm_s(asm, alloc, d, xmm0)?; }
+        load32(asm, alloc, a.args[0], eax)?;
+        asm.and(eax, 0x7FFF_FFFF_u32 as i32)?;
+        if let Some(d) = dst { store32(asm, alloc, d, eax)?; }
     }
     Ok(())
 }

@@ -1091,3 +1091,24 @@ fn fccmp_d_cond_fails_uses_immediate_nzcv() {
     run(code, &mut ctx);
     assert_eq!(ctx.nzcv, 0b1010, "cond failed → NZCV = imm4");
 }
+
+#[test]
+fn mul_fold_collapses_chain_to_single_mul() {
+    // movz x0, #5         ; a = 5
+    // movz x4, #3         ; c = 3
+    // mul  x1, x0, x4     ; x1 = 5 * 3 = 15
+    // lsl  x2, x1, #2     ; x2 = 60     (= (c*a) << b)
+    // add  x3, x2, x0     ; x3 = 65     (= a * 13)
+    let code = build_code(&[
+        0xD28000A0, // movz x0, #5
+        0xD2800064, // movz x4, #3
+        0x9B04_7C01, // mul x1, x0, x4
+        0xD37E_F422, // lsl x2, x1, #2
+        0x8B00_0043, // add x3, x2, x0
+        0xD4200000,
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    run(code, &mut ctx);
+    assert_eq!(ctx.x[3], 65, "((c*a)<<b)+a must compute correctly");
+}
