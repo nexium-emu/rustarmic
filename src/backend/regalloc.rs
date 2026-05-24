@@ -93,6 +93,14 @@ pub fn op_clobbers(op: Op) -> GprMask {
     clobbers_for_op(op).gpr
 }
 
+pub fn op_prefers_two_address(op: Op) -> bool {
+    matches!(op,
+        Op::Add32 | Op::Add64 | Op::Sub32 | Op::Sub64
+        | Op::And32 | Op::And64 | Op::Or32 | Op::Or64
+        | Op::Eor32 | Op::Eor64 | Op::Mul32 | Op::Mul64
+    )
+}
+
 const SAVED_SIZE: i32 = 40;
 
 pub fn linear_scan(block: &Block, ranges: &[LiveRange], pool: &[u8]) -> Allocation {
@@ -124,7 +132,8 @@ pub fn linear_scan(block: &Block, ranges: &[LiveRange], pool: &[u8]) -> Allocati
             }
         });
 
-        if block.code[vr_idx].op == Op::Identity {
+        let op = block.code[vr_idx].op;
+        if op == Op::Identity || op_prefers_two_address(op) {
             let src = block.code[vr_idx].args[0];
             if src.is_some() {
                 let src_idx = src.as_usize();
@@ -132,13 +141,17 @@ pub fn linear_scan(block: &Block, ranges: &[LiveRange], pool: &[u8]) -> Allocati
                     && !ranges[src_idx].is_dead()
                     && ranges[src_idx].end == start
                 {
-                    locs[vr_idx] = locs[src_idx];
                     if let Loc::Reg(reg) = locs[src_idx] {
+                        locs[vr_idx] = Loc::Reg(reg);
                         if let Some(slot) = active.iter_mut().find(|(_, r, vi)| *r == reg && *vi == src_idx) {
                             *slot = (range.end, reg, vr_idx);
                         }
+                        continue;
                     }
-                    continue;
+                    if op == Op::Identity {
+                        locs[vr_idx] = locs[src_idx];
+                        continue;
+                    }
                 }
             }
         }

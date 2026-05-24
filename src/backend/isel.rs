@@ -4,8 +4,8 @@ use crate::arch::{Cond, NUM_GPRS, ZR_ENCODING};
 use crate::backend::abi::{
     ARG3_REG, CALL_PRECALL_SUB, CTX_REG, SCRATCH0, SCRATCH1, SCRATCH2, SCRATCH3,
 };
-use crate::backend::operand::{gpr32, load32, load64, store32, store64};
-use crate::backend::regalloc::Allocation;
+use crate::backend::operand::{gpr32, gpr64, load32, load64, store32, store64};
+use crate::backend::regalloc::{Allocation, Loc};
 use crate::error::{Error, Result};
 use crate::ir::{Armlet, Block, Op, Ty, ValueRef};
 use crate::jit::context::cpu_offsets;
@@ -229,6 +229,15 @@ fn apply_bin_64(asm: &mut CodeAssembler, k: BinKind, l: AsmRegister64, r: AsmReg
 }
 
 fn emit_binop_32(asm: &mut CodeAssembler, alloc: &Allocation, a: Armlet, dst: Option<ValueRef>, k: BinKind) -> Result<()> {
+    if let Some(d) = dst {
+        if let Loc::Reg(r) = alloc.loc(d) {
+            if alloc.loc(a.args[0]) == Loc::Reg(r) {
+                load32(asm, alloc, a.args[1], gpr32(scratch1_id()))?;
+                apply_bin_32(asm, k, gpr32(r), gpr32(scratch1_id()))?;
+                return Ok(());
+            }
+        }
+    }
     load32(asm, alloc, a.args[0], eax)?;
     load32(asm, alloc, a.args[1], gpr32(scratch1_id()))?;
     apply_bin_32(asm, k, eax, gpr32(scratch1_id()))?;
@@ -237,6 +246,15 @@ fn emit_binop_32(asm: &mut CodeAssembler, alloc: &Allocation, a: Armlet, dst: Op
 }
 
 fn emit_binop_64(asm: &mut CodeAssembler, alloc: &Allocation, a: Armlet, dst: Option<ValueRef>, k: BinKind) -> Result<()> {
+    if let Some(d) = dst {
+        if let Loc::Reg(r) = alloc.loc(d) {
+            if alloc.loc(a.args[0]) == Loc::Reg(r) {
+                load64(asm, alloc, a.args[1], SCRATCH1)?;
+                apply_bin_64(asm, k, gpr64(r), SCRATCH1)?;
+                return Ok(());
+            }
+        }
+    }
     load64(asm, alloc, a.args[0], SCRATCH0)?;
     load64(asm, alloc, a.args[1], SCRATCH1)?;
     apply_bin_64(asm, k, SCRATCH0, SCRATCH1)?;
