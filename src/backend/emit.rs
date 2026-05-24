@@ -4,8 +4,9 @@ use iced_x86::BlockEncoderOptions;
 use crate::arch::Cond;
 use crate::backend::abi::CTX_REG;
 use crate::backend::isel::{emit_armlet, emit_cond_check_byte};
+use crate::backend::operand::load64;
 use crate::backend::prologue::{emit_epilogue, emit_prologue};
-use crate::backend::reg_alloc::Allocation;
+use crate::backend::regalloc::{compute_live_ranges, linear_scan, Allocation};
 use crate::error::{Error, Result};
 use crate::ir::block::ExceptionKind;
 use crate::ir::{Block, Terminal};
@@ -26,10 +27,13 @@ pub struct ChainSite {
 const BITNESS: u32 = 64;
 
 pub fn emit_block(block: &Block) -> Result<EmittedBlock> {
-    let alloc = Allocation::build(block);
+    let ranges = compute_live_ranges(block);
+    let alloc = linear_scan(block, &ranges, &[]);
+    let frame_bytes = alloc.frame_bytes();
+
     let mut asm = CodeAssembler::new(BITNESS)?;
 
-    emit_prologue(&mut asm, alloc.frame_bytes)?;
+    emit_prologue(&mut asm, frame_bytes)?;
 
     let mut body_label = asm.create_label();
     asm.set_label(&mut body_label)?;
@@ -59,24 +63,21 @@ pub fn emit_block(block: &Block) -> Result<EmittedBlock> {
             emit_two_way_patches(&mut asm, &mut chain_specs, &mut taken_label, &mut epilogue_label, taken_pc, not_taken_pc)?;
         }
         Terminal::CompareBranchZero { value, inverse, taken_pc, not_taken_pc } => {
-            let loc = alloc.loc(value);
-            asm.mov(rcx, qword_ptr(rbp - loc.stack_offset))?;
+            load64(&mut asm, &alloc, value, rcx)?;
             asm.test(rcx, rcx)?;
             let mut taken_label = asm.create_label();
             if inverse { asm.jnz(taken_label)?; } else { asm.jz(taken_label)?; }
             emit_two_way_patches(&mut asm, &mut chain_specs, &mut taken_label, &mut epilogue_label, taken_pc, not_taken_pc)?;
         }
         Terminal::TestBranchBit { value, bit, inverse, taken_pc, not_taken_pc } => {
-            let loc = alloc.loc(value);
-            asm.mov(rcx, qword_ptr(rbp - loc.stack_offset))?;
+            load64(&mut asm, &alloc, value, rcx)?;
             asm.bt(rcx, bit as u32 as i32)?;
             let mut taken_label = asm.create_label();
             if inverse { asm.jc(taken_label)?; } else { asm.jnc(taken_label)?; }
             emit_two_way_patches(&mut asm, &mut chain_specs, &mut taken_label, &mut epilogue_label, taken_pc, not_taken_pc)?;
         }
         Terminal::IndirectBranch { target, link: _, is_ret: _ } => {
-            let loc = alloc.loc(target);
-            asm.mov(rax, qword_ptr(rbp - loc.stack_offset))?;
+            load64(&mut asm, &alloc, target, rax)?;
         }
         Terminal::Exception { kind, imm: _ } => {
             let kind_bits: u64 = match kind {
@@ -90,7 +91,7 @@ pub fn emit_block(block: &Block) -> Result<EmittedBlock> {
     }
 
     asm.set_label(&mut epilogue_label)?;
-    emit_epilogue(&mut asm, alloc.frame_bytes)?;
+    emit_epilogue(&mut asm, frame_bytes)?;
 
     let result = asm.assemble_options(0, BlockEncoderOptions::RETURN_NEW_INSTRUCTION_OFFSETS)
         .map_err(|e| Error::Backend(e.to_string()))?;
@@ -144,3 +145,6 @@ fn emit_two_way_patches(
     chain_specs.push((*taken_label, taken_pc));
     Ok(())
 }
+
+#[allow(dead_code)]
+fn _unused() { let _ = Allocation { locs: vec![], spill_bytes: 0 }; }

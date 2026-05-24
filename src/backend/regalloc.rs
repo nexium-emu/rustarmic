@@ -38,6 +38,11 @@ impl Allocation {
     pub fn loc(&self, v: crate::ir::ValueRef) -> Loc {
         self.locs[v.as_usize()]
     }
+
+    #[inline]
+    pub fn frame_bytes(&self) -> i32 {
+        (self.spill_bytes + 15) & -16
+    }
 }
 
 pub fn compute_live_ranges(block: &Block) -> Vec<LiveRange> {
@@ -90,11 +95,11 @@ pub fn op_clobbers(op: Op) -> GprMask {
 
 const SAVED_SIZE: i32 = 40;
 
-pub fn linear_scan(block: &Block, ranges: &[LiveRange]) -> Allocation {
+pub fn linear_scan(block: &Block, ranges: &[LiveRange], pool: &[u8]) -> Allocation {
     let n = ranges.len();
     let mut locs = vec![Loc::None; n];
     let mut spill_cursor: i32 = SAVED_SIZE;
-    let mut free: Vec<u8> = ALLOCATABLE_GPRS.iter().copied().rev().collect();
+    let mut free: Vec<u8> = pool.iter().copied().rev().collect();
     let mut active: Vec<(u32, u8, usize)> = Vec::new();
 
     let mut intervals: Vec<usize> = (0..n)
@@ -118,12 +123,15 @@ pub fn linear_scan(block: &Block, ranges: &[LiveRange]) -> Allocation {
         if let Some(reg) = free.pop() {
             locs[vr_idx] = Loc::Reg(reg);
             active.push((range.end, reg, vr_idx));
+        } else if active.is_empty() {
+            let off = alloc_spill_slot(&mut spill_cursor);
+            locs[vr_idx] = Loc::Spill(off);
         } else {
             let (spill_pos, &(victim_end, victim_reg, victim_vr)) = active
                 .iter()
                 .enumerate()
                 .max_by_key(|(_, e)| e.0)
-                .expect("active must be non-empty when free is empty");
+                .unwrap();
 
             if victim_end > range.end {
                 let off = alloc_spill_slot(&mut spill_cursor);
@@ -229,7 +237,7 @@ mod tests {
         }
 
         let ranges = compute_live_ranges(&b);
-        let alloc = linear_scan(&b, &ranges);
+        let alloc = linear_scan(&b, &ranges, ALLOCATABLE_GPRS);
 
         let mut assigned_regs = std::collections::HashSet::new();
         for &vr in &vrs {
@@ -257,7 +265,7 @@ mod tests {
         }
 
         let ranges = compute_live_ranges(&b);
-        let alloc = linear_scan(&b, &ranges);
+        let alloc = linear_scan(&b, &ranges, ALLOCATABLE_GPRS);
 
         let mut spilled = 0;
         let mut in_reg = 0;
@@ -283,7 +291,7 @@ mod tests {
         }
 
         let ranges = compute_live_ranges(&b);
-        let alloc = linear_scan(&b, &ranges);
+        let alloc = linear_scan(&b, &ranges, ALLOCATABLE_GPRS);
 
         let any_spill = alloc.locs.iter().any(|l| matches!(l, Loc::Spill(_)));
         assert!(!any_spill);
