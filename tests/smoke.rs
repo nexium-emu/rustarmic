@@ -1112,3 +1112,158 @@ fn mul_fold_collapses_chain_to_single_mul() {
     run(code, &mut ctx);
     assert_eq!(ctx.x[3], 65, "((c*a)<<b)+a must compute correctly");
 }
+
+#[test]
+fn vec_add_16b() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    // V1 = 16 bytes 0x01..0x10; V2 = 16 bytes all 0x10
+    ctx.v[1] = [0x0807_0605_0403_0201, 0x100F_0E0D_0C0B_0A09];
+    ctx.v[2] = [0x1010_1010_1010_1010, 0x1010_1010_1010_1010];
+    let code = build_code(&[
+        0x4E22_8420, // add v0.16b, v1.16b, v2.16b
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    assert_eq!(ctx.v[0][0], 0x1817_1615_1413_1211);
+    assert_eq!(ctx.v[0][1], 0x201F_1E1D_1C1B_1A19);
+}
+
+#[test]
+fn vec_add_8h_wraps_per_lane() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    // Each 16-bit lane: 0xFFFF + 1 = 0x0000 (wraps within lane).
+    ctx.v[1] = [0xFFFF_FFFF_FFFF_FFFF, 0xFFFF_FFFF_FFFF_FFFF];
+    ctx.v[2] = [0x0001_0001_0001_0001, 0x0001_0001_0001_0001];
+    let code = build_code(&[
+        0x4E62_8420, // add v0.8h, v1.8h, v2.8h
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    assert_eq!(ctx.v[0], [0, 0], "every 16-bit lane wraps independently");
+}
+
+#[test]
+fn vec_add_4s() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [0x0000_0002_0000_0001, 0x0000_0004_0000_0003];
+    ctx.v[2] = [0x0000_000A_0000_000A, 0x0000_000A_0000_000A];
+    let code = build_code(&[
+        0x4EA2_8420, // add v0.4s, v1.4s, v2.4s
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    assert_eq!(ctx.v[0][0], 0x0000_000C_0000_000B);
+    assert_eq!(ctx.v[0][1], 0x0000_000E_0000_000D);
+}
+
+#[test]
+fn vec_add_2d() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [0x1111_1111_1111_1111, 0x2222_2222_2222_2222];
+    ctx.v[2] = [0x1000_0000_0000_0001, 0x0000_0000_0000_0003];
+    let code = build_code(&[
+        0x4EE2_8420, // add v0.2d, v1.2d, v2.2d
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    assert_eq!(ctx.v[0][0], 0x2111_1111_1111_1112);
+    assert_eq!(ctx.v[0][1], 0x2222_2222_2222_2225);
+}
+
+#[test]
+fn vec_add_8b_zeros_upper_half() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [0x0807_0605_0403_0201, 0xDEAD_BEEF_CAFE_BABE];
+    ctx.v[2] = [0x0101_0101_0101_0101, 0x9999_9999_9999_9999];
+    let code = build_code(&[
+        0x0E22_8420, // add v0.8b, v1.8b, v2.8b
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    assert_eq!(ctx.v[0][0], 0x0908_0706_0504_0302, "low half = lanewise add");
+    assert_eq!(ctx.v[0][1], 0, "upper 64 bits must be zeroed for 8B form");
+}
+
+#[test]
+fn vec_sub_4s() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [0x0000_0014_0000_0014, 0x0000_0014_0000_0014];
+    ctx.v[2] = [0x0000_0004_0000_0001, 0x0000_0006_0000_0005];
+    let code = build_code(&[
+        0x6EA2_8420, // sub v0.4s, v1.4s, v2.4s
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    assert_eq!(ctx.v[0][0], 0x0000_0010_0000_0013);
+    assert_eq!(ctx.v[0][1], 0x0000_000E_0000_000F);
+}
+
+#[test]
+fn vec_and_16b() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [0xFF00_FF00_FF00_FF00, 0xAAAA_AAAA_AAAA_AAAA];
+    ctx.v[2] = [0x0FF0_0FF0_0FF0_0FF0, 0x5555_5555_5555_5555];
+    let code = build_code(&[
+        0x4E22_1C20, // and v0.16b, v1.16b, v2.16b
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    assert_eq!(ctx.v[0][0], 0x0F00_0F00_0F00_0F00);
+    assert_eq!(ctx.v[0][1], 0x0000_0000_0000_0000);
+}
+
+#[test]
+fn vec_eor_16b() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [0xAAAA_AAAA_AAAA_AAAA, 0xFFFF_0000_FFFF_0000];
+    ctx.v[2] = [0x5555_5555_5555_5555, 0xFFFF_FFFF_0000_0000];
+    let code = build_code(&[
+        0x6E22_1C20, // eor v0.16b, v1.16b, v2.16b
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    assert_eq!(ctx.v[0][0], 0xFFFF_FFFF_FFFF_FFFF);
+    assert_eq!(ctx.v[0][1], 0x0000_FFFF_FFFF_0000);
+}
+
+#[test]
+fn vec_bic_clears_bits_per_mask() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    // BIC Vd, Vn, Vm  →  Vd = Vn AND NOT Vm
+    ctx.v[1] = [0xFFFF_FFFF_FFFF_FFFF, 0xAAAA_AAAA_AAAA_AAAA];
+    ctx.v[2] = [0x00FF_00FF_00FF_00FF, 0x000F_000F_000F_000F];
+    let code = build_code(&[
+        0x4E62_1C20, // bic v0.16b, v1.16b, v2.16b
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    assert_eq!(ctx.v[0][0], 0xFF00_FF00_FF00_FF00);
+    assert_eq!(ctx.v[0][1], 0xAAA0_AAA0_AAA0_AAA0);
+}
+
+#[test]
+fn vec_orn_or_inverted() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    // ORN Vd, Vn, Vm  →  Vd = Vn OR NOT Vm
+    ctx.v[1] = [0x0000_0000_0000_0000, 0x0F0F_0F0F_0F0F_0F0F];
+    ctx.v[2] = [0x00FF_00FF_00FF_00FF, 0xFFFF_FFFF_FFFF_FFFF];
+    let code = build_code(&[
+        0x4EE2_1C20, // orn v0.16b, v1.16b, v2.16b
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // ~v2[0] = 0xFF00_FF00_FF00_FF00; OR v1[0]=0  → 0xFF00FF00FF00FF00
+    assert_eq!(ctx.v[0][0], 0xFF00_FF00_FF00_FF00);
+    // ~v2[1] = 0; OR v1[1] = 0x0F0F... → 0x0F0F0F0F0F0F0F0F
+    assert_eq!(ctx.v[0][1], 0x0F0F_0F0F_0F0F_0F0F);
+}

@@ -236,6 +236,16 @@ pub fn emit_armlet(
             store64(asm, alloc, d, rax)?;
         }
 
+        Op::VecAdd8  | Op::VecAdd16 | Op::VecAdd32 | Op::VecAdd64 =>
+            emit_vec_binop(asm, alloc, a, dst_vr, VecBinKind::Add(a.op.size_log2()))?,
+        Op::VecSub8  | Op::VecSub16 | Op::VecSub32 | Op::VecSub64 =>
+            emit_vec_binop(asm, alloc, a, dst_vr, VecBinKind::Sub(a.op.size_log2()))?,
+        Op::VecAnd => emit_vec_binop(asm, alloc, a, dst_vr, VecBinKind::And)?,
+        Op::VecOrr => emit_vec_binop(asm, alloc, a, dst_vr, VecBinKind::Orr)?,
+        Op::VecEor => emit_vec_binop(asm, alloc, a, dst_vr, VecBinKind::Eor)?,
+        Op::VecBic => emit_vec_binop(asm, alloc, a, dst_vr, VecBinKind::Bic)?,
+        Op::VecOrn => emit_vec_binop(asm, alloc, a, dst_vr, VecBinKind::Orn)?,
+
         op if op.is_terminator() => {}
 
         Op::Hint | Op::MemoryBarrier => {}
@@ -1145,5 +1155,70 @@ fn emit_msr(
         }
         _ => {}
     }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum VecBinKind {
+    Add(u32),    // lane log2 byte size
+    Sub(u32),
+    And, Orr, Eor, Bic, Orn,
+}
+
+/// Apply a 128-bit XMM binop, then mask off the high 64 bits when `q=0`.
+fn emit_vec_binop(
+    asm: &mut CodeAssembler,
+    alloc: &Allocation,
+    a: Armlet,
+    dst: Option<ValueRef>,
+    kind: VecBinKind,
+) -> Result<()> {
+    let d = dst.unwrap();
+    let q_form = (a.imm & 1) != 0;
+
+    // Load Vn into xmm0, Vm into xmm1, then act on xmm0.
+    load_xmm_q(asm, alloc, a.args[0], xmm0)?;
+    load_xmm_q(asm, alloc, a.args[1], xmm1)?;
+
+    match kind {
+        VecBinKind::Add(sz) => match sz {
+            0 => asm.paddb(xmm0, xmm1)?,
+            1 => asm.paddw(xmm0, xmm1)?,
+            2 => asm.paddd(xmm0, xmm1)?,
+            3 => asm.paddq(xmm0, xmm1)?,
+            _ => unreachable!(),
+        },
+        VecBinKind::Sub(sz) => match sz {
+            0 => asm.psubb(xmm0, xmm1)?,
+            1 => asm.psubw(xmm0, xmm1)?,
+            2 => asm.psubd(xmm0, xmm1)?,
+            3 => asm.psubq(xmm0, xmm1)?,
+            _ => unreachable!(),
+        },
+        VecBinKind::And => asm.pand(xmm0, xmm1)?,
+        VecBinKind::Orr => asm.por (xmm0, xmm1)?,
+        VecBinKind::Eor => asm.pxor(xmm0, xmm1)?,
+        VecBinKind::Bic => {
+            // ARM BIC = Vn AND NOT Vm. x86 PANDN dst, src computes ~dst & src,
+            // so we need ~Vm & Vn — load Vm into xmm0 (the to-be-NOT-ed side)
+            // and Vn into xmm1, then `pandn xmm0, xmm1`.
+            load_xmm_q(asm, alloc, a.args[1], xmm0)?;
+            load_xmm_q(asm, alloc, a.args[0], xmm1)?;
+            asm.pandn(xmm0, xmm1)?;
+        }
+        VecBinKind::Orn => {
+            // ARM ORN = Vn OR NOT Vm. x86: invert Vm via pxor with all-ones,
+            // then por with Vn.
+            asm.pcmpeqd(xmm2, xmm2)?; // all-ones
+            asm.pxor(xmm1, xmm2)?;    // xmm1 = ~Vm
+            asm.por (xmm0, xmm1)?;
+        }
+    }
+
+    if !q_form {
+        // 64-bit form: zero the upper 64 bits. movq xmm, xmm zeros high half.
+        asm.movq(xmm0, xmm0)?;
+    }
+    store_xmm_q(asm, alloc, d, xmm0)?;
     Ok(())
 }

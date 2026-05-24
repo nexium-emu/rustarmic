@@ -138,24 +138,32 @@ pub enum Op {
     FcvtSD   = 0x548,  // single → double
     FcvtDS   = 0x549,  // double → single
 
-    VecAdd  = 0x600,
-    VecSub  = 0x604,
-    VecMul  = 0x608,
-    VecAnd  = 0x60C,
-    VecOr   = 0x610,
-    VecEor  = 0x614,
-    VecDup  = 0x618,
-    Ins     = 0x61C,
-    Umov    = 0x620,
-    Smov    = 0x624,
+    // Per-lane vector ops. The lane element width is encoded in the low 2 bits
+    // (B/H/S/D = 1/2/4/8 bytes), matching the scalar size_log2 convention.
+    // The Q-flag (1 = 128-bit vector, 0 = 64-bit half-vector with upper bits
+    // zeroed) is carried in `imm` bit 0.
+    VecAdd8  = 0x600, VecAdd16  = 0x601, VecAdd32  = 0x602, VecAdd64  = 0x603,
+    VecSub8  = 0x604, VecSub16  = 0x605, VecSub32  = 0x606, VecSub64  = 0x607,
+
+    // Bitwise logicals — lane size is meaningless; only the Q-flag matters.
+    VecAnd   = 0x608,
+    VecOrr   = 0x60C,
+    VecEor   = 0x610,
+    VecBic   = 0x614,
+    VecOrn   = 0x618,
+
+    VecDup   = 0x61C,
+    Ins      = 0x620,
+    Umov     = 0x624,
+    Smov     = 0x628,
 
     // Glue ops for 128-bit values without dedicated 128-bit memory callbacks:
     // BuildQ assembles two u64 halves into a u128; ExtractLo/Hi64 pull them
     // back out. These map to single x86 instructions (movq / pinsrq / pextrq)
     // and let the optimizer fold round-trips when both halves are visible.
-    VecBuildQ      = 0x628,
-    VecExtractLo64 = 0x62C,
-    VecExtractHi64 = 0x630,
+    VecBuildQ      = 0x62C,
+    VecExtractLo64 = 0x630,
+    VecExtractHi64 = 0x634,
 
     Mrs            = 0x700,
     Msr            = 0x704,

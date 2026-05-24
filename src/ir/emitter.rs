@@ -175,6 +175,42 @@ impl<'b> IrEmitter<'b> {
         self.push(Armlet::new(Op::VecExtractHi64, Ty::U64).with_args(&[q]))
     }
 
+    // ─── Per-lane vector ALU ────────────────────────────────────────────────
+    // `lane_log2` selects element width (0=B, 1=H, 2=S, 3=D). `q` selects the
+    // full 128-bit form (true) vs the half-width form (false, upper 64 zeroed).
+
+    pub fn vec_add(&mut self, vn: ValueRef, vm: ValueRef, lane_log2: u32, q: bool) -> ValueRef {
+        let op = match lane_log2 {
+            0 => Op::VecAdd8, 1 => Op::VecAdd16, 2 => Op::VecAdd32, 3 => Op::VecAdd64,
+            _ => unreachable!("bad lane_log2"),
+        };
+        self.push(Armlet::new(op, Ty::U128).with_args(&[vn, vm]).with_imm(q as u64))
+    }
+
+    pub fn vec_sub(&mut self, vn: ValueRef, vm: ValueRef, lane_log2: u32, q: bool) -> ValueRef {
+        let op = match lane_log2 {
+            0 => Op::VecSub8, 1 => Op::VecSub16, 2 => Op::VecSub32, 3 => Op::VecSub64,
+            _ => unreachable!("bad lane_log2"),
+        };
+        self.push(Armlet::new(op, Ty::U128).with_args(&[vn, vm]).with_imm(q as u64))
+    }
+
+    pub fn vec_and(&mut self, vn: ValueRef, vm: ValueRef, q: bool) -> ValueRef {
+        self.push(Armlet::new(Op::VecAnd, Ty::U128).with_args(&[vn, vm]).with_imm(q as u64))
+    }
+    pub fn vec_orr(&mut self, vn: ValueRef, vm: ValueRef, q: bool) -> ValueRef {
+        self.push(Armlet::new(Op::VecOrr, Ty::U128).with_args(&[vn, vm]).with_imm(q as u64))
+    }
+    pub fn vec_eor(&mut self, vn: ValueRef, vm: ValueRef, q: bool) -> ValueRef {
+        self.push(Armlet::new(Op::VecEor, Ty::U128).with_args(&[vn, vm]).with_imm(q as u64))
+    }
+    pub fn vec_bic(&mut self, vn: ValueRef, vm: ValueRef, q: bool) -> ValueRef {
+        self.push(Armlet::new(Op::VecBic, Ty::U128).with_args(&[vn, vm]).with_imm(q as u64))
+    }
+    pub fn vec_orn(&mut self, vn: ValueRef, vm: ValueRef, q: bool) -> ValueRef {
+        self.push(Armlet::new(Op::VecOrn, Ty::U128).with_args(&[vn, vm]).with_imm(q as u64))
+    }
+
     // ─── NZCV ───────────────────────────────────────────────────────────────
     pub fn get_nzcv(&mut self) -> ValueRef {
         self.push(Armlet::new(Op::GetNzcv, Ty::Nzcv))
