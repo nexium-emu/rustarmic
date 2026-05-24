@@ -6,7 +6,7 @@ use crate::backend::abi::CTX_REG;
 use crate::backend::isel::{emit_armlet, emit_cond_check_byte};
 use crate::backend::operand::load64;
 use crate::backend::prologue::{emit_epilogue, emit_prologue};
-use crate::backend::regalloc::{compute_live_ranges, linear_scan, Allocation};
+use crate::backend::regalloc::{compute_live_ranges, linear_scan, Allocation, ALLOCATABLE_GPRS};
 use crate::error::{Error, Result};
 use crate::ir::block::ExceptionKind;
 use crate::ir::{Block, Terminal};
@@ -28,7 +28,7 @@ const BITNESS: u32 = 64;
 
 pub fn emit_block(block: &Block) -> Result<EmittedBlock> {
     let ranges = compute_live_ranges(block);
-    let alloc = linear_scan(block, &ranges, &[]);
+    let alloc = linear_scan(block, &ranges, ALLOCATABLE_GPRS);
     let frame_bytes = alloc.frame_bytes();
 
     let mut asm = CodeAssembler::new(BITNESS)?;
