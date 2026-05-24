@@ -33,6 +33,13 @@ pub struct Allocation {
     pub spill_bytes: i32,
 }
 
+impl Allocation {
+    #[inline]
+    pub fn loc(&self, v: crate::ir::ValueRef) -> Loc {
+        self.locs[v.as_usize()]
+    }
+}
+
 pub fn compute_live_ranges(block: &Block) -> Vec<LiveRange> {
     let n = block.code.len();
     let mut ranges = vec![LiveRange::DEAD; n];

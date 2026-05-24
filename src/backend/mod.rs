@@ -21,6 +21,7 @@
 
 pub mod abi;
 pub mod clobbers;
+pub mod operand;
 pub mod regalloc;
 pub mod reg_alloc;
 pub mod isel;
