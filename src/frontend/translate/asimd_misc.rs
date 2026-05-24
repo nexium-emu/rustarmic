@@ -14,14 +14,17 @@ use crate::ir::IrEmitter;
 use crate::util::bits::{bit, bits};
 
 #[derive(Clone, Copy)]
-enum Kind { Neg, Abs, Not }
+enum Kind { Neg, Abs, Not, FNeg, FAbs, FSqrt }
 
 pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDMISC) -> Result<InstStatus> {
     use ASIMDMISC::*;
     let (raw, kind) = match insn {
-        NEG_Vd_Vn(i) => (i.0, Kind::Neg),
-        ABS_Vd_Vn(i) => (i.0, Kind::Abs),
-        NOT_Vd_Vn(i) => (i.0, Kind::Not),
+        NEG_Vd_Vn(i)   => (i.0, Kind::Neg),
+        ABS_Vd_Vn(i)   => (i.0, Kind::Abs),
+        NOT_Vd_Vn(i)   => (i.0, Kind::Not),
+        FNEG_Vd_Vn(i)  => (i.0, Kind::FNeg),
+        FABS_Vd_Vn(i)  => (i.0, Kind::FAbs),
+        FSQRT_Vd_Vn(i) => (i.0, Kind::FSqrt),
         _ => return Err(Error::Unsupported { pc: em.current_pc, opcode: 0 }),
     };
 
@@ -40,6 +43,16 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDMISC) -> Result<InstStatus> 
             em.vec_abs(vn, size, q)
         }
         Kind::Not => em.vec_not(vn, q),
+        Kind::FNeg | Kind::FAbs | Kind::FSqrt => {
+            // FP misc ops use bit 22 as the sz flag (0 = single, 1 = double).
+            let double = bit(raw, 22) == 1;
+            match kind {
+                Kind::FNeg  => em.vec_fneg(vn, double, q),
+                Kind::FAbs  => em.vec_fabs(vn, double, q),
+                Kind::FSqrt => em.vec_fsqrt(vn, double, q),
+                _ => unreachable!(),
+            }
+        }
     };
     em.set_v_q(rd, result);
     Ok(InstStatus::Continue)

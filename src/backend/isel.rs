@@ -178,6 +178,16 @@ fn dispatch_op(op: Op) -> Option<EmitFn> {
 
         VecAddv32 => emit_op_vec_addv32,
 
+        VecFAdd_S  | VecFAdd_D  => emit_op_vec_fadd,
+        VecFSub_S  | VecFSub_D  => emit_op_vec_fsub,
+        VecFMul_S  | VecFMul_D  => emit_op_vec_fmul,
+        VecFDiv_S  | VecFDiv_D  => emit_op_vec_fdiv,
+        VecFMax_S  | VecFMax_D  => emit_op_vec_fmax,
+        VecFMin_S  | VecFMin_D  => emit_op_vec_fmin,
+        VecFNeg_S  | VecFNeg_D  => emit_op_vec_fneg,
+        VecFAbs_S  | VecFAbs_D  => emit_op_vec_fabs,
+        VecFSqrt_S | VecFSqrt_D => emit_op_vec_fsqrt,
+
         Hint | MemoryBarrier => emit_nop,
         Clrex => emit_op_clrex,
 
@@ -1011,6 +1021,75 @@ emit_vec_minmax!(emit_op_vec_smin, pminsb, pminsw, pminsd);
 emit_vec_minmax!(emit_op_vec_smax, pmaxsb, pmaxsw, pmaxsd);
 emit_vec_minmax!(emit_op_vec_umin, pminub, pminuw, pminud);
 emit_vec_minmax!(emit_op_vec_umax, pmaxub, pmaxuw, pmaxud);
+
+// ── Per-lane FP ──────────────────────────────────────────────────────────
+#[inline]
+fn vec_fp_is_double(op: Op) -> bool { (op as u16 & 1) != 0 }
+
+macro_rules! emit_vec_fbin {
+    ($name:ident, $ps:ident, $pd:ident) => {
+        fn $name(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+            let a = block.code[idx];
+            let d = dst_of(&a, idx).unwrap();
+            let q_form = (a.imm & 1) != 0;
+            let double = vec_fp_is_double(a.op);
+            let working = working_xmm_for(alloc, d, xmm0);
+            into_xmm_q(asm, alloc, a.args[0], working)?;
+            let other = get_xmm_q(asm, alloc, a.args[1], xmm1)?;
+            if double { asm.$pd(working, other)?; } else { asm.$ps(working, other)?; }
+            if !q_form { asm.movq(working, working)?; }
+            store_xmm_q(asm, alloc, d, working)
+        }
+    };
+}
+emit_vec_fbin!(emit_op_vec_fadd, addps, addpd);
+emit_vec_fbin!(emit_op_vec_fsub, subps, subpd);
+emit_vec_fbin!(emit_op_vec_fmul, mulps, mulpd);
+emit_vec_fbin!(emit_op_vec_fdiv, divps, divpd);
+emit_vec_fbin!(emit_op_vec_fmax, maxps, maxpd);
+emit_vec_fbin!(emit_op_vec_fmin, minps, minpd);
+
+fn emit_op_vec_fneg(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let d = dst_of(&a, idx).unwrap();
+    let q_form = (a.imm & 1) != 0;
+    let double = vec_fp_is_double(a.op);
+    let working = working_xmm_for(alloc, d, xmm0);
+    into_xmm_q(asm, alloc, a.args[0], working)?;
+    // Build sign-bit mask per lane in xmm1, then XOR.
+    asm.pcmpeqd(xmm1, xmm1)?;
+    if double { asm.psllq(xmm1, 63)?; } else { asm.pslld(xmm1, 31)?; }
+    asm.pxor(working, xmm1)?;
+    if !q_form { asm.movq(working, working)?; }
+    store_xmm_q(asm, alloc, d, working)
+}
+
+fn emit_op_vec_fabs(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let d = dst_of(&a, idx).unwrap();
+    let q_form = (a.imm & 1) != 0;
+    let double = vec_fp_is_double(a.op);
+    let working = working_xmm_for(alloc, d, xmm0);
+    into_xmm_q(asm, alloc, a.args[0], working)?;
+    // Build abs mask per lane in xmm1 (clear sign bit), then AND.
+    asm.pcmpeqd(xmm1, xmm1)?;
+    if double { asm.psrlq(xmm1, 1)?; } else { asm.psrld(xmm1, 1)?; }
+    asm.pand(working, xmm1)?;
+    if !q_form { asm.movq(working, working)?; }
+    store_xmm_q(asm, alloc, d, working)
+}
+
+fn emit_op_vec_fsqrt(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let d = dst_of(&a, idx).unwrap();
+    let q_form = (a.imm & 1) != 0;
+    let double = vec_fp_is_double(a.op);
+    let working = working_xmm_for(alloc, d, xmm0);
+    let src = get_xmm_q(asm, alloc, a.args[0], xmm1)?;
+    if double { asm.sqrtpd(working, src)?; } else { asm.sqrtps(working, src)?; }
+    if !q_form { asm.movq(working, working)?; }
+    store_xmm_q(asm, alloc, d, working)
+}
 
 // ── ADDV.4S (horizontal sum) ─────────────────────────────────────────────
 fn emit_op_vec_addv32(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {

@@ -226,6 +226,18 @@ pub enum Op {
     // lane width is exposed). 4S is the most common; 8H/16B are TBD.
     VecAddv32 = 0x698,
 
+    // Per-lane FP ops. `_S` = packed single (2S/4S), `_D` = packed double
+    // (2D). Q-flag in `imm` bit 0 distinguishes 2S (Q=0) from 4S (Q=1).
+    VecFAdd_S  = 0x6A0, VecFAdd_D  = 0x6A1,
+    VecFSub_S  = 0x6A2, VecFSub_D  = 0x6A3,
+    VecFMul_S  = 0x6A4, VecFMul_D  = 0x6A5,
+    VecFDiv_S  = 0x6A6, VecFDiv_D  = 0x6A7,
+    VecFMax_S  = 0x6A8, VecFMax_D  = 0x6A9,
+    VecFMin_S  = 0x6AA, VecFMin_D  = 0x6AB,
+    VecFNeg_S  = 0x6AC, VecFNeg_D  = 0x6AD,
+    VecFAbs_S  = 0x6AE, VecFAbs_D  = 0x6AF,
+    VecFSqrt_S = 0x6B0, VecFSqrt_D = 0x6B1,
+
     Mrs            = 0x700,
     Msr            = 0x704,
     Hint           = 0x708,

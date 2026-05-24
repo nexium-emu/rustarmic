@@ -19,6 +19,10 @@ enum Kind {
     CmEq, CmGt, CmGe, CmHi, CmHs,
     Bit, Bif, Bsl,
     Smin, Smax, Umin, Umax,
+    // FP per-lane ops. disarm64 groups every FP vector form (2S/4S/2D) into a
+    // single `_V_2S_` enum variant, so we only need one `Kind` per op and
+    // decode the (q, sz) bits at translate time.
+    FAdd, FSub, FMul, FDiv, FMax, FMin,
 }
 
 pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDSAME) -> Result<InstStatus> {
@@ -44,6 +48,18 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDSAME) -> Result<InstStatus> 
         SMAX_Vd_Vn_Vm(i) => (i.0, Kind::Smax),
         UMIN_Vd_Vn_Vm(i) => (i.0, Kind::Umin),
         UMAX_Vd_Vn_Vm(i) => (i.0, Kind::Umax),
+        FADD_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => (i.0, Kind::FAdd),
+        FADD_Vd_Vn_Vm(i)                => (i.0, Kind::FAdd),
+        FSUB_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => (i.0, Kind::FSub),
+        FSUB_Vd_Vn_Vm(i)                => (i.0, Kind::FSub),
+        FMUL_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => (i.0, Kind::FMul),
+        FMUL_Vd_Vn_Vm(i)                => (i.0, Kind::FMul),
+        FDIV_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => (i.0, Kind::FDiv),
+        FDIV_Vd_Vn_Vm(i)                => (i.0, Kind::FDiv),
+        FMAX_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => (i.0, Kind::FMax),
+        FMAX_Vd_Vn_Vm(i)                => (i.0, Kind::FMax),
+        FMIN_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => (i.0, Kind::FMin),
+        FMIN_Vd_Vn_Vm(i)                => (i.0, Kind::FMin),
         _ => return Err(Error::Unsupported { pc: em.current_pc, opcode: 0 }),
     };
 
@@ -107,6 +123,22 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDSAME) -> Result<InstStatus> 
                 Kind::Smax => em.vec_smax(vn, vm, size, q),
                 Kind::Umin => em.vec_umin(vn, vm, size, q),
                 Kind::Umax => em.vec_umax(vn, vm, size, q),
+                _ => unreachable!(),
+            }
+        }
+        Kind::FAdd | Kind::FSub | Kind::FMul | Kind::FDiv | Kind::FMax | Kind::FMin => {
+            // sz bit at 22 selects single (0) vs double (1).
+            let double = bit(raw, 22) == 1;
+            if double && !q {
+                return Err(Error::Decode { pc: em.current_pc, opcode: raw });
+            }
+            match kind {
+                Kind::FAdd => em.vec_fadd(vn, vm, double, q),
+                Kind::FSub => em.vec_fsub(vn, vm, double, q),
+                Kind::FMul => em.vec_fmul(vn, vm, double, q),
+                Kind::FDiv => em.vec_fdiv(vn, vm, double, q),
+                Kind::FMax => em.vec_fmax(vn, vm, double, q),
+                Kind::FMin => em.vec_fmin(vn, vm, double, q),
                 _ => unreachable!(),
             }
         }

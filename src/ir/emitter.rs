@@ -409,6 +409,45 @@ impl<'b> IrEmitter<'b> {
         self.push(Armlet::new(Op::VecAddv32, Ty::U32).with_args(&[vn]))
     }
 
+    // ─── Per-lane FP ────────────────────────────────────────────────────────
+    fn vec_fbin(&mut self, op_s: Op, op_d: Op, double: bool, vn: ValueRef, vm: ValueRef, q: bool) -> ValueRef {
+        let op = if double { op_d } else { op_s };
+        self.push(Armlet::new(op, Ty::U128).with_args(&[vn, vm]).with_imm(q as u64))
+    }
+
+    pub fn vec_fadd(&mut self, vn: ValueRef, vm: ValueRef, double: bool, q: bool) -> ValueRef {
+        self.vec_fbin(Op::VecFAdd_S, Op::VecFAdd_D, double, vn, vm, q)
+    }
+    pub fn vec_fsub(&mut self, vn: ValueRef, vm: ValueRef, double: bool, q: bool) -> ValueRef {
+        self.vec_fbin(Op::VecFSub_S, Op::VecFSub_D, double, vn, vm, q)
+    }
+    pub fn vec_fmul(&mut self, vn: ValueRef, vm: ValueRef, double: bool, q: bool) -> ValueRef {
+        self.vec_fbin(Op::VecFMul_S, Op::VecFMul_D, double, vn, vm, q)
+    }
+    pub fn vec_fdiv(&mut self, vn: ValueRef, vm: ValueRef, double: bool, q: bool) -> ValueRef {
+        self.vec_fbin(Op::VecFDiv_S, Op::VecFDiv_D, double, vn, vm, q)
+    }
+    pub fn vec_fmax(&mut self, vn: ValueRef, vm: ValueRef, double: bool, q: bool) -> ValueRef {
+        self.vec_fbin(Op::VecFMax_S, Op::VecFMax_D, double, vn, vm, q)
+    }
+    pub fn vec_fmin(&mut self, vn: ValueRef, vm: ValueRef, double: bool, q: bool) -> ValueRef {
+        self.vec_fbin(Op::VecFMin_S, Op::VecFMin_D, double, vn, vm, q)
+    }
+
+    fn vec_funop(&mut self, op_s: Op, op_d: Op, double: bool, vn: ValueRef, q: bool) -> ValueRef {
+        let op = if double { op_d } else { op_s };
+        self.push(Armlet::new(op, Ty::U128).with_args(&[vn]).with_imm(q as u64))
+    }
+    pub fn vec_fneg(&mut self, vn: ValueRef, double: bool, q: bool) -> ValueRef {
+        self.vec_funop(Op::VecFNeg_S, Op::VecFNeg_D, double, vn, q)
+    }
+    pub fn vec_fabs(&mut self, vn: ValueRef, double: bool, q: bool) -> ValueRef {
+        self.vec_funop(Op::VecFAbs_S, Op::VecFAbs_D, double, vn, q)
+    }
+    pub fn vec_fsqrt(&mut self, vn: ValueRef, double: bool, q: bool) -> ValueRef {
+        self.vec_funop(Op::VecFSqrt_S, Op::VecFSqrt_D, double, vn, q)
+    }
+
     // ─── NZCV ───────────────────────────────────────────────────────────────
     pub fn get_nzcv(&mut self) -> ValueRef {
         self.push(Armlet::new(Op::GetNzcv, Ty::Nzcv))

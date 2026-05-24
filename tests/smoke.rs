@@ -1825,3 +1825,109 @@ fn vec_addv_4s_sums_all_lanes() {
     assert_eq!(ctx.v[0][0] >> 32, 0, "upper 32 of lane 0 zeroed");
     assert_eq!(ctx.v[0][1], 0, "upper 64 zeroed");
 }
+
+#[test]
+fn vec_fadd_4s() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    // Lanes (low-to-high): 1.0, 2.0, 3.0, 4.0
+    let v1_lo = ((2.0_f32).to_bits() as u64) << 32 | (1.0_f32).to_bits() as u64;
+    let v1_hi = ((4.0_f32).to_bits() as u64) << 32 | (3.0_f32).to_bits() as u64;
+    let v2_lo = ((20.0_f32).to_bits() as u64) << 32 | (10.0_f32).to_bits() as u64;
+    let v2_hi = ((40.0_f32).to_bits() as u64) << 32 | (30.0_f32).to_bits() as u64;
+    ctx.v[1] = [v1_lo, v1_hi];
+    ctx.v[2] = [v2_lo, v2_hi];
+    let code = build_code(&[
+        0x4E22_D420, // fadd v0.4s, v1.4s, v2.4s
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    let exp_lo = ((22.0_f32).to_bits() as u64) << 32 | (11.0_f32).to_bits() as u64;
+    let exp_hi = ((44.0_f32).to_bits() as u64) << 32 | (33.0_f32).to_bits() as u64;
+    assert_eq!(ctx.v[0][0], exp_lo);
+    assert_eq!(ctx.v[0][1], exp_hi);
+}
+
+#[test]
+fn vec_fmul_2d() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [(2.5_f64).to_bits(), (3.0_f64).to_bits()];
+    ctx.v[2] = [(4.0_f64).to_bits(), (1.5_f64).to_bits()];
+    let code = build_code(&[
+        0x6E62_DC20, // fmul v0.2d, v1.2d, v2.2d
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    assert_eq!(f64::from_bits(ctx.v[0][0]), 10.0);
+    assert_eq!(f64::from_bits(ctx.v[0][1]), 4.5);
+}
+
+#[test]
+fn vec_fadd_2s_zeros_upper_half() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    let v1_lo = ((2.0_f32).to_bits() as u64) << 32 | (1.0_f32).to_bits() as u64;
+    ctx.v[1] = [v1_lo, 0xDEAD_BEEF_CAFE_BABE];
+    let v2_lo = ((20.0_f32).to_bits() as u64) << 32 | (10.0_f32).to_bits() as u64;
+    ctx.v[2] = [v2_lo, 0x1234_5678_9ABC_DEF0];
+    let code = build_code(&[
+        0x0E22_D420, // fadd v0.2s, v1.2s, v2.2s
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    let exp_lo = ((22.0_f32).to_bits() as u64) << 32 | (11.0_f32).to_bits() as u64;
+    assert_eq!(ctx.v[0][0], exp_lo);
+    assert_eq!(ctx.v[0][1], 0, "2S form must zero upper 64");
+}
+
+#[test]
+fn vec_fneg_4s_flips_signs() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    let v1_lo = ((-2.0_f32).to_bits() as u64) << 32 | (1.5_f32).to_bits() as u64;
+    let v1_hi = ((0.0_f32).to_bits() as u64) << 32 | (3.14_f32).to_bits() as u64;
+    ctx.v[1] = [v1_lo, v1_hi];
+    let code = build_code(&[
+        0x6EA0_F820, // fneg v0.4s, v1.4s
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    let exp_lo = ((2.0_f32).to_bits() as u64) << 32 | ((-1.5_f32).to_bits() as u64);
+    // -0.0 has sign bit set in IEEE 754.
+    let exp_hi = ((-0.0_f32).to_bits() as u64) << 32 | ((-3.14_f32).to_bits() as u64);
+    assert_eq!(ctx.v[0][0], exp_lo);
+    assert_eq!(ctx.v[0][1], exp_hi);
+}
+
+#[test]
+fn vec_fabs_2d_strips_sign() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [(-7.5_f64).to_bits(), (3.14_f64).to_bits()];
+    let code = build_code(&[
+        0x4EE0_F820, // fabs v0.2d, v1.2d
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    assert_eq!(f64::from_bits(ctx.v[0][0]), 7.5);
+    assert_eq!(f64::from_bits(ctx.v[0][1]), 3.14);
+}
+
+#[test]
+fn vec_fsqrt_4s() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    let v1_lo = ((9.0_f32).to_bits() as u64) << 32 | (4.0_f32).to_bits() as u64;
+    let v1_hi = ((25.0_f32).to_bits() as u64) << 32 | (16.0_f32).to_bits() as u64;
+    ctx.v[1] = [v1_lo, v1_hi];
+    let code = build_code(&[
+        0x6EA1_F820, // fsqrt v0.4s, v1.4s
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    let exp_lo = ((3.0_f32).to_bits() as u64) << 32 | (2.0_f32).to_bits() as u64;
+    let exp_hi = ((5.0_f32).to_bits() as u64) << 32 | (4.0_f32).to_bits() as u64;
+    assert_eq!(ctx.v[0][0], exp_lo);
+    assert_eq!(ctx.v[0][1], exp_hi);
+}
