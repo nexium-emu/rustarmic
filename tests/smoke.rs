@@ -543,3 +543,40 @@ fn add_sub_chain_uses_constant_folding() {
     assert_eq!(ctx.x[2], 103);
     assert_eq!(ctx.x[3], 53);
 }
+
+#[test]
+fn msr_then_mrs_tpidr_el0_round_trip() {
+    // movz x0, #0xCAFE
+    // msr tpidr_el0, x0
+    // mrs x1, tpidr_el0
+    // brk #0
+    let code = build_code(&[
+        0xD299_5FC0, // movz x0, #0xCAFE
+        0xD51B_D040, // msr tpidr_el0, x0
+        0xD53B_D041, // mrs x1, tpidr_el0
+        0xD4200000,
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    run(code, &mut ctx);
+    assert_eq!(ctx.tpidr_el0, 0xCAFE, "MSR should write tpidr_el0 slot");
+    assert_eq!(ctx.x[1], 0xCAFE, "MRS should round-trip the value");
+}
+
+#[test]
+fn pacia_then_autia_round_trips_pointer() {
+    // movz x0, #0xABCD
+    // pacia x0, x1     ; identity in our model
+    // autia x0, x1     ; identity in our model
+    // brk #0
+    let code = build_code(&[
+        0xD295_79A0, // movz x0, #0xABCD
+        0xDAC1_0020, // pacia x0, x1
+        0xDAC1_1020, // autia x0, x1
+        0xD4200000,
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    run(code, &mut ctx);
+    assert_eq!(ctx.x[0], 0xABCD, "PACIA+AUTIA should be identity in our model");
+}
