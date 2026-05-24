@@ -40,3 +40,4 @@ pub mod dp_3src;
 pub mod asimd_same;
 pub mod asimd_misc;
 pub mod asimd_shf;
+pub mod asimd_ins;

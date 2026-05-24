@@ -1557,3 +1557,110 @@ fn vec_bsl_selects_per_bit() {
     assert_eq!(ctx.v[0][0], exp0);
     assert_eq!(ctx.v[0][1], exp1);
 }
+
+#[test]
+fn vec_dup_4s_from_gpr() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.x[1] = 0xDEAD_BEEF_CAFE_BABE;
+    let code = build_code(&[
+        0x4E04_0C20, // dup v0.4s, w1
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    let want = 0xCAFE_BABE_CAFE_BABEu64;
+    assert_eq!(ctx.v[0][0], want);
+    assert_eq!(ctx.v[0][1], want);
+}
+
+#[test]
+fn vec_dup_16b_from_gpr() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.x[1] = 0xCAFE_BABE_DEAD_BE5A;
+    let code = build_code(&[
+        0x4E01_0C20, // dup v0.16b, w1
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    let want = 0x5A5A_5A5A_5A5A_5A5Au64;
+    assert_eq!(ctx.v[0][0], want);
+    assert_eq!(ctx.v[0][1], want);
+}
+
+#[test]
+fn vec_dup_2d_from_gpr() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.x[1] = 0x1122_3344_5566_7788;
+    let code = build_code(&[
+        0x4E08_0C20, // dup v0.2d, x1
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    assert_eq!(ctx.v[0][0], 0x1122_3344_5566_7788);
+    assert_eq!(ctx.v[0][1], 0x1122_3344_5566_7788);
+}
+
+#[test]
+fn vec_umov_w_from_s_lane() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    // Lane layout (4S): lane0=lo[0..32], lane1=lo[32..64], lane2=hi[0..32], lane3=hi[32..64]
+    ctx.v[1] = [0x9999_9999_1111_1111, 0xDEAD_BEEF_2222_2222];
+    let code = build_code(&[
+        0x0E14_3C20, // umov w0, v1.s[2]
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // S[2] = low 32 of v[1][1] = 0x2222_2222 (little-endian within u64).
+    assert_eq!(ctx.x[0], 0x2222_2222);
+}
+
+#[test]
+fn vec_smov_x_from_b_lane_sign_extends() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    // Put 0x80 at byte lane 2 of V1 (third byte of v[1][0] little-endian).
+    ctx.v[1] = [0x0000_0000_0080_0000, 0];
+    let code = build_code(&[
+        0x4E05_2C20, // smov x0, v1.b[2]  (imm5=00101 → byte lane 2)
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // lane 2 byte = 0x80 → sign-extend to 0xFFFFFFFFFFFFFF80
+    assert_eq!(ctx.x[0], 0xFFFF_FFFF_FFFF_FF80);
+}
+
+#[test]
+fn vec_ins_b_lane_from_gpr_preserves_rest() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[0] = [0xAAAA_AAAA_AAAA_AAAA, 0xBBBB_BBBB_BBBB_BBBB];
+    ctx.x[1] = 0x12_34_56_78_9A_BC_DE_F0;
+    let code = build_code(&[
+        0x4E07_1C20, // ins v0.b[3], w1
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // Low byte of W1 is 0xF0; replaces byte lane 3 of V0.
+    // V0 was [0xAAAA_AAAA_AAAA_AAAA, ...] (16 bytes 0xAA).
+    // After: byte[3] = 0xF0, others 0xAA.
+    assert_eq!(ctx.v[0][0], 0xAAAA_AAAA_F0AA_AAAA);
+    assert_eq!(ctx.v[0][1], 0xBBBB_BBBB_BBBB_BBBB);
+}
+
+#[test]
+fn vec_dup_4s_from_element() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [0xAAAA_AAAA_1111_1111, 0xDEAD_BEEF_2222_2222];
+    let code = build_code(&[
+        0x4E14_0420, // dup v0.4s, v1.s[2]
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // V1.S[2] = low 32 of v[1][1] = 0x2222_2222. Broadcast to all 4 S lanes.
+    assert_eq!(ctx.v[0][0], 0x2222_2222_2222_2222);
+    assert_eq!(ctx.v[0][1], 0x2222_2222_2222_2222);
+}

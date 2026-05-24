@@ -152,10 +152,10 @@ pub enum Op {
     VecBic   = 0x614,
     VecOrn   = 0x618,
 
-    VecDup   = 0x61C,
-    Ins      = 0x620,
-    Umov     = 0x624,
-    Smov     = 0x628,
+    // DUP from GPR: broadcast a scalar value to every lane of a u128.
+    VecDupGpr8  = 0x61C, VecDupGpr16 = 0x61D, VecDupGpr32 = 0x61E, VecDupGpr64 = 0x61F,
+    // INS from GPR: write a scalar lane. `imm` carries `(lane_idx << 1) | q_form`.
+    VecInsGpr8  = 0x620, VecInsGpr16 = 0x621, VecInsGpr32 = 0x622, VecInsGpr64 = 0x623,
 
     // Glue ops for 128-bit values without dedicated 128-bit memory callbacks:
     // BuildQ assembles two u64 halves into a u128; ExtractLo/Hi64 pull them

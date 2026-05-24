@@ -70,6 +70,7 @@ pub fn translate_instruction(em: &mut IrEmitter<'_>, inst: u32) -> Result<InstSt
         Operation::ASIMDSAME(insn)        => translate::asimd_same::translate(em, insn),
         Operation::ASIMDMISC(insn)        => translate::asimd_misc::translate(em, insn),
         Operation::ASIMDSHF(insn)         => translate::asimd_shf::translate(em, insn),
+        Operation::ASIMDINS(insn)         => translate::asimd_ins::translate(em, insn),
         _ => Err(Error::Unsupported { pc: em.current_pc, opcode: inst }),
     }
 }

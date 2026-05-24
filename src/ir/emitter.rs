@@ -333,6 +333,27 @@ impl<'b> IrEmitter<'b> {
         self.push(Armlet::new(Op::VecBsl, Ty::U128).with_args(&[vd_prev, vn, vm]).with_imm(q as u64))
     }
 
+    /// Broadcast a scalar GPR value to all lanes of the result vector.
+    /// `gpr_val` must be a U32 (for 8/16/32-bit lanes) or U64 (for 64-bit).
+    pub fn vec_dup_gpr(&mut self, gpr_val: ValueRef, lane_log2: u32, q: bool) -> ValueRef {
+        let op = match lane_log2 {
+            0 => Op::VecDupGpr8, 1 => Op::VecDupGpr16, 2 => Op::VecDupGpr32, 3 => Op::VecDupGpr64,
+            _ => unreachable!(),
+        };
+        self.push(Armlet::new(op, Ty::U128).with_args(&[gpr_val]).with_imm(q as u64))
+    }
+
+    /// Insert a scalar GPR value into a specific lane of `vd_prev`.
+    /// The lane index lives in `imm` bits 1..8; the Q-flag is bit 0.
+    pub fn vec_ins_gpr(&mut self, vd_prev: ValueRef, gpr_val: ValueRef, lane_log2: u32, lane: u32, q: bool) -> ValueRef {
+        let op = match lane_log2 {
+            0 => Op::VecInsGpr8, 1 => Op::VecInsGpr16, 2 => Op::VecInsGpr32, 3 => Op::VecInsGpr64,
+            _ => unreachable!(),
+        };
+        let imm = (q as u64) | ((lane as u64) << 1);
+        self.push(Armlet::new(op, Ty::U128).with_args(&[vd_prev, gpr_val]).with_imm(imm))
+    }
+
     // ─── NZCV ───────────────────────────────────────────────────────────────
     pub fn get_nzcv(&mut self) -> ValueRef {
         self.push(Armlet::new(Op::GetNzcv, Ty::Nzcv))

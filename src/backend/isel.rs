@@ -164,6 +164,9 @@ fn dispatch_op(op: Op) -> Option<EmitFn> {
         VecBif => emit_op_vec_bif,
         VecBsl => emit_op_vec_bsl,
 
+        VecDupGpr8 | VecDupGpr16 | VecDupGpr32 | VecDupGpr64 => emit_op_vec_dup_gpr,
+        VecInsGpr8 | VecInsGpr16 | VecInsGpr32 | VecInsGpr64 => emit_op_vec_ins_gpr,
+
         Hint | MemoryBarrier => emit_nop,
         Clrex => emit_op_clrex,
 
@@ -855,6 +858,78 @@ fn emit_op_vec_bsl(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, i
     asm.pandn(working, vm)?;                                 // working = ~vd & vm
     asm.por(working, xmm2)?;
     if !q_form { asm.movq(working, working)?; }
+    store_xmm_q(asm, alloc, d, working)
+}
+
+// ── DUP from GPR (broadcast scalar to all lanes) ─────────────────────────
+fn emit_op_vec_dup_gpr(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let d = dst_of(&a, idx).unwrap();
+    let q_form = (a.imm & 1) != 0;
+    let lane = a.op.size_log2();
+    let working = working_xmm_for(alloc, d, xmm0);
+
+    match lane {
+        0 => {
+            // 8-bit broadcast: movd + pshufb with zero mask.
+            load32(asm, alloc, a.args[0], eax)?;
+            asm.movd(working, eax)?;
+            asm.pxor(xmm1, xmm1)?;
+            asm.pshufb(working, xmm1)?;
+        }
+        1 => {
+            // 16-bit broadcast: movd + pshuflw + pshufd.
+            load32(asm, alloc, a.args[0], eax)?;
+            asm.movd(working, eax)?;
+            asm.pshuflw(working, working, 0)?;
+            asm.pshufd(working, working, 0)?;
+        }
+        2 => {
+            // 32-bit broadcast: movd + pshufd.
+            load32(asm, alloc, a.args[0], eax)?;
+            asm.movd(working, eax)?;
+            asm.pshufd(working, working, 0)?;
+        }
+        3 => {
+            // 64-bit broadcast: movq + punpcklqdq.
+            load64(asm, alloc, a.args[0], rax)?;
+            asm.movq(working, rax)?;
+            asm.punpcklqdq(working, working)?;
+        }
+        _ => unreachable!(),
+    }
+    if !q_form { asm.movq(working, working)?; }
+    store_xmm_q(asm, alloc, d, working)
+}
+
+// ── INS from GPR (write one lane) ───────────────────────────────────────
+fn emit_op_vec_ins_gpr(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let d = dst_of(&a, idx).unwrap();
+    let lane_idx = (a.imm >> 1) as i32;
+    let lane = a.op.size_log2();
+    let working = working_xmm_for(alloc, d, xmm0);
+    // Start with vd_prev in working; insert the new lane value.
+    into_xmm_q(asm, alloc, a.args[0], working)?;
+    match lane {
+        0 => {
+            load32(asm, alloc, a.args[1], eax)?;
+            asm.pinsrb(working, eax, lane_idx)?;
+        }
+        1 => {
+            load32(asm, alloc, a.args[1], eax)?;
+            asm.pinsrw(working, eax, lane_idx)?;
+        }
+        2 => {
+            load32(asm, alloc, a.args[1], eax)?;
+            asm.pinsrd(working, eax, lane_idx)?;
+        }
+        3 => {
+            load64(asm, alloc, a.args[1], rax)?;
+            asm.pinsrq(working, rax, lane_idx)?;
+        }
+        _ => unreachable!(),
+    }
     store_xmm_q(asm, alloc, d, working)
 }
 
