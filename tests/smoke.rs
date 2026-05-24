@@ -761,3 +761,48 @@ fn fcsel_d_picks_not_taken_when_ne() {
     run(code, &mut ctx);
     assert_eq!(f64::from_bits(ctx.v[4][0]), 3.5, "NE fails → fcsel picks Fm (d1)");
 }
+
+#[test]
+fn fmov_d_immediate_loads_1_0() {
+    // fmov d0, #1.0   (imm8 = 0x70 in VFPExpandImm)
+    let code = build_code(&[
+        0x1E6E_1000,
+        0xD4200000,
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[0] = [0xDEAD_BEEF_DEAD_BEEF, 0xDEAD_BEEF_DEAD_BEEF];
+    run(code, &mut ctx);
+    assert_eq!(f64::from_bits(ctx.v[0][0]), 1.0);
+    assert_eq!(ctx.v[0][1], 0, "high lane zeroed");
+}
+
+#[test]
+fn fmov_d_immediate_loads_2_0() {
+    // fmov d0, #2.0   (imm8 = 0x00)
+    let code = build_code(&[
+        0x1E60_1000,
+        0xD4200000,
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    run(code, &mut ctx);
+    assert_eq!(f64::from_bits(ctx.v[0][0]), 2.0);
+}
+
+#[test]
+fn fmov_s_immediate_loads_1_0() {
+    // fmov s0, #1.0    (ptype = 00, imm8 = 0x70)
+    // 0001 1110 0010 1110 0001 0000 0000 0000
+    let code = build_code(&[
+        0x1E2E_1000,
+        0xD4200000,
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    run(code, &mut ctx);
+    let bits = ctx.v[0][0] as u32;
+    assert_eq!(f32::from_bits(bits), 1.0);
+    assert_eq!(ctx.v[0][0] >> 32, 0, "upper 32 of lane 0 zeroed");
+    assert_eq!(ctx.v[0][1], 0);
+}
