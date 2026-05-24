@@ -128,6 +128,24 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
                         },
                         Simplify::ToIdentity(vr) => a.become_identity(vr),
                     }
+                } else if let Some((base, new_const, new_op)) =
+                    try_combine_const(&a, block, &scratch.consts)
+                {
+                    let (const_op, const_ty) = if new_op.size_bits() == 32 {
+                        (Op::ConstU32, Ty::U32)
+                    } else {
+                        (Op::ConstU64, Ty::U64)
+                    };
+                    let const_vr = block.insert_before(
+                        vr,
+                        Armlet::new(const_op, const_ty).with_imm(new_const),
+                    );
+                    a.op = new_op;
+                    a.args = [base, const_vr, ValueRef::NONE, ValueRef::NONE];
+                    n = block.code.len();
+                    scratch.consts.resize(n, None);
+                    scratch.uses.resize(n, 0);
+                    scratch.consts[const_vr.as_usize()] = Some(new_const);
                 }
             }
 
@@ -237,6 +255,69 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
         }
         cursor = prev_cursor;
     }
+}
+
+/// Constant-combining peephole: `(base op c1) op c2` collapses to
+/// `base op (c1 ∘ c2)`. Outer's constant must be on RHS; inner must be the
+/// same op family (or Add/Sub paired) with a constant also on RHS. Returns
+/// `(base, combined_const, new_op)` if the pattern applies.
+fn try_combine_const(
+    a: &Armlet,
+    block: &Block,
+    consts: &[Option<u64>],
+) -> Option<(ValueRef, u64, Op)> {
+    let outer_op = a.op;
+    let outer_const = consts.get(a.args[1].as_usize()).copied().flatten()?;
+    let inner_vr = a.args[0];
+    if !inner_vr.is_some() { return None; }
+    let inner = block.code.get(inner_vr.as_usize())?;
+    let inner_const = consts.get(inner.args[1].as_usize()).copied().flatten()?;
+    let base = inner.args[0];
+    if !base.is_some() { return None; }
+
+    let bits = outer_op.size_bits();
+    let mask: u64 = if bits >= 64 { !0 } else { (1u64 << bits) - 1 };
+    let bits_minus_1 = (bits - 1) as u64;
+
+    use Op::*;
+    let (new_const, new_op): (u64, Op) = match (outer_op, inner.op) {
+        // Same op chains
+        (Add32, Add32) => (inner_const.wrapping_add(outer_const) & mask, Add32),
+        (Add64, Add64) => (inner_const.wrapping_add(outer_const), Add64),
+        (Sub32, Sub32) => (inner_const.wrapping_add(outer_const) & mask, Sub32),
+        (Sub64, Sub64) => (inner_const.wrapping_add(outer_const), Sub64),
+        (And32, And32) => (inner_const & outer_const & mask, And32),
+        (And64, And64) => (inner_const & outer_const, And64),
+        (Or32,  Or32)  => ((inner_const | outer_const) & mask, Or32),
+        (Or64,  Or64)  => (inner_const | outer_const, Or64),
+        (Eor32, Eor32) => ((inner_const ^ outer_const) & mask, Eor32),
+        (Eor64, Eor64) => (inner_const ^ outer_const, Eor64),
+        (Mul32, Mul32) => (inner_const.wrapping_mul(outer_const) & mask, Mul32),
+        (Mul64, Mul64) => (inner_const.wrapping_mul(outer_const), Mul64),
+
+        // Add/Sub crossovers — outer rewrites to a single Add or Sub
+        (Add32, Sub32) => (outer_const.wrapping_sub(inner_const) & mask, Add32),
+        (Add64, Sub64) => (outer_const.wrapping_sub(inner_const), Add64),
+        (Sub32, Add32) => (inner_const.wrapping_sub(outer_const) & mask, Add32),
+        (Sub64, Add64) => (inner_const.wrapping_sub(outer_const), Add64),
+
+        // Shifts: total amount must stay below word width to keep semantics
+        // simple; let strength-reduction or the existing fold handle overflow.
+        (Lsl32, Lsl32) | (Lsl64, Lsl64)
+        | (Lsr32, Lsr32) | (Lsr64, Lsr64)
+        | (Asr32, Asr32) | (Asr64, Asr64) => {
+            let sum = inner_const.wrapping_add(outer_const);
+            if sum > bits_minus_1 { return None; }
+            (sum, outer_op)
+        }
+        (Ror32, Ror32) | (Ror64, Ror64) => {
+            (inner_const.wrapping_add(outer_const) & bits_minus_1, outer_op)
+        }
+
+        _ => return None,
+    };
+
+    Some((base, new_const, new_op))
 }
 
 enum Simplify {
@@ -637,5 +718,94 @@ mod tests {
         optimize(&mut block);
         let (op, _) = final_setx_source(&block, set_vr);
         assert_eq!(op, Op::GetX, "x & x should reduce to x");
+    }
+
+    /// Walks the (post-optimize) chain feeding into SetX, returning the final
+    /// `op(base_op, args[1] const value)` of the binop driving SetX.
+    fn outer_binop_const(block: &Block, set_vr: ValueRef) -> (Op, u64) {
+        let set = &block.code[set_vr.as_usize()];
+        let outer = &block.code[set.args[0].as_usize()];
+        let c = &block.code[outer.args[1].as_usize()];
+        (outer.op, c.imm)
+    }
+
+    #[test]
+    fn combine_add_add_collapses_constants() {
+        let mut block = Block::new(0x1000);
+        let mut em = IrEmitter::new(&mut block, 0x1000);
+        let a = em.get_x(0);
+        let c1 = em.const_u64(5);
+        let inner = em.push(Armlet::new(Op::Add64, Ty::U64).with_args(&[a, c1]));
+        let c2 = em.const_u64(3);
+        let outer = em.push(Armlet::new(Op::Add64, Ty::U64).with_args(&[inner, c2]));
+        let set_vr = em.push(Armlet::new(Op::SetX, Ty::Void).with_args(&[outer]).with_imm(1));
+        optimize(&mut block);
+        let (op, imm) = outer_binop_const(&block, set_vr);
+        assert_eq!(op, Op::Add64);
+        assert_eq!(imm, 8, "(x + 5) + 3 → x + 8");
+    }
+
+    #[test]
+    fn combine_sub_sub_collapses_constants() {
+        let mut block = Block::new(0x1000);
+        let mut em = IrEmitter::new(&mut block, 0x1000);
+        let a = em.get_x(0);
+        let c1 = em.const_u64(5);
+        let inner = em.push(Armlet::new(Op::Sub64, Ty::U64).with_args(&[a, c1]));
+        let c2 = em.const_u64(3);
+        let outer = em.push(Armlet::new(Op::Sub64, Ty::U64).with_args(&[inner, c2]));
+        let set_vr = em.push(Armlet::new(Op::SetX, Ty::Void).with_args(&[outer]).with_imm(1));
+        optimize(&mut block);
+        let (op, imm) = outer_binop_const(&block, set_vr);
+        assert_eq!(op, Op::Sub64);
+        assert_eq!(imm, 8, "(x - 5) - 3 → x - 8");
+    }
+
+    #[test]
+    fn combine_add_sub_crossover() {
+        let mut block = Block::new(0x1000);
+        let mut em = IrEmitter::new(&mut block, 0x1000);
+        let a = em.get_x(0);
+        let c1 = em.const_u64(10);
+        let inner = em.push(Armlet::new(Op::Sub64, Ty::U64).with_args(&[a, c1]));
+        let c2 = em.const_u64(3);
+        let outer = em.push(Armlet::new(Op::Add64, Ty::U64).with_args(&[inner, c2]));
+        let set_vr = em.push(Armlet::new(Op::SetX, Ty::Void).with_args(&[outer]).with_imm(1));
+        optimize(&mut block);
+        let (op, imm) = outer_binop_const(&block, set_vr);
+        assert_eq!(op, Op::Add64);
+        assert_eq!(imm as i64, -7, "(x - 10) + 3 → x + (-7)");
+    }
+
+    #[test]
+    fn combine_shl_shl_sums_amounts() {
+        let mut block = Block::new(0x1000);
+        let mut em = IrEmitter::new(&mut block, 0x1000);
+        let a = em.get_x(0);
+        let c1 = em.const_u64(3);
+        let inner = em.push(Armlet::new(Op::Lsl64, Ty::U64).with_args(&[a, c1]));
+        let c2 = em.const_u64(4);
+        let outer = em.push(Armlet::new(Op::Lsl64, Ty::U64).with_args(&[inner, c2]));
+        let set_vr = em.push(Armlet::new(Op::SetX, Ty::Void).with_args(&[outer]).with_imm(1));
+        optimize(&mut block);
+        let (op, imm) = outer_binop_const(&block, set_vr);
+        assert_eq!(op, Op::Lsl64);
+        assert_eq!(imm, 7, "(x << 3) << 4 → x << 7");
+    }
+
+    #[test]
+    fn combine_and_and_intersects_masks() {
+        let mut block = Block::new(0x1000);
+        let mut em = IrEmitter::new(&mut block, 0x1000);
+        let a = em.get_x(0);
+        let c1 = em.const_u64(0xFF00);
+        let inner = em.push(Armlet::new(Op::And64, Ty::U64).with_args(&[a, c1]));
+        let c2 = em.const_u64(0x0FF0);
+        let outer = em.push(Armlet::new(Op::And64, Ty::U64).with_args(&[inner, c2]));
+        let set_vr = em.push(Armlet::new(Op::SetX, Ty::Void).with_args(&[outer]).with_imm(1));
+        optimize(&mut block);
+        let (op, imm) = outer_binop_const(&block, set_vr);
+        assert_eq!(op, Op::And64);
+        assert_eq!(imm, 0x0F00, "(x & 0xFF00) & 0x0FF0 → x & 0x0F00");
     }
 }
