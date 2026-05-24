@@ -648,3 +648,78 @@ fn fmul_s_two_floats() {
     assert_eq!(ctx.v[2][1], 0, "FMUL S zeros upper 96 bits");
     assert_eq!(ctx.v[2][0] >> 32, 0, "and the upper 32 bits of lane 0");
 }
+
+#[test]
+fn fcmp_d_less_sets_n_flag() {
+    // fcmp d0, d1     ; 1.0 vs 2.0 → less → NZCV = 1000 (N=1)
+    // brk
+    let code = build_code(&[
+        0x1E61_2000,
+        0xD4200000,
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[0] = [(1.0_f64).to_bits(), 0];
+    ctx.v[1] = [(2.0_f64).to_bits(), 0];
+    run(code, &mut ctx);
+    assert_eq!(ctx.nzcv, 0b1000, "1.0 < 2.0 should set N only");
+}
+
+#[test]
+fn fcmp_d_equal_sets_z_and_c() {
+    // fcmp d0, d1   ; 1.5 == 1.5 → NZCV = 0110 (Z=1, C=1)
+    let code = build_code(&[
+        0x1E61_2000,
+        0xD4200000,
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[0] = [(1.5_f64).to_bits(), 0];
+    ctx.v[1] = [(1.5_f64).to_bits(), 0];
+    run(code, &mut ctx);
+    assert_eq!(ctx.nzcv, 0b0110, "equal should set Z and C");
+}
+
+#[test]
+fn fcmp_d_greater_sets_c_only() {
+    // fcmp d0, d1   ; 3.0 > 1.0 → NZCV = 0010 (C=1)
+    let code = build_code(&[
+        0x1E61_2000,
+        0xD4200000,
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[0] = [(3.0_f64).to_bits(), 0];
+    ctx.v[1] = [(1.0_f64).to_bits(), 0];
+    run(code, &mut ctx);
+    assert_eq!(ctx.nzcv, 0b0010, "greater should set C only");
+}
+
+#[test]
+fn fcmp_d_nan_sets_c_and_v() {
+    // fcmp d0, d1   ; NaN vs 1.0 → unordered → NZCV = 0011 (C=1, V=1)
+    let code = build_code(&[
+        0x1E61_2000,
+        0xD4200000,
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[0] = [f64::NAN.to_bits(), 0];
+    ctx.v[1] = [(1.0_f64).to_bits(), 0];
+    run(code, &mut ctx);
+    assert_eq!(ctx.nzcv, 0b0011, "unordered (NaN) should set C and V");
+}
+
+#[test]
+fn fcmp_d_against_zero_immediate() {
+    // fcmp d0, #0.0   ; 5.0 > 0 → NZCV = 0010 (C=1)
+    let code = build_code(&[
+        0x1E60_2008,
+        0xD4200000,
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[0] = [(5.0_f64).to_bits(), 0];
+    run(code, &mut ctx);
+    assert_eq!(ctx.nzcv, 0b0010, "5.0 > 0 should set C");
+}

@@ -177,6 +177,7 @@ pub fn emit_armlet(
         Op::Fsub32 | Op::Fsub64 => emit_fbinop(asm, alloc, a, dst_vr, FpBinKind::Sub, a.op.size_bits())?,
         Op::Fmul32 | Op::Fmul64 => emit_fbinop(asm, alloc, a, dst_vr, FpBinKind::Mul, a.op.size_bits())?,
         Op::Fdiv32 | Op::Fdiv64 => emit_fbinop(asm, alloc, a, dst_vr, FpBinKind::Div, a.op.size_bits())?,
+        Op::Fcmp32 | Op::Fcmp64 => emit_fcmp(asm, alloc, a, a.op.size_bits())?,
 
         op if op.is_terminator() => {}
 
@@ -822,6 +823,44 @@ fn emit_fbinop(
         }
         if let Some(d) = dst { store_xmm_s(asm, alloc, d, xmm0)?; }
     }
+    Ok(())
+}
+
+/// FCMP: maps x86 EFLAGS (after UCOMISS/UCOMISD) to ARM NZCV nibble.
+///
+/// ARM FCMP sets NZCV as:
+///   GT  → 0010, LT  → 1000, EQ  → 0110, Unord → 0011.
+/// x86 UCOMIS* leaves:
+///   GT  → ZF=0,PF=0,CF=0; LT → CF=1; EQ → ZF=1; Unord → PF=ZF=CF=1.
+/// We mask CF/ZF with `!PF` so LT/EQ collapse to 0 in the unordered case,
+/// then synthesise C = !N and pack the nibble.
+fn emit_fcmp(asm: &mut CodeAssembler, alloc: &Allocation, a: Armlet, bits: u32) -> Result<()> {
+    if bits == 64 {
+        load_xmm_d(asm, alloc, a.args[0], xmm0)?;
+        load_xmm_d(asm, alloc, a.args[1], xmm1)?;
+        asm.ucomisd(xmm0, xmm1)?;
+    } else {
+        load_xmm_s(asm, alloc, a.args[0], xmm0)?;
+        load_xmm_s(asm, alloc, a.args[1], xmm1)?;
+        asm.ucomiss(xmm0, xmm1)?;
+    }
+    // Capture EFLAGS bits BEFORE any arithmetic — AND/OR/XOR all clear CF/OF.
+    asm.setp(r8b)?;
+    asm.setnp(cl)?;
+    asm.setz(r9b)?;
+    asm.setc(r10b)?;
+    // Now compute. PF set ⇒ unordered, so mask ZF and CF with !PF.
+    asm.and(r9b, cl)?;       // Z = ZF & !PF
+    asm.and(r10b, cl)?;      // N = CF & !PF
+    asm.mov(r11b, r10b)?;
+    asm.xor(r11b, 1i32)?;    // C = !N
+    asm.shl(r10b, 3i32)?;
+    asm.shl(r9b, 2i32)?;
+    asm.shl(r11b, 1i32)?;
+    asm.or(r10b, r9b)?;
+    asm.or(r10b, r11b)?;
+    asm.or(r10b, r8b)?;      // V = PF
+    asm.mov(byte_ptr(CTX_REG + cpu_offsets::nzcv() as i32), r10b)?;
     Ok(())
 }
 

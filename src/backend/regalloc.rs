@@ -182,7 +182,7 @@ pub fn linear_scan(block: &Block, ranges: &[LiveRange], pool: &[u8]) -> Allocati
     let mut active: Vec<(u32, u8, usize)> = Vec::new();
 
     // Lambda that allocates a spill slot, preferring an XMM register.
-    let mut take_spill = |spill_cursor: &mut i32, xmm_free: &mut Vec<u8>, used_xmms: &mut u16| -> Loc {
+    let take_spill = |spill_cursor: &mut i32, xmm_free: &mut Vec<u8>, used_xmms: &mut u16| -> Loc {
         if let Some(x) = xmm_free.pop() {
             *used_xmms |= 1 << x;
             Loc::Xmm(x)
