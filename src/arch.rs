@@ -125,6 +125,25 @@ pub const COND_TRUTH: [u16; 16] = [
     0xFFFF, // NV:  always (deprecated to AL)
 ];
 
+/// System-register identifier packed as `op0:op1:CRn:CRm:op2` (15 bits).
+pub mod sysreg {
+    pub const fn pack(op0: u32, op1: u32, crn: u32, crm: u32, op2: u32) -> u16 {
+        ((op0 << 14) | (op1 << 11) | (crn << 7) | (crm << 3) | op2) as u16
+    }
+
+    pub const NZCV:        u16 = pack(3, 3, 4,  2, 0);
+    pub const FPCR:        u16 = pack(3, 3, 4,  4, 0);
+    pub const FPSR:        u16 = pack(3, 3, 4,  4, 1);
+    pub const TPIDR_EL0:   u16 = pack(3, 3, 13, 0, 2);
+    pub const TPIDRRO_EL0: u16 = pack(3, 3, 13, 0, 3);
+    pub const CTR_EL0:     u16 = pack(3, 3, 0,  0, 1);
+    pub const DCZID_EL0:   u16 = pack(3, 3, 0,  0, 7);
+    pub const MIDR_EL1:    u16 = pack(3, 0, 0,  0, 0);
+    pub const MPIDR_EL1:   u16 = pack(3, 0, 0,  0, 5);
+    pub const CNTFRQ_EL0:  u16 = pack(3, 3, 14, 0, 0);
+    pub const CNTVCT_EL0:  u16 = pack(3, 3, 14, 0, 2);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
