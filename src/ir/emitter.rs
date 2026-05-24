@@ -448,6 +448,25 @@ impl<'b> IrEmitter<'b> {
         self.vec_funop(Op::VecFSqrt_S, Op::VecFSqrt_D, double, vn, q)
     }
 
+    /// Widening add. `src_lane_log2` is 0..=2 (B/H/S); result lane is one
+    /// wider (H/S/D). `high_half=true` reads bytes 8..16 of each source.
+    pub fn vec_saddl(&mut self, vn: ValueRef, vm: ValueRef, src_lane_log2: u32, high_half: bool) -> ValueRef {
+        let imm = ((high_half as u64) << 1) | ((src_lane_log2 as u64) << 2);
+        self.push(Armlet::new(Op::VecSaddl, Ty::U128).with_args(&[vn, vm]).with_imm(imm))
+    }
+    pub fn vec_uaddl(&mut self, vn: ValueRef, vm: ValueRef, src_lane_log2: u32, high_half: bool) -> ValueRef {
+        let imm = ((high_half as u64) << 1) | ((src_lane_log2 as u64) << 2);
+        self.push(Armlet::new(Op::VecUaddl, Ty::U128).with_args(&[vn, vm]).with_imm(imm))
+    }
+
+    /// Narrowing truncate. `src_lane_log2` is 1..=3 (H/S/D); result lane is
+    /// one narrower (B/H/S). Result is packed in the low 64 bits; upper 64
+    /// is zeroed.
+    pub fn vec_xtn(&mut self, vn: ValueRef, src_lane_log2: u32) -> ValueRef {
+        let imm = (src_lane_log2 as u64) << 2;
+        self.push(Armlet::new(Op::VecXtn, Ty::U128).with_args(&[vn]).with_imm(imm))
+    }
+
     // ─── NZCV ───────────────────────────────────────────────────────────────
     pub fn get_nzcv(&mut self) -> ValueRef {
         self.push(Armlet::new(Op::GetNzcv, Ty::Nzcv))

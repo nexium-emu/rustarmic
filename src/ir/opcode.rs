@@ -238,6 +238,17 @@ pub enum Op {
     VecFAbs_S  = 0x6AE, VecFAbs_D  = 0x6AF,
     VecFSqrt_S = 0x6B0, VecFSqrt_D = 0x6B1,
 
+    // Widening add. Source lane log2 in imm bits 2..4 (0=B, 1=H, 2=S);
+    // bit 1 = high-half flag (1 = SADDL2/UADDL2); bit 0 unused.
+    VecSaddl = 0x6B4,
+    VecUaddl = 0x6B8,
+
+    // Narrowing truncate. Source lane log2 in imm bits 2..4 (1=H, 2=S, 3=D),
+    // dst lane is one smaller. Result is written to the LOW 64 bits; upper
+    // 64 zeroed for XTN. (XTN2 — preserving the low half — would need a
+    // 3-op variant; deferred.)
+    VecXtn = 0x6BC,
+
     Mrs            = 0x700,
     Msr            = 0x704,
     Hint           = 0x708,

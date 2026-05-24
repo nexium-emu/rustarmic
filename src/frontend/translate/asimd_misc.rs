@@ -14,7 +14,7 @@ use crate::ir::IrEmitter;
 use crate::util::bits::{bit, bits};
 
 #[derive(Clone, Copy)]
-enum Kind { Neg, Abs, Not, FNeg, FAbs, FSqrt }
+enum Kind { Neg, Abs, Not, FNeg, FAbs, FSqrt, Xtn }
 
 pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDMISC) -> Result<InstStatus> {
     use ASIMDMISC::*;
@@ -25,6 +25,7 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDMISC) -> Result<InstStatus> 
         FNEG_Vd_Vn(i)  => (i.0, Kind::FNeg),
         FABS_Vd_Vn(i)  => (i.0, Kind::FAbs),
         FSQRT_Vd_Vn(i) => (i.0, Kind::FSqrt),
+        XTN_Vd_Vn(i)   => (i.0, Kind::Xtn),
         _ => return Err(Error::Unsupported { pc: em.current_pc, opcode: 0 }),
     };
 
@@ -52,6 +53,22 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDMISC) -> Result<InstStatus> 
                 Kind::FSqrt => em.vec_fsqrt(vn, double, q),
                 _ => unreachable!(),
             }
+        }
+        Kind::Xtn => {
+            // XTN narrows by one: B->… wait XTN takes the wider lane source
+            // (size bits indicate the DESTINATION lane width). For
+            // XTN.<Td>, Vn.<Ts>, source lane Ts = Td * 2 in bits.
+            // `size` field at 22 says dst lane: 00=B, 01=H, 10=S; we pass
+            // src_lane_log2 = size + 1 to the IR helper.
+            if size > 2 {
+                return Err(Error::Decode { pc: em.current_pc, opcode: raw });
+            }
+            // Q=1 (XTN2) preserves the low half of Vd — we don't support
+            // that yet; only the XTN (Q=0) form, which zeroes the upper 64.
+            if q {
+                return Err(Error::Unsupported { pc: em.current_pc, opcode: raw });
+            }
+            em.vec_xtn(vn, size + 1)
         }
     };
     em.set_v_q(rd, result);

@@ -1931,3 +1931,84 @@ fn vec_fsqrt_4s() {
     assert_eq!(ctx.v[0][0], exp_lo);
     assert_eq!(ctx.v[0][1], exp_hi);
 }
+
+#[test]
+fn vec_saddl_8h_signed_widening_add() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    // Low 64 of V1 = 8 bytes: 0x80, 0x10, 0x7F, 0xFF, 0x01, 0x02, 0x03, 0x04
+    // Low 64 of V2 = 8 bytes: 0x01, 0xF0, 0x01, 0x01, 0xFF, 0xFE, 0xFD, 0xFC
+    ctx.v[1] = [0x0403_0201_FF7F_1080, 0xDEAD_BEEF_CAFE_BABE]; // hi ignored
+    ctx.v[2] = [0xFCFD_FEFF_0101_F001, 0xDEAD_BEEF_CAFE_BABE];
+    let code = build_code(&[
+        0x0E22_0020, // saddl v0.8h, v1.8b, v2.8b
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // Lane by lane (signed extend B to H, then add):
+    //   B0: -128 + 1   = -127 = 0xFF81
+    //   B1: 0x10 + -16 = 0
+    //   B2: 127 + 1    = 128 = 0x0080
+    //   B3: -1  + 1    = 0
+    //   B4: 1   + -1   = 0
+    //   B5: 2   + -2   = 0
+    //   B6: 3   + -3   = 0
+    //   B7: 4   + -4   = 0
+    assert_eq!(ctx.v[0][0], 0x0000_0080_0000_FF81);
+    assert_eq!(ctx.v[0][1], 0x0000_0000_0000_0000);
+}
+
+#[test]
+fn vec_uaddl_8h_unsigned_widening_add() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [0x0403_0201_FF7F_1080, 0];
+    ctx.v[2] = [0x0000_0000_0101_F001, 0];
+    let code = build_code(&[
+        0x2E22_0020, // uaddl v0.8h, v1.8b, v2.8b
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // Unsigned widen + add:
+    //   B0: 0x80 + 0x01 = 0x0081
+    //   B1: 0x10 + 0xF0 = 0x0100
+    //   B2: 0x7F + 0x01 = 0x0080
+    //   B3: 0xFF + 0x01 = 0x0100
+    //   B4..B7: 1+0,2+0,3+0,4+0
+    assert_eq!(ctx.v[0][0], 0x0100_0080_0100_0081);
+    assert_eq!(ctx.v[0][1], 0x0004_0003_0002_0001);
+}
+
+#[test]
+fn vec_saddl2_8h_reads_high_half() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    // Bytes 8..15 of each source are what's used.
+    ctx.v[1] = [0xDEAD_BEEF_CAFE_BABE, 0x0403_0201_FF7F_1080];
+    ctx.v[2] = [0xDEAD_BEEF_CAFE_BABE, 0xFCFD_FEFF_0101_F001];
+    let code = build_code(&[
+        0x4E22_0020, // saddl2 v0.8h, v1.16b, v2.16b
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // Same expected values as the SADDL test (since we set the high halves
+    // of v1/v2 to the same bytes the SADDL low-half test used).
+    assert_eq!(ctx.v[0][0], 0x0000_0080_0000_FF81);
+    assert_eq!(ctx.v[0][1], 0x0000_0000_0000_0000);
+}
+
+#[test]
+fn vec_xtn_8b_truncates_each_h_lane() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    // 8 H lanes; XTN takes the low byte of each.
+    ctx.v[1] = [0x1234_5678_9ABC_DEF0, 0xCAFE_BABE_FACE_FEED];
+    let code = build_code(&[
+        0x0E21_2820, // xtn v0.8b, v1.8h
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // Each H lane's low byte (little-endian within u64): 0xF0, 0xBC, 0x78, 0x34, 0xED, 0xCE, 0xBE, 0xFE
+    assert_eq!(ctx.v[0][0], 0xFEBE_CEED_3478_BCF0);
+    assert_eq!(ctx.v[0][1], 0, "upper 64 zeroed for XTN.8B");
+}

@@ -188,6 +188,10 @@ fn dispatch_op(op: Op) -> Option<EmitFn> {
         VecFAbs_S  | VecFAbs_D  => emit_op_vec_fabs,
         VecFSqrt_S | VecFSqrt_D => emit_op_vec_fsqrt,
 
+        VecSaddl => emit_op_vec_addl_signed,
+        VecUaddl => emit_op_vec_addl_unsigned,
+        VecXtn   => emit_op_vec_xtn,
+
         Hint | MemoryBarrier => emit_nop,
         Clrex => emit_op_clrex,
 
@@ -1088,6 +1092,94 @@ fn emit_op_vec_fsqrt(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation,
     let src = get_xmm_q(asm, alloc, a.args[0], xmm1)?;
     if double { asm.sqrtpd(working, src)?; } else { asm.sqrtps(working, src)?; }
     if !q_form { asm.movq(working, working)?; }
+    store_xmm_q(asm, alloc, d, working)
+}
+
+// ── Widening add ──────────────────────────────────────────────────────────
+fn emit_widening_addl(
+    asm: &mut CodeAssembler,
+    alloc: &Allocation,
+    a: Armlet,
+    d: ValueRef,
+    signed: bool,
+) -> Result<()> {
+    let high_half = ((a.imm >> 1) & 1) != 0;
+    let src_lane = ((a.imm >> 2) & 0x3) as u32;
+    let working = working_xmm_for(alloc, d, xmm0);
+
+    // Get both sources into scratch XMMs; if high_half, shift each right by
+    // 8 bytes so the high half is now in the low half (ready for pmovsxXX).
+    into_xmm_q(asm, alloc, a.args[0], working)?;
+    let other_src = get_xmm_q(asm, alloc, a.args[1], xmm1)?;
+    if other_src != xmm1 { asm.movdqa(xmm1, other_src)?; }
+
+    if high_half {
+        asm.psrldq(working, 8)?;
+        asm.psrldq(xmm1, 8)?;
+    }
+
+    // Widen each source to the result lane in place.
+    if signed {
+        match src_lane {
+            0 => { asm.pmovsxbw(working, working)?; asm.pmovsxbw(xmm1, xmm1)?; asm.paddw(working, xmm1)?; }
+            1 => { asm.pmovsxwd(working, working)?; asm.pmovsxwd(xmm1, xmm1)?; asm.paddd(working, xmm1)?; }
+            2 => { asm.pmovsxdq(working, working)?; asm.pmovsxdq(xmm1, xmm1)?; asm.paddq(working, xmm1)?; }
+            _ => return Err(Error::Backend(format!("VecSaddl lane {} not supported", src_lane))),
+        }
+    } else {
+        match src_lane {
+            0 => { asm.pmovzxbw(working, working)?; asm.pmovzxbw(xmm1, xmm1)?; asm.paddw(working, xmm1)?; }
+            1 => { asm.pmovzxwd(working, working)?; asm.pmovzxwd(xmm1, xmm1)?; asm.paddd(working, xmm1)?; }
+            2 => { asm.pmovzxdq(working, working)?; asm.pmovzxdq(xmm1, xmm1)?; asm.paddq(working, xmm1)?; }
+            _ => return Err(Error::Backend(format!("VecUaddl lane {} not supported", src_lane))),
+        }
+    }
+    store_xmm_q(asm, alloc, d, working)
+}
+
+fn emit_op_vec_addl_signed(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let d = dst_of(&a, idx).unwrap();
+    emit_widening_addl(asm, alloc, a, d, true)
+}
+fn emit_op_vec_addl_unsigned(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let d = dst_of(&a, idx).unwrap();
+    emit_widening_addl(asm, alloc, a, d, false)
+}
+
+// ── Narrowing truncate (XTN) ─────────────────────────────────────────────
+fn emit_op_vec_xtn(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let d = dst_of(&a, idx).unwrap();
+    let src_lane = ((a.imm >> 2) & 0x3) as u32;
+    let working = working_xmm_for(alloc, d, xmm0);
+    into_xmm_q(asm, alloc, a.args[0], working)?;
+
+    match src_lane {
+        1 => {
+            // H -> B: mask low byte of each H lane, then packuswb (no
+            // saturation since values are <= 0xFF).
+            asm.pcmpeqd(xmm1, xmm1)?;
+            asm.psrlw(xmm1, 8)?;           // each H lane = 0x00FF
+            asm.pand(working, xmm1)?;
+            asm.packuswb(working, working)?;
+        }
+        2 => {
+            // S -> H: mask low halfword, then packusdw (SSE4.1).
+            asm.pcmpeqd(xmm1, xmm1)?;
+            asm.psrld(xmm1, 16)?;
+            asm.pand(working, xmm1)?;
+            asm.packusdw(working, working)?;
+        }
+        3 => {
+            // D -> S: pshufd to pick low 32 of each D lane.
+            // imm 0b00_00_10_00 = 0x08 selects dwords [0, 2, 0, 0].
+            asm.pshufd(working, working, 0x08)?;
+        }
+        _ => return Err(Error::Backend(format!("VecXtn src lane {} not supported", src_lane))),
+    }
+    asm.movq(working, working)?; // zero upper 64
     store_xmm_q(asm, alloc, d, working)
 }
 
