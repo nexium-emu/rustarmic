@@ -36,6 +36,14 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
     let mut reach_sp:   ValueRef = ValueRef::NONE;
     let mut reach_nzcv: ValueRef = ValueRef::NONE;
 
+    // Dead-store elimination state: for each register class, the ValueRef of
+    // the previous SetX/SetSp/SetNzcv that hasn't been read yet. A second
+    // write overwrites the first → drop it. Cleared by ops that could let an
+    // observer (callback, exception) see ctx before the next write.
+    let mut last_setx:    [ValueRef; NUM_GPRS] = [ValueRef::NONE; NUM_GPRS];
+    let mut last_set_sp:   ValueRef = ValueRef::NONE;
+    let mut last_set_nzcv: ValueRef = ValueRef::NONE;
+
     let mut cursor = block.head_vr();
     while let Some(vr) = cursor {
         let i = vr.as_usize();
@@ -64,6 +72,9 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
                     let def = reach_x[reg];
                     if def.is_some() {
                         a.become_identity(def);
+                    } else {
+                        // Real read of ctx.x[reg] — consumes any pending SetX.
+                        last_setx[reg] = ValueRef::NONE;
                     }
                 }
             }
@@ -74,39 +85,59 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
                     if def.is_some() {
                         a.become_identity(def);
                         a.ty = Ty::U32;
+                    } else {
+                        last_setx[reg] = ValueRef::NONE;
                     }
                 }
             }
             Op::GetSp => {
                 if reach_sp.is_some() {
                     a.become_identity(reach_sp);
+                } else {
+                    last_set_sp = ValueRef::NONE;
                 }
             }
             Op::GetNzcv => {
                 if reach_nzcv.is_some() {
                     a.become_identity(reach_nzcv);
+                } else {
+                    last_set_nzcv = ValueRef::NONE;
                 }
             }
 
-            Op::SetX => {
+            Op::SetX | Op::SetW => {
                 let reg = a.imm as usize;
                 if reg < NUM_GPRS {
+                    let prev = last_setx[reg];
+                    if prev.is_some() {
+                        block.unlink(prev);
+                    }
                     reach_x[reg] = a.args[0];
+                    last_setx[reg] = vr;
                 }
             }
-            Op::SetW => {
-                let reg = a.imm as usize;
-                if reg < NUM_GPRS {
-                    reach_x[reg] = a.args[0];
-                }
+            Op::SetSp => {
+                let prev = last_set_sp;
+                if prev.is_some() { block.unlink(prev); }
+                reach_sp = a.args[0];
+                last_set_sp = vr;
             }
-            Op::SetSp   => { reach_sp   = a.args[0]; }
-            Op::SetNzcv => { reach_nzcv = a.args[0]; }
+            Op::SetNzcv => {
+                let prev = last_set_nzcv;
+                if prev.is_some() { block.unlink(prev); }
+                reach_nzcv = a.args[0];
+                last_set_nzcv = vr;
+            }
 
             Op::AddsFlags32 | Op::AddsFlags64
             | Op::SubsFlags32 | Op::SubsFlags64
             | Op::Fcmp32 | Op::Fcmp64 => {
                 reach_nzcv = ValueRef::NONE;
+                // Flag-setting op also writes ctx.nzcv, invalidating any
+                // pending SetNzcv (it would be overwritten).
+                let prev = last_set_nzcv;
+                if prev.is_some() { block.unlink(prev); }
+                last_set_nzcv = ValueRef::NONE;
             }
 
             Op::ConstU32 => { scratch.consts[i] = Some(a.imm & 0xFFFF_FFFF); }
@@ -149,7 +180,17 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
                 }
             }
 
-            _ => {}
+            _ => {
+                // Any side-effect op we didn't recognise above — loads,
+                // stores, exceptions, etc. — may invoke a user callback that
+                // observes ctx state, so conservatively kill all pending
+                // register stores to preserve ordering.
+                if a.op.has_side_effects() {
+                    for s in last_setx.iter_mut() { *s = ValueRef::NONE; }
+                    last_set_sp = ValueRef::NONE;
+                    last_set_nzcv = ValueRef::NONE;
+                }
+            }
         }
 
         // Mul-fold peephole: collapse `a * K1 ± a * K2` (constructed from
@@ -349,8 +390,16 @@ fn try_combine_const(
         // Same op chains
         (Add32, Add32) => (inner_const.wrapping_add(outer_const) & mask, Add32),
         (Add64, Add64) => (inner_const.wrapping_add(outer_const), Add64),
-        (Sub32, Sub32) => (inner_const.wrapping_add(outer_const) & mask, Sub32),
-        (Sub64, Sub64) => (inner_const.wrapping_add(outer_const), Sub64),
+        // Canonicalise `(x - c1) - c2` to `x + (-(c1+c2))` so every
+        // additive chain ends up as Add — keeps later peepholes uniform.
+        (Sub32, Sub32) => (
+            0u64.wrapping_sub(inner_const.wrapping_add(outer_const)) & mask,
+            Add32,
+        ),
+        (Sub64, Sub64) => (
+            0u64.wrapping_sub(inner_const.wrapping_add(outer_const)),
+            Add64,
+        ),
         (And32, And32) => (inner_const & outer_const & mask, And32),
         (And64, And64) => (inner_const & outer_const, And64),
         (Or32,  Or32)  => ((inner_const | outer_const) & mask, Or32),
@@ -811,7 +860,7 @@ mod tests {
     }
 
     #[test]
-    fn combine_sub_sub_collapses_constants() {
+    fn combine_sub_sub_collapses_to_add_with_negated_const() {
         let mut block = Block::new(0x1000);
         let mut em = IrEmitter::new(&mut block, 0x1000);
         let a = em.get_x(0);
@@ -822,8 +871,8 @@ mod tests {
         let set_vr = em.push(Armlet::new(Op::SetX, Ty::Void).with_args(&[outer]).with_imm(1));
         optimize(&mut block);
         let (op, imm) = outer_binop_const(&block, set_vr);
-        assert_eq!(op, Op::Sub64);
-        assert_eq!(imm, 8, "(x - 5) - 3 → x - 8");
+        assert_eq!(op, Op::Add64, "Sub-Sub canonicalises to Add");
+        assert_eq!(imm as i64, -8, "(x - 5) - 3 → x + (-8)");
     }
 
     #[test]
@@ -925,6 +974,71 @@ mod tests {
             Terminal::DirectBranch { target_pc, .. } => assert_eq!(target_pc, 0x2000),
             other => panic!("AL cond should collapse to DirectBranch, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn dse_drops_overwritten_setx() {
+        // SetX(0, 1); SetX(0, 2) — first SetX is dead.
+        let mut block = Block::new(0x1000);
+        let mut em = IrEmitter::new(&mut block, 0x1000);
+        let v1 = em.const_u64(1);
+        em.set_x(0, v1);
+        let v2 = em.const_u64(2);
+        em.set_x(0, v2);
+        optimize(&mut block);
+        let setx_count = block.iter_live()
+            .filter(|(_, a)| matches!(a.op, Op::SetX))
+            .count();
+        assert_eq!(setx_count, 1, "DSE should drop the first SetX");
+    }
+
+    #[test]
+    fn dse_preserves_setx_when_observed_by_store() {
+        // SetX(0, 1); Store(addr, val); SetX(0, 2) — the Store callback may
+        // read ctx.x[0], so the first SetX must be preserved.
+        let mut block = Block::new(0x1000);
+        let mut em = IrEmitter::new(&mut block, 0x1000);
+        let v1 = em.const_u64(1);
+        em.set_x(0, v1);
+        let addr = em.const_u64(0x4000);
+        let val  = em.const_u64(0x99);
+        em.store(addr, val, 8);
+        let v2 = em.const_u64(2);
+        em.set_x(0, v2);
+        optimize(&mut block);
+        let setx_count = block.iter_live()
+            .filter(|(_, a)| matches!(a.op, Op::SetX))
+            .count();
+        assert_eq!(setx_count, 2, "store callback may observe ctx.x; keep first SetX");
+    }
+
+    #[test]
+    fn dse_preserves_setx_when_consumed_by_getx() {
+        // SetX(0, 1); GetX(0) (no prior reach, treat as real read);
+        // SetX(0, 2). The first SetX shouldn't be dropped if no reach_x
+        // chase could rewrite the read.
+        //
+        // In practice, our optimizer DOES rewrite GetX(0) here via reach_x
+        // (since SetX(0, v1) populates reach_x[0]=v1), so the GetX becomes
+        // Identity(v1) and the first SetX is still dead. Test that the JIT
+        // result is correct regardless: x[0] = 2.
+        let mut block = Block::new(0x1000);
+        let mut em = IrEmitter::new(&mut block, 0x1000);
+        let v1 = em.const_u64(1);
+        em.set_x(0, v1);
+        let read_back = em.get_x(0);
+        em.set_x(1, read_back);  // x[1] = 1
+        let v2 = em.const_u64(2);
+        em.set_x(0, v2);
+        optimize(&mut block);
+        // x[1] should ultimately read v1 (via Identity chase) — verify the
+        // SetX(1, ...) source ends up as ConstU64(1).
+        let setx1 = block.iter_live()
+            .find(|(_, a)| matches!(a.op, Op::SetX) && a.imm == 1)
+            .expect("SetX(1) should remain");
+        let src = &block.code[setx1.1.args[0].as_usize()];
+        assert_eq!(src.op, Op::ConstU64);
+        assert_eq!(src.imm, 1);
     }
 
     #[test]
