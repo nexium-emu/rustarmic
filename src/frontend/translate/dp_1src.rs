@@ -19,7 +19,26 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: DP_1SRC) -> Result<InstStatus> {
         REV32_Rd_Rn(i)    => (i.0, Kind::Rev32),
         REV_Rd_Rn(i)      => (i.0, Kind::RevAll),
         REV_Rd_X_Rn_X(i)  => (i.0, Kind::RevAll),
-        _ => return Err(Error::Unsupported { pc: em.current_pc, opcode: 0 }),
+
+        PACIA_Rd_Rn_SP(i)  => return pac_identity(em, i.0),
+        PACIB_Rd_Rn_SP(i)  => return pac_identity(em, i.0),
+        PACDA_Rd_Rn_SP(i)  => return pac_identity(em, i.0),
+        PACDB_Rd_Rn_SP(i)  => return pac_identity(em, i.0),
+        AUTIA_Rd_Rn_SP(i)  => return pac_identity(em, i.0),
+        AUTIB_Rd_Rn_SP(i)  => return pac_identity(em, i.0),
+        AUTDA_Rd_Rn_SP(i)  => return pac_identity(em, i.0),
+        AUTDB_Rd_Rn_SP(i)  => return pac_identity(em, i.0),
+
+        PACIZA_Rd(i) => return pac_identity(em, i.0),
+        PACIZB_Rd(i) => return pac_identity(em, i.0),
+        PACDZA_Rd(i) => return pac_identity(em, i.0),
+        PACDZB_Rd(i) => return pac_identity(em, i.0),
+        AUTIZA_Rd(i) => return pac_identity(em, i.0),
+        AUTIZB_Rd(i) => return pac_identity(em, i.0),
+        AUTDZA_Rd(i) => return pac_identity(em, i.0),
+        AUTDZB_Rd(i) => return pac_identity(em, i.0),
+        XPACI_Rd(i)  => return pac_identity(em, i.0),
+        XPACD_Rd(i)  => return pac_identity(em, i.0),
     };
 
     let sf = bit(raw, 31);
@@ -43,5 +62,13 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: DP_1SRC) -> Result<InstStatus> {
     };
     let result = em.push(Armlet::new(op, op_ty).with_args(&[src]));
     em.set_gpr(rd, result, size);
+    Ok(InstStatus::Continue)
+}
+
+fn pac_identity(em: &mut IrEmitter<'_>, raw: u32) -> Result<InstStatus> {
+    let rd = bits(raw, 0, 5) as u8;
+    let src = em.get_gpr(rd, RegSize::X);
+    let pass = em.push(Armlet::new(Op::Identity, Ty::U64).with_args(&[src]));
+    em.set_gpr(rd, pass, RegSize::X);
     Ok(InstStatus::Continue)
 }
