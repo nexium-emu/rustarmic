@@ -14,23 +14,52 @@ pub enum Loc {
     None,
 }
 
+/// SSA live range. Stored as `(start, count)` rather than `(start, end)` so
+/// the struct is 4 bytes — half the cache footprint of a `Vec<LiveRange>`.
+/// `count == 0` is the dead marker; otherwise the range covers
+/// `[start, start + count - 1]` inclusive. `count` saturates at 65 535 (blocks
+/// cap at 65 536 SSA nodes anyway).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LiveRange {
-    pub start: u32,
-    pub end:   u32,
+    pub start: u16,
+    pub count: u16,
 }
 
 impl LiveRange {
-    pub const DEAD: LiveRange = LiveRange { start: u32::MAX, end: 0 };
+    pub const DEAD: LiveRange = LiveRange { start: 0, count: 0 };
+
+    #[inline]
+    pub const fn point(idx: u16) -> LiveRange {
+        LiveRange { start: idx, count: 1 }
+    }
 
     #[inline]
     pub const fn is_dead(self) -> bool {
-        self.start > self.end
+        self.count == 0
+    }
+
+    #[inline]
+    pub const fn end(self) -> u32 {
+        self.start as u32 + self.count.saturating_sub(1) as u32
+    }
+
+    #[inline]
+    pub const fn start_u32(self) -> u32 {
+        self.start as u32
+    }
+
+    #[inline]
+    pub fn extend_to(&mut self, new_end: u32) {
+        debug_assert!(!self.is_dead());
+        let span = (new_end - self.start as u32).saturating_add(1);
+        if span > self.count as u32 {
+            self.count = span.min(u16::MAX as u32) as u16;
+        }
     }
 
     #[inline]
     pub const fn contains(self, idx: u32) -> bool {
-        idx >= self.start && idx <= self.end && !self.is_dead()
+        !self.is_dead() && idx >= self.start as u32 && idx <= self.end()
     }
 }
 
@@ -57,7 +86,7 @@ pub fn compute_live_ranges(block: &Block) -> Vec<LiveRange> {
 
     for (vr, _) in block.iter_live() {
         let i = vr.as_usize();
-        ranges[i] = LiveRange { start: vr.idx(), end: vr.idx() };
+        ranges[i] = LiveRange::point(vr.idx() as u16);
     }
 
     for (vr, armlet) in block.iter_live() {
@@ -65,8 +94,8 @@ pub fn compute_live_ranges(block: &Block) -> Vec<LiveRange> {
         for arg in armlet.args.iter() {
             if arg.is_some() {
                 let arg_idx = arg.as_usize();
-                if arg_idx < n && !ranges[arg_idx].is_dead() && ranges[arg_idx].end < user_idx {
-                    ranges[arg_idx].end = user_idx;
+                if arg_idx < n && !ranges[arg_idx].is_dead() && ranges[arg_idx].end() < user_idx {
+                    ranges[arg_idx].extend_to(user_idx);
                 }
             }
         }
@@ -84,8 +113,8 @@ pub fn compute_live_ranges(block: &Block) -> Vec<LiveRange> {
     for v in term_refs.into_iter().flatten() {
         if v.is_some() {
             let i = v.as_usize();
-            if i < n && !ranges[i].is_dead() && ranges[i].end < last_live {
-                ranges[i].end = last_live;
+            if i < n && !ranges[i].is_dead() && ranges[i].end() < last_live {
+                ranges[i].extend_to(last_live);
             }
         }
     }
@@ -127,10 +156,11 @@ pub fn linear_scan(block: &Block, ranges: &[LiveRange], pool: &[u8]) -> Allocati
 
     for vr_idx in intervals {
         let range = ranges[vr_idx];
-        let start = range.start;
+        let start = range.start_u32();
+        let end = range.end();
 
-        active.retain(|&(end, reg, _)| {
-            if end < start {
+        active.retain(|&(active_end, reg, _)| {
+            if active_end < start {
                 free.push(reg);
                 false
             } else {
@@ -145,12 +175,12 @@ pub fn linear_scan(block: &Block, ranges: &[LiveRange], pool: &[u8]) -> Allocati
                 let src_idx = src.as_usize();
                 if src_idx < n
                     && !ranges[src_idx].is_dead()
-                    && ranges[src_idx].end == start
+                    && ranges[src_idx].end() == start
                 {
                     if let Loc::Reg(reg) = locs[src_idx] {
                         locs[vr_idx] = Loc::Reg(reg);
                         if let Some(slot) = active.iter_mut().find(|(_, r, vi)| *r == reg && *vi == src_idx) {
-                            *slot = (range.end, reg, vr_idx);
+                            *slot = (end, reg, vr_idx);
                         }
                         continue;
                     }
@@ -168,7 +198,7 @@ pub fn linear_scan(block: &Block, ranges: &[LiveRange], pool: &[u8]) -> Allocati
         if let Some(pos) = safe_pos {
             let reg = free.remove(pos);
             locs[vr_idx] = Loc::Reg(reg);
-            active.push((range.end, reg, vr_idx));
+            active.push((end, reg, vr_idx));
         } else if active.is_empty() {
             let off = alloc_spill_slot(&mut spill_cursor);
             locs[vr_idx] = Loc::Spill(off);
@@ -180,11 +210,11 @@ pub fn linear_scan(block: &Block, ranges: &[LiveRange], pool: &[u8]) -> Allocati
                 .max_by_key(|(_, e)| e.0);
 
             if let Some((spill_pos, &(victim_end, victim_reg, victim_vr))) = candidate {
-                if victim_end > range.end {
+                if victim_end > end {
                     let off = alloc_spill_slot(&mut spill_cursor);
                     locs[victim_vr] = Loc::Spill(off);
                     locs[vr_idx]    = Loc::Reg(victim_reg);
-                    active[spill_pos] = (range.end, victim_reg, vr_idx);
+                    active[spill_pos] = (end, victim_reg, vr_idx);
                 } else {
                     let off = alloc_spill_slot(&mut spill_cursor);
                     locs[vr_idx] = Loc::Spill(off);
@@ -209,8 +239,9 @@ fn mask_contains_gpr(mask: GprMask, gpr: u8) -> bool {
 
 fn interior_clobber_mask(clobber_masks: &[GprMask], range: LiveRange) -> GprMask {
     let mut mask = GprMask::empty();
+    if range.is_dead() { return mask; }
     let start = range.start as usize;
-    let end = range.end as usize;
+    let end = range.end() as usize;
     if end > start + 1 {
         for i in (start + 1)..end {
             mask |= clobber_masks[i];
@@ -246,9 +277,9 @@ mod tests {
 
         let ranges = compute_live_ranges(&b);
         assert!(!ranges[c1.as_usize()].is_dead());
-        assert_eq!(ranges[c1.as_usize()].end, add1.idx());
-        assert_eq!(ranges[c2.as_usize()].end, add2.idx());
-        assert!(ranges[add1.as_usize()].end >= add2.idx());
+        assert_eq!(ranges[c1.as_usize()].end(), add1.idx());
+        assert_eq!(ranges[c2.as_usize()].end(), add2.idx());
+        assert!(ranges[add1.as_usize()].end() >= add2.idx());
     }
 
     #[test]
@@ -268,7 +299,7 @@ mod tests {
 
         let ranges = compute_live_ranges(&b);
         let last_idx = b.tail_vr().unwrap().idx();
-        assert_eq!(ranges[val.as_usize()].end, last_idx);
+        assert_eq!(ranges[val.as_usize()].end(), last_idx);
     }
 
     #[test]
