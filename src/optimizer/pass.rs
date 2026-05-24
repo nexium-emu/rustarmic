@@ -1,5 +1,5 @@
-use crate::arch::NUM_GPRS;
-use crate::ir::{Armlet, Block, Op, Ty, ValueRef};
+use crate::arch::{Cond, Nzcv, NUM_GPRS};
+use crate::ir::{Armlet, Block, Op, Terminal, Ty, ValueRef};
 
 #[derive(Default)]
 pub struct Scratch {
@@ -197,6 +197,11 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
         cursor = next_cursor;
     }
 
+    // Fold conditional terminals to unconditional when the condition is now
+    // known statically (after our forward pass populated reaching constants).
+    simplify_terminal(block, &scratch.consts);
+    n = block.code.len();
+
     let mut cursor = block.head_vr();
     while let Some(vr) = cursor {
         let i = vr.as_usize();
@@ -213,7 +218,6 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
         cursor = block.next_of(vr);
     }
 
-    use crate::ir::Terminal;
     let term_vrs: [Option<ValueRef>; 2] = match block.terminal {
         Terminal::ConditionalBranch { cond_nzcv, .. } => [Some(cond_nzcv), None],
         Terminal::CompareBranchZero { value, .. }
@@ -254,6 +258,67 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
             block.unlink(vr);
         }
         cursor = prev_cursor;
+    }
+}
+
+/// If a block's terminal compares a value we now know statically (CBZ on a
+/// constant, B.cond on a known NZCV, AL/NV alias) collapse it to an
+/// unconditional `DirectBranch` and strip the now-dead terminator armlet
+/// so its operands fall to DCE.
+fn simplify_terminal(block: &mut Block, consts: &[Option<u64>]) {
+    let const_of = |v: ValueRef| -> Option<u64> {
+        if v.is_none() { None } else { consts.get(v.as_usize()).copied().flatten() }
+    };
+
+    let new = match block.terminal {
+        Terminal::CompareBranchZero { value, inverse, taken_pc, not_taken_pc } => {
+            const_of(value).map(|v| {
+                let take = (v == 0) ^ inverse;
+                Terminal::DirectBranch {
+                    target_pc: if take { taken_pc } else { not_taken_pc },
+                    link: false,
+                }
+            })
+        }
+        Terminal::TestBranchBit { value, bit, inverse, taken_pc, not_taken_pc } => {
+            const_of(value).map(|v| {
+                let bit_set = ((v >> bit) & 1) != 0;
+                // TBZ (inverse=false) branches when bit is CLEAR;
+                // TBNZ (inverse=true) branches when bit is SET.
+                let take = if inverse { bit_set } else { !bit_set };
+                Terminal::DirectBranch {
+                    target_pc: if take { taken_pc } else { not_taken_pc },
+                    link: false,
+                }
+            })
+        }
+        Terminal::ConditionalBranch { cond_nzcv, cond_code, taken_pc, not_taken_pc } => {
+            let cond = Cond::from_bits(cond_code);
+            if matches!(cond, Cond::AL | Cond::NV) {
+                Some(Terminal::DirectBranch { target_pc: taken_pc, link: false })
+            } else {
+                const_of(cond_nzcv).map(|nz| {
+                    let take = Nzcv(nz as u8).check(cond);
+                    Terminal::DirectBranch {
+                        target_pc: if take { taken_pc } else { not_taken_pc },
+                        link: false,
+                    }
+                })
+            }
+        }
+        _ => None,
+    };
+
+    if let Some(new_term) = new {
+        block.terminal = new_term;
+        // The conditional terminator armlet is typically at the tail; drop
+        // it so liveness/DCE stops pinning its operand.
+        if let Some(tail) = block.tail_vr() {
+            let op = block.code[tail.as_usize()].op;
+            if matches!(op, Op::CbZ | Op::CbNz | Op::TbZ | Op::TbNz | Op::BranchCond) {
+                block.unlink(tail);
+            }
+        }
     }
 }
 
@@ -791,6 +856,75 @@ mod tests {
         let (op, imm) = outer_binop_const(&block, set_vr);
         assert_eq!(op, Op::Lsl64);
         assert_eq!(imm, 7, "(x << 3) << 4 → x << 7");
+    }
+
+    #[test]
+    fn terminal_cbz_with_zero_value_becomes_direct_branch_taken() {
+        let mut block = Block::new(0x1000);
+        let mut em = IrEmitter::new(&mut block, 0x1000);
+        let v = em.const_u64(0);
+        em.push(Armlet::new(Op::CbZ, Ty::Void).with_args(&[v]).with_imm(0x2000));
+        block.terminal = Terminal::CompareBranchZero {
+            value: v, inverse: false, taken_pc: 0x2000, not_taken_pc: 0x1008,
+        };
+        optimize(&mut block);
+        match block.terminal {
+            Terminal::DirectBranch { target_pc, .. } => assert_eq!(target_pc, 0x2000),
+            other => panic!("expected DirectBranch, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn terminal_cbnz_with_nonzero_value_becomes_direct_branch_taken() {
+        let mut block = Block::new(0x1000);
+        let mut em = IrEmitter::new(&mut block, 0x1000);
+        let v = em.const_u64(42);
+        em.push(Armlet::new(Op::CbNz, Ty::Void).with_args(&[v]).with_imm(0x2000));
+        block.terminal = Terminal::CompareBranchZero {
+            value: v, inverse: true, taken_pc: 0x2000, not_taken_pc: 0x1008,
+        };
+        optimize(&mut block);
+        match block.terminal {
+            Terminal::DirectBranch { target_pc, .. } => assert_eq!(target_pc, 0x2000),
+            other => panic!("expected DirectBranch, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn terminal_tbz_with_clear_bit_becomes_direct_branch_taken() {
+        // TBZ takes the branch when the named bit is 0. Value = 0x10, bit 0
+        // is clear so we should take the branch to taken_pc.
+        let mut block = Block::new(0x1000);
+        let mut em = IrEmitter::new(&mut block, 0x1000);
+        let v = em.const_u64(0x10);
+        em.push(Armlet::new(Op::TbZ, Ty::Void).with_args(&[v]).with_imm(0x2000));
+        block.terminal = Terminal::TestBranchBit {
+            value: v, bit: 0, inverse: false, taken_pc: 0x2000, not_taken_pc: 0x1008,
+        };
+        optimize(&mut block);
+        match block.terminal {
+            Terminal::DirectBranch { target_pc, .. } => assert_eq!(target_pc, 0x2000),
+            other => panic!("expected DirectBranch, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn terminal_branchcond_always_collapses() {
+        let mut block = Block::new(0x1000);
+        let mut em = IrEmitter::new(&mut block, 0x1000);
+        let nz = em.get_nzcv();
+        em.push(Armlet::new(Op::BranchCond, Ty::Void)
+            .with_args(&[nz])
+            .with_imm((0x2000u64 << 8) | (Cond::AL as u64)));
+        block.terminal = Terminal::ConditionalBranch {
+            cond_nzcv: nz, cond_code: Cond::AL as u8,
+            taken_pc: 0x2000, not_taken_pc: 0x1008,
+        };
+        optimize(&mut block);
+        match block.terminal {
+            Terminal::DirectBranch { target_pc, .. } => assert_eq!(target_pc, 0x2000),
+            other => panic!("AL cond should collapse to DirectBranch, got {:?}", other),
+        }
     }
 
     #[test]
