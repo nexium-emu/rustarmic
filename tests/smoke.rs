@@ -848,3 +848,67 @@ fn fsqrt_d_computes_square_root() {
     run(code, &mut ctx);
     assert_eq!(f64::from_bits(ctx.v[0][0]), 2.0);
 }
+
+#[test]
+fn fmadd_d_computes_a_plus_n_times_m() {
+    // fmadd d0, d1, d2, d3   ; D0 = D3 + D1*D2 = 1 + 2*3 = 7
+    let code = build_code(&[
+        0x1F42_0C20,
+        0xD4200000,
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [(2.0_f64).to_bits(), 0];
+    ctx.v[2] = [(3.0_f64).to_bits(), 0];
+    ctx.v[3] = [(1.0_f64).to_bits(), 0];
+    run(code, &mut ctx);
+    assert_eq!(f64::from_bits(ctx.v[0][0]), 7.0);
+}
+
+#[test]
+fn fmsub_d_computes_a_minus_n_times_m() {
+    // fmsub d0, d1, d2, d3   ; D0 = D3 - D1*D2 = 1 - 6 = -5
+    let code = build_code(&[
+        0x1F42_8C20,
+        0xD4200000,
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [(2.0_f64).to_bits(), 0];
+    ctx.v[2] = [(3.0_f64).to_bits(), 0];
+    ctx.v[3] = [(1.0_f64).to_bits(), 0];
+    run(code, &mut ctx);
+    assert_eq!(f64::from_bits(ctx.v[0][0]), -5.0);
+}
+
+#[test]
+fn fnmadd_d_computes_neg_a_minus_n_times_m() {
+    // fnmadd d0, d1, d2, d3  ; D0 = -D3 - D1*D2 = -1 - 6 = -7
+    let code = build_code(&[
+        0x1F62_0C20,
+        0xD4200000,
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [(2.0_f64).to_bits(), 0];
+    ctx.v[2] = [(3.0_f64).to_bits(), 0];
+    ctx.v[3] = [(1.0_f64).to_bits(), 0];
+    run(code, &mut ctx);
+    assert_eq!(f64::from_bits(ctx.v[0][0]), -7.0);
+}
+
+#[test]
+fn fnmsub_d_computes_neg_a_plus_n_times_m() {
+    // fnmsub d0, d1, d2, d3  ; D0 = -D3 + D1*D2 = -1 + 6 = 5
+    let code = build_code(&[
+        0x1F62_8C20,
+        0xD4200000,
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [(2.0_f64).to_bits(), 0];
+    ctx.v[2] = [(3.0_f64).to_bits(), 0];
+    ctx.v[3] = [(1.0_f64).to_bits(), 0];
+    run(code, &mut ctx);
+    assert_eq!(f64::from_bits(ctx.v[0][0]), 5.0);
+}

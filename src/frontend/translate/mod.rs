@@ -15,6 +15,7 @@ pub mod ic_system;
 pub mod lse_atomic;
 pub mod fp_dp1;
 pub mod fp_dp2;
+pub mod fp_dp3;
 pub mod fp_cmp;
 pub mod fp_sel;
 pub mod fp_imm;
