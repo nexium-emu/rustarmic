@@ -177,6 +177,8 @@ pub fn emit_armlet(
         Op::Fsub32 | Op::Fsub64 => emit_fbinop(asm, alloc, a, dst_vr, FpBinKind::Sub, a.op.size_bits())?,
         Op::Fmul32 | Op::Fmul64 => emit_fbinop(asm, alloc, a, dst_vr, FpBinKind::Mul, a.op.size_bits())?,
         Op::Fdiv32 | Op::Fdiv64 => emit_fbinop(asm, alloc, a, dst_vr, FpBinKind::Div, a.op.size_bits())?,
+        Op::Fmax32 | Op::Fmax64 => emit_fbinop(asm, alloc, a, dst_vr, FpBinKind::Max, a.op.size_bits())?,
+        Op::Fmin32 | Op::Fmin64 => emit_fbinop(asm, alloc, a, dst_vr, FpBinKind::Min, a.op.size_bits())?,
         Op::Fcmp32 | Op::Fcmp64 => emit_fcmp(asm, alloc, a, a.op.size_bits())?,
         Op::Fsqrt32 | Op::Fsqrt64 => emit_fsqrt(asm, alloc, a, dst_vr, a.op.size_bits())?,
 
@@ -804,7 +806,7 @@ fn scratch3_id() -> u8 {
 }
 
 #[derive(Clone, Copy)]
-enum FpBinKind { Add, Sub, Mul, Div }
+enum FpBinKind { Add, Sub, Mul, Div, Max, Min }
 
 fn emit_fbinop(
     asm: &mut CodeAssembler,
@@ -822,6 +824,8 @@ fn emit_fbinop(
             FpBinKind::Sub => asm.subsd(xmm0, xmm1)?,
             FpBinKind::Mul => asm.mulsd(xmm0, xmm1)?,
             FpBinKind::Div => asm.divsd(xmm0, xmm1)?,
+            FpBinKind::Max => asm.maxsd(xmm0, xmm1)?,
+            FpBinKind::Min => asm.minsd(xmm0, xmm1)?,
         }
         if let Some(d) = dst { store_xmm_d(asm, alloc, d, xmm0)?; }
     } else {
@@ -832,6 +836,8 @@ fn emit_fbinop(
             FpBinKind::Sub => asm.subss(xmm0, xmm1)?,
             FpBinKind::Mul => asm.mulss(xmm0, xmm1)?,
             FpBinKind::Div => asm.divss(xmm0, xmm1)?,
+            FpBinKind::Max => asm.maxss(xmm0, xmm1)?,
+            FpBinKind::Min => asm.minss(xmm0, xmm1)?,
         }
         if let Some(d) = dst { store_xmm_s(asm, alloc, d, xmm0)?; }
     }

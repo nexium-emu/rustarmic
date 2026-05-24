@@ -123,6 +123,8 @@ pub enum Op {
     Fabs32 = 0x51A, Fabs64 = 0x51B,
     Fsqrt32 = 0x51E, Fsqrt64 = 0x51F,
     Fcmp32 = 0x522, Fcmp64 = 0x523,
+    Fmax32 = 0x526, Fmax64 = 0x527,
+    Fmin32 = 0x52A, Fmin64 = 0x52B,
 
     // FP conversions (FP→signed-int truncate, signed-int→FP).
     FcvtZsSW = 0x540,  // single → i32 (truncate)

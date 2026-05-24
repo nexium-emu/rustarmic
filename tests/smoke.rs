@@ -1012,3 +1012,48 @@ fn fcvt_d_to_s_demotes_double() {
     assert_eq!(f32::from_bits(ctx.v[0][0] as u32), 2.25_f32);
     assert_eq!(ctx.v[0][0] >> 32, 0);
 }
+
+#[test]
+fn fmax_d_picks_larger() {
+    // fmax d0, d1, d2   ; max(3.0, 5.0) = 5.0
+    let code = build_code(&[
+        0x1E62_4820,
+        0xD4200000,
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [(3.0_f64).to_bits(), 0];
+    ctx.v[2] = [(5.0_f64).to_bits(), 0];
+    run(code, &mut ctx);
+    assert_eq!(f64::from_bits(ctx.v[0][0]), 5.0);
+}
+
+#[test]
+fn fmin_d_picks_smaller() {
+    // fmin d0, d1, d2   ; min(3.0, 5.0) = 3.0
+    let code = build_code(&[
+        0x1E62_5820,
+        0xD4200000,
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [(3.0_f64).to_bits(), 0];
+    ctx.v[2] = [(5.0_f64).to_bits(), 0];
+    run(code, &mut ctx);
+    assert_eq!(f64::from_bits(ctx.v[0][0]), 3.0);
+}
+
+#[test]
+fn fnmul_d_negates_product() {
+    // fnmul d0, d1, d2   ; -(2.0 * 3.0) = -6.0
+    let code = build_code(&[
+        0x1E62_8820,
+        0xD4200000,
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [(2.0_f64).to_bits(), 0];
+    ctx.v[2] = [(3.0_f64).to_bits(), 0];
+    run(code, &mut ctx);
+    assert_eq!(f64::from_bits(ctx.v[0][0]), -6.0);
+}
