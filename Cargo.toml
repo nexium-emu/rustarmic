@@ -22,8 +22,17 @@ smallvec = { version = "1", features = ["union"] }
 thiserror = "2"
 assume   = "0.5"
 disarm64 = { version = "0.1", default-features = false, features = ["full"] }
-# Unicorn is opt-in: building it requires libclang (LLVM) on the host. Enable
-# with `--features unicorn` to run the differential tests in `tests/`.
+# Unicorn is opt-in: builds the engine from source via cmake/ninja, which
+# needs libclang (LLVM) on the host. Enable with `--features unicorn` to run
+# the diff tests in `tests/`.
+#
+# Windows note: if `cmake` resolves to an msys2 build first (e.g. via
+# `c:\devkitPro\msys2\usr\bin`) it will mangle the Windows-style paths the
+# build script passes in and fail. Set `CMAKE` to the Windows CMake and
+# prepend the bundled VS Ninja before running cargo:
+#   $env:CMAKE = "C:\Program Files\CMake\bin\cmake.exe"
+#   $env:PATH  = "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja;$env:PATH"
+#   cargo test --features unicorn
 unicorn-engine = { version = "2", optional = true }
 
 [dev-dependencies]
