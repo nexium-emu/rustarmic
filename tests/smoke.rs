@@ -806,3 +806,45 @@ fn fmov_s_immediate_loads_1_0() {
     assert_eq!(ctx.v[0][0] >> 32, 0, "upper 32 of lane 0 zeroed");
     assert_eq!(ctx.v[0][1], 0);
 }
+
+#[test]
+fn fneg_d_flips_sign_bit() {
+    // fneg d0, d1   ; v[0] = -v[1]
+    let code = build_code(&[
+        0x1E61_4020,
+        0xD4200000,
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [(3.5_f64).to_bits(), 0];
+    run(code, &mut ctx);
+    assert_eq!(f64::from_bits(ctx.v[0][0]), -3.5);
+}
+
+#[test]
+fn fabs_d_clears_sign_bit() {
+    // fabs d0, d1   ; v[0] = |v[1]|
+    let code = build_code(&[
+        0x1E60_C020,
+        0xD4200000,
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [(-7.25_f64).to_bits(), 0];
+    run(code, &mut ctx);
+    assert_eq!(f64::from_bits(ctx.v[0][0]), 7.25);
+}
+
+#[test]
+fn fsqrt_d_computes_square_root() {
+    // fsqrt d0, d1
+    let code = build_code(&[
+        0x1E61_C020,
+        0xD4200000,
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [(4.0_f64).to_bits(), 0];
+    run(code, &mut ctx);
+    assert_eq!(f64::from_bits(ctx.v[0][0]), 2.0);
+}

@@ -178,6 +178,7 @@ pub fn emit_armlet(
         Op::Fmul32 | Op::Fmul64 => emit_fbinop(asm, alloc, a, dst_vr, FpBinKind::Mul, a.op.size_bits())?,
         Op::Fdiv32 | Op::Fdiv64 => emit_fbinop(asm, alloc, a, dst_vr, FpBinKind::Div, a.op.size_bits())?,
         Op::Fcmp32 | Op::Fcmp64 => emit_fcmp(asm, alloc, a, a.op.size_bits())?,
+        Op::Fsqrt32 | Op::Fsqrt64 => emit_fsqrt(asm, alloc, a, dst_vr, a.op.size_bits())?,
 
         op if op.is_terminator() => {}
 
@@ -821,6 +822,25 @@ fn emit_fbinop(
             FpBinKind::Mul => asm.mulss(xmm0, xmm1)?,
             FpBinKind::Div => asm.divss(xmm0, xmm1)?,
         }
+        if let Some(d) = dst { store_xmm_s(asm, alloc, d, xmm0)?; }
+    }
+    Ok(())
+}
+
+fn emit_fsqrt(
+    asm: &mut CodeAssembler,
+    alloc: &Allocation,
+    a: Armlet,
+    dst: Option<ValueRef>,
+    bits: u32,
+) -> Result<()> {
+    if bits == 64 {
+        load_xmm_d(asm, alloc, a.args[0], xmm0)?;
+        asm.sqrtsd(xmm0, xmm0)?;
+        if let Some(d) = dst { store_xmm_d(asm, alloc, d, xmm0)?; }
+    } else {
+        load_xmm_s(asm, alloc, a.args[0], xmm0)?;
+        asm.sqrtss(xmm0, xmm0)?;
         if let Some(d) = dst { store_xmm_s(asm, alloc, d, xmm0)?; }
     }
     Ok(())
