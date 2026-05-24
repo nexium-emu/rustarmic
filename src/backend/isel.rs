@@ -171,6 +171,13 @@ fn dispatch_op(op: Op) -> Option<EmitFn> {
         VecZip1_8 | VecZip1_16 | VecZip1_32 | VecZip1_64 => emit_op_vec_zip1,
         VecZip2_8 | VecZip2_16 | VecZip2_32 | VecZip2_64 => emit_op_vec_zip2,
 
+        VecSmin8 | VecSmin16 | VecSmin32 => emit_op_vec_smin,
+        VecSmax8 | VecSmax16 | VecSmax32 => emit_op_vec_smax,
+        VecUmin8 | VecUmin16 | VecUmin32 => emit_op_vec_umin,
+        VecUmax8 | VecUmax16 | VecUmax32 => emit_op_vec_umax,
+
+        VecAddv32 => emit_op_vec_addv32,
+
         Hint | MemoryBarrier => emit_nop,
         Clrex => emit_op_clrex,
 
@@ -977,6 +984,44 @@ fn emit_op_vec_zip2(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, 
         asm.movq(working, working)?;
     }
     store_xmm_q(asm, alloc, d, working)
+}
+
+// ── SMIN/SMAX/UMIN/UMAX ──────────────────────────────────────────────────
+macro_rules! emit_vec_minmax {
+    ($fn_name:ident, $b:ident, $w:ident, $d:ident) => {
+        fn $fn_name(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+            let a = block.code[idx];
+            let d = dst_of(&a, idx).unwrap();
+            let q_form = (a.imm & 1) != 0;
+            let working = working_xmm_for(alloc, d, xmm0);
+            into_xmm_q(asm, alloc, a.args[0], working)?;
+            let other = get_xmm_q(asm, alloc, a.args[1], xmm1)?;
+            match a.op.size_log2() {
+                0 => asm.$b(working, other)?,
+                1 => asm.$w(working, other)?,
+                2 => asm.$d(working, other)?,
+                _ => return Err(Error::Backend(format!("{} lane {} unsupported", stringify!($fn_name), a.op.size_log2()))),
+            }
+            if !q_form { asm.movq(working, working)?; }
+            store_xmm_q(asm, alloc, d, working)
+        }
+    };
+}
+emit_vec_minmax!(emit_op_vec_smin, pminsb, pminsw, pminsd);
+emit_vec_minmax!(emit_op_vec_smax, pmaxsb, pmaxsw, pmaxsd);
+emit_vec_minmax!(emit_op_vec_umin, pminub, pminuw, pminud);
+emit_vec_minmax!(emit_op_vec_umax, pmaxub, pmaxuw, pmaxud);
+
+// ── ADDV.4S (horizontal sum) ─────────────────────────────────────────────
+fn emit_op_vec_addv32(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let d = dst_of(&a, idx).unwrap();
+    // working = Vn; two phaddd reduce 4 lanes to one in lane 0.
+    into_xmm_q(asm, alloc, a.args[0], xmm0)?;
+    asm.phaddd(xmm0, xmm0)?;
+    asm.phaddd(xmm0, xmm0)?;
+    asm.movd(eax, xmm0)?;
+    store32(asm, alloc, d, eax)
 }
 
 // ── INS from GPR (write one lane) ───────────────────────────────────────

@@ -213,6 +213,19 @@ pub enum Op {
     VecZip1_8 = 0x680, VecZip1_16 = 0x681, VecZip1_32 = 0x682, VecZip1_64 = 0x683,
     VecZip2_8 = 0x684, VecZip2_16 = 0x685, VecZip2_32 = 0x686, VecZip2_64 = 0x687,
 
+    // Per-lane min/max. 8/16/32-bit lanes are natively supported by
+    // pminsb/sw/sd and pmaxsb/sw/sd (SSE4.1). 64-bit lanes need PCMPGTQ +
+    // blend and are deferred until a real use case appears.
+    VecSmin8 = 0x688, VecSmin16 = 0x689, VecSmin32 = 0x68A, VecSmin64 = 0x68B,
+    VecSmax8 = 0x68C, VecSmax16 = 0x68D, VecSmax32 = 0x68E, VecSmax64 = 0x68F,
+    VecUmin8 = 0x690, VecUmin16 = 0x691, VecUmin32 = 0x692, VecUmin64 = 0x693,
+    VecUmax8 = 0x694, VecUmax16 = 0x695, VecUmax32 = 0x696, VecUmax64 = 0x697,
+
+    // ADDV horizontal sum. Result is a scalar of the same lane size, written
+    // to the low lane of a u128 (the surrounding `set_v_*` decides which
+    // lane width is exposed). 4S is the most common; 8H/16B are TBD.
+    VecAddv32 = 0x698,
+
     Mrs            = 0x700,
     Msr            = 0x704,
     Hint           = 0x708,

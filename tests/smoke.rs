@@ -1732,3 +1732,96 @@ fn vec_zip1_8h_interleaves_per_halfword() {
     assert_eq!(ctx.v[0][0], 0xB1B1_A1A1_B0B0_A0A0);
     assert_eq!(ctx.v[0][1], 0xB3B3_A3A3_B2B2_A2A2);
 }
+
+#[test]
+fn vec_smax_4s() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [0x0000_0005_FFFF_FFFE, 0x7FFF_FFFF_8000_0000];
+    ctx.v[2] = [0x0000_0003_0000_0001, 0x0000_0000_FFFF_FFFF];
+    let code = build_code(&[
+        0x4EA2_6420, // smax v0.4s, v1.4s, v2.4s
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // Signed max per lane:
+    //   lane0: max(-2, 1) = 1
+    //   lane1: max(5, 3)  = 5
+    //   lane2: max(0x80000000=-2^31, -1) = -1 = 0xFFFFFFFF
+    //   lane3: max(0x7FFFFFFF, 0) = 0x7FFFFFFF
+    assert_eq!(ctx.v[0][0], 0x0000_0005_0000_0001);
+    assert_eq!(ctx.v[0][1], 0x7FFF_FFFF_FFFF_FFFF);
+}
+
+#[test]
+fn vec_smin_4s() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [0x0000_0005_FFFF_FFFE, 0x7FFF_FFFF_8000_0000];
+    ctx.v[2] = [0x0000_0003_0000_0001, 0x0000_0000_FFFF_FFFF];
+    let code = build_code(&[
+        0x4EA2_6C20, // smin v0.4s, v1.4s, v2.4s
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    //   lane0: min(-2, 1)   = -2 = 0xFFFFFFFE
+    //   lane1: min(5, 3)    = 3
+    //   lane2: min(INT_MIN, -1) = INT_MIN = 0x80000000
+    //   lane3: min(INT_MAX, 0)  = 0
+    assert_eq!(ctx.v[0][0], 0x0000_0003_FFFF_FFFE);
+    assert_eq!(ctx.v[0][1], 0x0000_0000_8000_0000);
+}
+
+#[test]
+fn vec_umax_4s() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [0x0000_0005_0000_0001, 0x7FFF_FFFF_8000_0000];
+    ctx.v[2] = [0x0000_0003_FFFF_FFFE, 0x0000_0000_FFFF_FFFF];
+    let code = build_code(&[
+        0x6EA2_6420, // umax v0.4s, v1.4s, v2.4s
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    //   lane0: umax(1, 0xFFFFFFFE) = 0xFFFFFFFE
+    //   lane1: umax(5, 3) = 5
+    //   lane2: umax(0x80000000, 0xFFFFFFFF) = 0xFFFFFFFF
+    //   lane3: umax(0x7FFFFFFF, 0) = 0x7FFFFFFF
+    assert_eq!(ctx.v[0][0], 0x0000_0005_FFFF_FFFE);
+    assert_eq!(ctx.v[0][1], 0x7FFF_FFFF_FFFF_FFFF);
+}
+
+#[test]
+fn vec_umin_4s() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [0x0000_0005_0000_0001, 0x7FFF_FFFF_8000_0000];
+    ctx.v[2] = [0x0000_0003_FFFF_FFFE, 0x0000_0000_FFFF_FFFF];
+    let code = build_code(&[
+        0x6EA2_6C20, // umin v0.4s, v1.4s, v2.4s
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    //   lane0: umin(1, 0xFFFFFFFE) = 1
+    //   lane1: umin(5, 3) = 3
+    //   lane2: umin(0x80000000, 0xFFFFFFFF) = 0x80000000
+    //   lane3: umin(0x7FFFFFFF, 0) = 0
+    assert_eq!(ctx.v[0][0], 0x0000_0003_0000_0001);
+    assert_eq!(ctx.v[0][1], 0x0000_0000_8000_0000);
+}
+
+#[test]
+fn vec_addv_4s_sums_all_lanes() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    // 4 32-bit lanes: 0x10, 0x20, 0x30, 0x40 → sum = 0xA0
+    ctx.v[1] = [0x0000_0020_0000_0010, 0x0000_0040_0000_0030];
+    let code = build_code(&[
+        0x4EB1_B820, // addv s0, v1.4s
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    assert_eq!(ctx.v[0][0] as u32, 0xA0);
+    assert_eq!(ctx.v[0][0] >> 32, 0, "upper 32 of lane 0 zeroed");
+    assert_eq!(ctx.v[0][1], 0, "upper 64 zeroed");
+}

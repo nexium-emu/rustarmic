@@ -18,6 +18,7 @@ enum Kind {
     And, Orr, Eor, Bic, Orn,
     CmEq, CmGt, CmGe, CmHi, CmHs,
     Bit, Bif, Bsl,
+    Smin, Smax, Umin, Umax,
 }
 
 pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDSAME) -> Result<InstStatus> {
@@ -39,6 +40,10 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDSAME) -> Result<InstStatus> 
         BIT_Vd_Vn_Vm(i) => (i.0, Kind::Bit),
         BIF_Vd_Vn_Vm(i) => (i.0, Kind::Bif),
         BSL_Vd_Vn_Vm(i) => (i.0, Kind::Bsl),
+        SMIN_Vd_Vn_Vm(i) => (i.0, Kind::Smin),
+        SMAX_Vd_Vn_Vm(i) => (i.0, Kind::Smax),
+        UMIN_Vd_Vn_Vm(i) => (i.0, Kind::Umin),
+        UMAX_Vd_Vn_Vm(i) => (i.0, Kind::Umax),
         _ => return Err(Error::Unsupported { pc: em.current_pc, opcode: 0 }),
     };
 
@@ -89,6 +94,19 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDSAME) -> Result<InstStatus> 
                 Kind::Bit => em.vec_bit(vd_prev, vn, vm, q),
                 Kind::Bif => em.vec_bif(vd_prev, vn, vm, q),
                 Kind::Bsl => em.vec_bsl(vd_prev, vn, vm, q),
+                _ => unreachable!(),
+            }
+        }
+        Kind::Smin | Kind::Smax | Kind::Umin | Kind::Umax => {
+            // 64-bit lane min/max is unsupported (no PMINSQ/PMAXSQ pre-AVX-512).
+            if size == 3 {
+                return Err(Error::Unsupported { pc: em.current_pc, opcode: raw });
+            }
+            match kind {
+                Kind::Smin => em.vec_smin(vn, vm, size, q),
+                Kind::Smax => em.vec_smax(vn, vm, size, q),
+                Kind::Umin => em.vec_umin(vn, vm, size, q),
+                Kind::Umax => em.vec_umax(vn, vm, size, q),
                 _ => unreachable!(),
             }
         }

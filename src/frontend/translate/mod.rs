@@ -42,3 +42,4 @@ pub mod asimd_misc;
 pub mod asimd_shf;
 pub mod asimd_ins;
 pub mod asimd_perm;
+pub mod asimd_all;

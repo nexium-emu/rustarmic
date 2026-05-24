@@ -375,6 +375,40 @@ impl<'b> IrEmitter<'b> {
         self.push(Armlet::new(op, Ty::U128).with_args(&[vn, vm]).with_imm(q as u64))
     }
 
+    pub fn vec_smin(&mut self, vn: ValueRef, vm: ValueRef, lane_log2: u32, q: bool) -> ValueRef {
+        let op = match lane_log2 {
+            0 => Op::VecSmin8, 1 => Op::VecSmin16, 2 => Op::VecSmin32, 3 => Op::VecSmin64,
+            _ => unreachable!(),
+        };
+        self.push(Armlet::new(op, Ty::U128).with_args(&[vn, vm]).with_imm(q as u64))
+    }
+    pub fn vec_smax(&mut self, vn: ValueRef, vm: ValueRef, lane_log2: u32, q: bool) -> ValueRef {
+        let op = match lane_log2 {
+            0 => Op::VecSmax8, 1 => Op::VecSmax16, 2 => Op::VecSmax32, 3 => Op::VecSmax64,
+            _ => unreachable!(),
+        };
+        self.push(Armlet::new(op, Ty::U128).with_args(&[vn, vm]).with_imm(q as u64))
+    }
+    pub fn vec_umin(&mut self, vn: ValueRef, vm: ValueRef, lane_log2: u32, q: bool) -> ValueRef {
+        let op = match lane_log2 {
+            0 => Op::VecUmin8, 1 => Op::VecUmin16, 2 => Op::VecUmin32, 3 => Op::VecUmin64,
+            _ => unreachable!(),
+        };
+        self.push(Armlet::new(op, Ty::U128).with_args(&[vn, vm]).with_imm(q as u64))
+    }
+    pub fn vec_umax(&mut self, vn: ValueRef, vm: ValueRef, lane_log2: u32, q: bool) -> ValueRef {
+        let op = match lane_log2 {
+            0 => Op::VecUmax8, 1 => Op::VecUmax16, 2 => Op::VecUmax32, 3 => Op::VecUmax64,
+            _ => unreachable!(),
+        };
+        self.push(Armlet::new(op, Ty::U128).with_args(&[vn, vm]).with_imm(q as u64))
+    }
+
+    /// ADDV.4S: horizontal sum of 4 32-bit lanes; result is a U32 scalar.
+    pub fn vec_addv32(&mut self, vn: ValueRef) -> ValueRef {
+        self.push(Armlet::new(Op::VecAddv32, Ty::U32).with_args(&[vn]))
+    }
+
     // ─── NZCV ───────────────────────────────────────────────────────────────
     pub fn get_nzcv(&mut self) -> ValueRef {
         self.push(Armlet::new(Op::GetNzcv, Ty::Nzcv))
