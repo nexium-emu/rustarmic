@@ -124,6 +124,16 @@ pub enum Op {
     Fsqrt32 = 0x51E, Fsqrt64 = 0x51F,
     Fcmp32 = 0x522, Fcmp64 = 0x523,
 
+    // FP conversions (FP→signed-int truncate, signed-int→FP).
+    FcvtZsSW = 0x540,  // single → i32 (truncate)
+    FcvtZsSX = 0x541,  // single → i64 (truncate)
+    FcvtZsDW = 0x542,  // double → i32 (truncate)
+    FcvtZsDX = 0x543,  // double → i64 (truncate)
+    ScvtfWS  = 0x544,  // i32 → single
+    ScvtfXS  = 0x545,  // i64 → single
+    ScvtfWD  = 0x546,  // i32 → double
+    ScvtfXD  = 0x547,  // i64 → double
+
     VecAdd  = 0x600,
     VecSub  = 0x604,
     VecMul  = 0x608,

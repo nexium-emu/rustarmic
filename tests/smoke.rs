@@ -912,3 +912,74 @@ fn fnmsub_d_computes_neg_a_plus_n_times_m() {
     run(code, &mut ctx);
     assert_eq!(f64::from_bits(ctx.v[0][0]), 5.0);
 }
+
+#[test]
+fn fcvtzs_w_from_double_truncates() {
+    // fcvtzs w0, d1   ; floor(3.75) = 3
+    let code = build_code(&[
+        0x1E78_0020,
+        0xD4200000,
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [(3.75_f64).to_bits(), 0];
+    run(code, &mut ctx);
+    assert_eq!(ctx.x[0] as i32, 3, "FCVTZS truncates toward zero");
+}
+
+#[test]
+fn fcvtzs_x_from_double_negative() {
+    // fcvtzs x0, d1   ; truncate -3.75 → -3
+    let code = build_code(&[
+        0x9E78_0020,
+        0xD4200000,
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [(-3.75_f64).to_bits(), 0];
+    run(code, &mut ctx);
+    assert_eq!(ctx.x[0] as i64, -3, "FCVTZS truncates toward zero, not floor");
+}
+
+#[test]
+fn scvtf_d_from_x_signed_int() {
+    // scvtf d0, x1   ; -42 → -42.0
+    let code = build_code(&[
+        0x9E62_0020,
+        0xD4200000,
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.x[1] = (-42_i64) as u64;
+    run(code, &mut ctx);
+    assert_eq!(f64::from_bits(ctx.v[0][0]), -42.0);
+}
+
+#[test]
+fn fmov_d_from_x_copies_bits() {
+    // fmov d0, x1   ; raw bit copy
+    let code = build_code(&[
+        0x9E67_0020,
+        0xD4200000,
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.x[1] = (1.5_f64).to_bits();
+    run(code, &mut ctx);
+    assert_eq!(f64::from_bits(ctx.v[0][0]), 1.5);
+    assert_eq!(ctx.v[0][1], 0, "high lane zeroed");
+}
+
+#[test]
+fn fmov_x_from_d_copies_bits() {
+    // fmov x0, d1   ; raw bit copy back
+    let code = build_code(&[
+        0x9E66_0020,
+        0xD4200000,
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [(2.5_f64).to_bits(), 0];
+    run(code, &mut ctx);
+    assert_eq!(f64::from_bits(ctx.x[0]), 2.5);
+}

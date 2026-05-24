@@ -180,6 +180,15 @@ pub fn emit_armlet(
         Op::Fcmp32 | Op::Fcmp64 => emit_fcmp(asm, alloc, a, a.op.size_bits())?,
         Op::Fsqrt32 | Op::Fsqrt64 => emit_fsqrt(asm, alloc, a, dst_vr, a.op.size_bits())?,
 
+        Op::FcvtZsSW => emit_fcvt_zs(asm, alloc, a, dst_vr, false, false)?,
+        Op::FcvtZsSX => emit_fcvt_zs(asm, alloc, a, dst_vr, false, true)?,
+        Op::FcvtZsDW => emit_fcvt_zs(asm, alloc, a, dst_vr, true,  false)?,
+        Op::FcvtZsDX => emit_fcvt_zs(asm, alloc, a, dst_vr, true,  true)?,
+        Op::ScvtfWS  => emit_scvtf(asm, alloc, a, dst_vr, false, false)?,
+        Op::ScvtfXS  => emit_scvtf(asm, alloc, a, dst_vr, false, true)?,
+        Op::ScvtfWD  => emit_scvtf(asm, alloc, a, dst_vr, true,  false)?,
+        Op::ScvtfXD  => emit_scvtf(asm, alloc, a, dst_vr, true,  true)?,
+
         op if op.is_terminator() => {}
 
         Op::Hint | Op::MemoryBarrier => {}
@@ -823,6 +832,59 @@ fn emit_fbinop(
             FpBinKind::Div => asm.divss(xmm0, xmm1)?,
         }
         if let Some(d) = dst { store_xmm_s(asm, alloc, d, xmm0)?; }
+    }
+    Ok(())
+}
+
+/// `FCVTZS` — FP → signed int with round-toward-zero (truncate).
+/// `src_is_double` selects between SS/SD; `dst_is_x` selects 32 vs 64-bit
+/// destination width.
+fn emit_fcvt_zs(
+    asm: &mut CodeAssembler,
+    alloc: &Allocation,
+    a: Armlet,
+    dst: Option<ValueRef>,
+    src_is_double: bool,
+    dst_is_x: bool,
+) -> Result<()> {
+    if src_is_double {
+        load_xmm_d(asm, alloc, a.args[0], xmm0)?;
+        if dst_is_x { asm.cvttsd2si(rax, xmm0)?; }
+        else        { asm.cvttsd2si(eax, xmm0)?; }
+    } else {
+        load_xmm_s(asm, alloc, a.args[0], xmm0)?;
+        if dst_is_x { asm.cvttss2si(rax, xmm0)?; }
+        else        { asm.cvttss2si(eax, xmm0)?; }
+    }
+    if let Some(d) = dst {
+        if dst_is_x { store64(asm, alloc, d, rax)?; }
+        else        { store32(asm, alloc, d, eax)?; }
+    }
+    Ok(())
+}
+
+/// `SCVTF` — signed int → FP. `src_is_x` selects 32 vs 64-bit source;
+/// `dst_is_double` selects single vs double precision result.
+fn emit_scvtf(
+    asm: &mut CodeAssembler,
+    alloc: &Allocation,
+    a: Armlet,
+    dst: Option<ValueRef>,
+    dst_is_double: bool,
+    src_is_x: bool,
+) -> Result<()> {
+    if src_is_x {
+        load64(asm, alloc, a.args[0], rax)?;
+        if dst_is_double { asm.cvtsi2sd(xmm0, rax)?; }
+        else             { asm.cvtsi2ss(xmm0, rax)?; }
+    } else {
+        load32(asm, alloc, a.args[0], eax)?;
+        if dst_is_double { asm.cvtsi2sd(xmm0, eax)?; }
+        else             { asm.cvtsi2ss(xmm0, eax)?; }
+    }
+    if let Some(d) = dst {
+        if dst_is_double { store_xmm_d(asm, alloc, d, xmm0)?; }
+        else             { store_xmm_s(asm, alloc, d, xmm0)?; }
     }
     Ok(())
 }

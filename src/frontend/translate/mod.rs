@@ -19,6 +19,7 @@ pub mod fp_dp3;
 pub mod fp_cmp;
 pub mod fp_sel;
 pub mod fp_imm;
+pub mod fp_conv;
 pub mod ldstpair_off;
 pub mod ldstpair_indexed;
 pub mod branch_imm;
