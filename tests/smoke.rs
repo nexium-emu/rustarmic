@@ -580,3 +580,35 @@ fn pacia_then_autia_round_trips_pointer() {
     run(code, &mut ctx);
     assert_eq!(ctx.x[0], 0xABCD, "PACIA+AUTIA should be identity in our model");
 }
+
+#[test]
+fn fmov_v_to_v_single_precision() {
+    // fmov s1, s2  ; copy low 32 bits of v2 to v1, zero rest
+    let code = build_code(&[
+        0x1E20_4041,
+        0xD4200000,
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[2] = [0x1122_3344_5566_7788, 0xCAFE_BABE_DEAD_BEEF];
+    ctx.v[1] = [0xFFFF_FFFF_FFFF_FFFF, 0xFFFF_FFFF_FFFF_FFFF];
+    run(code, &mut ctx);
+    assert_eq!(ctx.v[1][0], 0x5566_7788, "S-precision FMOV copies low 32 bits");
+    assert_eq!(ctx.v[1][1], 0, "S-precision FMOV zeros upper 96 bits");
+}
+
+#[test]
+fn fmov_v_to_v_double_precision() {
+    // fmov d1, d2  ; copy low 64 bits of v2 to v1, zero upper 64 bits
+    let code = build_code(&[
+        0x1E60_4041,
+        0xD4200000,
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[2] = [0x1122_3344_5566_7788, 0xCAFE_BABE_DEAD_BEEF];
+    ctx.v[1] = [0xFFFF_FFFF_FFFF_FFFF, 0xFFFF_FFFF_FFFF_FFFF];
+    run(code, &mut ctx);
+    assert_eq!(ctx.v[1][0], 0x1122_3344_5566_7788, "D FMOV copies low 64 bits");
+    assert_eq!(ctx.v[1][1], 0, "D FMOV zeros upper 64 bits");
+}
