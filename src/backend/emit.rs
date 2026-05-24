@@ -34,6 +34,9 @@ pub fn emit_block(block: &Block) -> Result<EmittedBlock> {
 
     emit_prologue(&mut asm, &alloc)?;
 
+    // With the shared thunk, "body" starts at offset 0; no per-block prologue
+    // bytes precede it. We still emit and resolve the label so future moves
+    // (re-introducing per-block setup, alignment padding, etc.) stay free.
     let mut body_label = asm.create_label();
     asm.set_label(&mut body_label)?;
 

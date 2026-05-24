@@ -73,8 +73,8 @@ impl Jit {
             };
 
             let next_pc = unsafe {
-                let f: JitFn = core::mem::transmute(host_fn);
-                f(ctx as *mut CpuContext)
+                let thunk: JitFn = core::mem::transmute(self.cache.thunk());
+                thunk(host_fn as u64, ctx as *mut CpuContext)
             };
 
             if (next_pc >> 60) == 0xE {

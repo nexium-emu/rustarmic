@@ -77,29 +77,18 @@ impl Allocation {
         self.locs[v.as_usize()]
     }
 
-    /// 16 bytes per saved XMM register.
+    /// XMM6..15 are saved by the shared thunk, not per-block; this is kept
+    /// as a no-op so we don't have to ripple a constant deletion through the
+    /// rest of the codebase.
     #[inline]
-    pub fn xmm_save_bytes(&self) -> i32 {
-        self.used_xmms.count_ones() as i32 * 16
-    }
+    pub fn xmm_save_bytes(&self) -> i32 { 0 }
 
-    /// Iterates the indices of XMM registers used as spill slots in the order
-    /// they were assigned save slots (ascending XMM index).
     pub fn iter_used_xmms(&self) -> impl Iterator<Item = u8> + '_ {
         (0..16u8).filter(move |i| (self.used_xmms >> i) & 1 != 0)
     }
 
-    /// Offset (positive, subtracted from `rbp`) of the save slot for a given
-    /// XMM register. Only valid for indices in `iter_used_xmms`.
-    pub fn xmm_save_offset(&self, xmm: u8) -> i32 {
-        let position = self.iter_used_xmms().position(|x| x == xmm).expect("xmm not in saved set");
-        SAVED_SIZE + 16 * (position as i32 + 1)
-    }
-
     #[inline]
-    pub fn frame_bytes(&self) -> i32 {
-        (self.spill_bytes + self.xmm_save_bytes() + 15) & -16
-    }
+    pub fn frame_bytes(&self) -> i32 { 0 }
 }
 
 pub fn compute_live_ranges(block: &Block) -> Vec<LiveRange> {
@@ -313,14 +302,10 @@ pub fn linear_scan(block: &Block, ranges: &[LiveRange], pool: &[u8]) -> Allocati
         }
     }
 
-    let xmm_save_bytes = used_xmms.count_ones() as i32 * 16;
-    if xmm_save_bytes > 0 {
-        for loc in locs.iter_mut() {
-            if let Loc::Spill(off) = loc {
-                *off += xmm_save_bytes;
-            }
-        }
-    }
+    // Per-block XMM save is gone — the shared thunk preserves XMM6..15 once
+    // per host→JIT call. We still track `used_xmms` for allocation correctness
+    // (so spill scalars don't collide with live u128 values), but the prologue
+    // emits nothing for them and stack-spill offsets need no extra shift.
     Allocation {
         locs,
         spill_bytes: spill_cursor - SAVED_SIZE,

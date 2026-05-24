@@ -2,10 +2,13 @@ use std::collections::HashMap;
 
 use region::{Allocation, Protection};
 
-use crate::backend::ChainSite;
+use crate::backend::{emit_thunk_bytes, ChainSite};
 use crate::error::{Error, Result};
 
-pub type HostFn = unsafe extern "C" fn(*mut crate::jit::context::CpuContext) -> u64;
+/// The shared host→JIT thunk signature: `(block_fn, ctx) -> exit_token`.
+/// Blocks themselves no longer have a prologue, so the thunk does all the
+/// callee-saved push/pop and (on Windows) the XMM6..XMM15 save/restore.
+pub type ThunkFn = unsafe extern "C" fn(block_fn: u64, ctx: *mut crate::jit::context::CpuContext) -> u64;
 
 pub struct CodeCache {
     region:   Allocation,
@@ -13,6 +16,7 @@ pub struct CodeCache {
     capacity: usize,
     table:    HashMap<u64, Entry>,
     pending:  HashMap<u64, Vec<*mut u8>>,
+    thunk:    *const u8,
 }
 
 #[derive(Clone, Copy)]
@@ -28,17 +32,44 @@ impl CodeCache {
         let allocation = region::alloc(bytes, Protection::READ_WRITE_EXECUTE)
             .map_err(|e| Error::HostAlloc(e.to_string()))?;
         let capacity = allocation.len();
-        Ok(Self {
+        let mut this = Self {
             region: allocation,
             cursor: 0,
             capacity,
             table: HashMap::new(),
             pending: HashMap::new(),
-        })
+            thunk: core::ptr::null(),
+        };
+        // Install the shared thunk at the head of the cache so every later
+        // host→JIT call can route through it.
+        let thunk_bytes = emit_thunk_bytes()?;
+        let thunk_ptr = this.append_raw(&thunk_bytes)?;
+        this.thunk = thunk_ptr;
+        Ok(this)
     }
+
+    /// Address of the shared thunk. Cast to [`ThunkFn`] to invoke.
+    pub fn thunk(&self) -> *const u8 { self.thunk }
 
     pub fn lookup(&self, pc: u64) -> Option<*const u8> {
         self.table.get(&pc).map(|e| e.host_ptr)
+    }
+
+    fn append_raw(&mut self, bytes: &[u8]) -> Result<*const u8> {
+        let aligned_cursor = (self.cursor + 15) & !15;
+        if aligned_cursor + bytes.len() > self.capacity {
+            return Err(Error::CodeCacheFull);
+        }
+        let ptr = unsafe {
+            let base = self.region.as_mut_ptr::<u8>();
+            let dst = base.add(aligned_cursor);
+            core::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len());
+            self.cursor = aligned_cursor + bytes.len();
+            #[cfg(target_arch = "x86_64")]
+            { core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst); }
+            dst as *const u8
+        };
+        Ok(ptr)
     }
 
     pub fn install(
@@ -48,20 +79,7 @@ impl CodeCache {
         chains: &[ChainSite],
         body_offset: u32,
     ) -> Result<*const u8> {
-        let aligned_cursor = (self.cursor + 15) & !15;
-        if aligned_cursor + bytes.len() > self.capacity {
-            return Err(Error::CodeCacheFull);
-        }
-        let host_ptr = unsafe {
-            let base = self.region.as_mut_ptr::<u8>();
-            let dst = base.add(aligned_cursor);
-            core::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len());
-            self.cursor = aligned_cursor + bytes.len();
-            #[cfg(target_arch = "x86_64")]
-            { core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst); }
-            dst as *const u8
-        };
-
+        let host_ptr = self.append_raw(bytes)?;
         let body_addr = unsafe { host_ptr.add(body_offset as usize) };
         self.table.insert(guest_pc, Entry { host_ptr, body_offset });
 
