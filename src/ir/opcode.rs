@@ -165,6 +165,14 @@ pub enum Op {
     VecExtractLo64 = 0x630,
     VecExtractHi64 = 0x634,
 
+    // Lane-sized extracts. Lane index goes in `imm`; the byte lane size
+    // matches the low 2 bits (log2 byte width) per the existing convention.
+    // Result is zero-extended into a U32 — callers do sign-extension via
+    // a separate Sext armlet for SMOV-style usage.
+    VecExtract8  = 0x638,
+    VecExtract16 = 0x639,
+    VecExtract32 = 0x63A,
+
     Mrs            = 0x700,
     Msr            = 0x704,
     Hint           = 0x708,

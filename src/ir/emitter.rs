@@ -175,6 +175,24 @@ impl<'b> IrEmitter<'b> {
         self.push(Armlet::new(Op::VecExtractHi64, Ty::U64).with_args(&[q]))
     }
 
+    /// Extract an 8-bit lane (lane 0..15) of a u128, zero-extended to U32.
+    pub fn vec_extract_u8(&mut self, q: ValueRef, lane: u32) -> ValueRef {
+        debug_assert!(lane < 16);
+        self.push(Armlet::new(Op::VecExtract8, Ty::U32).with_args(&[q]).with_imm(lane as u64))
+    }
+
+    /// Extract a 16-bit lane (lane 0..7) of a u128, zero-extended to U32.
+    pub fn vec_extract_u16(&mut self, q: ValueRef, lane: u32) -> ValueRef {
+        debug_assert!(lane < 8);
+        self.push(Armlet::new(Op::VecExtract16, Ty::U32).with_args(&[q]).with_imm(lane as u64))
+    }
+
+    /// Extract a 32-bit lane (lane 0..3) of a u128.
+    pub fn vec_extract_u32(&mut self, q: ValueRef, lane: u32) -> ValueRef {
+        debug_assert!(lane < 4);
+        self.push(Armlet::new(Op::VecExtract32, Ty::U32).with_args(&[q]).with_imm(lane as u64))
+    }
+
     // ─── Per-lane vector ALU ────────────────────────────────────────────────
     // `lane_log2` selects element width (0=B, 1=H, 2=S, 3=D). `q` selects the
     // full 128-bit form (true) vs the half-width form (false, upper 64 zeroed).

@@ -240,6 +240,24 @@ pub fn emit_armlet(
             asm.pextrq(rax, src, 1)?;
             store64(asm, alloc, d, rax)?;
         }
+        Op::VecExtract8 => {
+            let d = dst_vr.unwrap();
+            let src = get_xmm_q(asm, alloc, a.args[0], xmm0)?;
+            asm.pextrb(eax, src, a.imm as i32)?;
+            store32(asm, alloc, d, eax)?;
+        }
+        Op::VecExtract16 => {
+            let d = dst_vr.unwrap();
+            let src = get_xmm_q(asm, alloc, a.args[0], xmm0)?;
+            asm.pextrw(eax, src, a.imm as i32)?;
+            store32(asm, alloc, d, eax)?;
+        }
+        Op::VecExtract32 => {
+            let d = dst_vr.unwrap();
+            let src = get_xmm_q(asm, alloc, a.args[0], xmm0)?;
+            asm.pextrd(eax, src, a.imm as i32)?;
+            store32(asm, alloc, d, eax)?;
+        }
 
         Op::VecAdd8  | Op::VecAdd16 | Op::VecAdd32 | Op::VecAdd64 =>
             emit_vec_binop(asm, alloc, a, dst_vr, VecBinKind::Add(a.op.size_log2()))?,
