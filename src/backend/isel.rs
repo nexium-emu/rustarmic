@@ -100,6 +100,32 @@ pub fn emit_armlet(
             store64(asm, alloc, d, SCRATCH0)?;
         }
 
+        Op::GetV => {
+            let d = dst_vr.unwrap();
+            let reg = a.imm as usize;
+            let off = cpu_offsets::vreg(reg) as i32;
+            if a.ty.bits() <= 32 {
+                asm.mov(eax, dword_ptr(CTX_REG + off))?;
+                store32(asm, alloc, d, eax)?;
+            } else {
+                asm.mov(SCRATCH0, qword_ptr(CTX_REG + off))?;
+                store64(asm, alloc, d, SCRATCH0)?;
+            }
+        }
+        Op::SetV => {
+            let reg = a.imm as usize;
+            let off = cpu_offsets::vreg(reg) as i32;
+            if a.flags.contains(crate::ir::ArmletFlags::W_SIZED) {
+                load32(asm, alloc, a.args[0], eax)?;
+                asm.mov(dword_ptr(CTX_REG + off), eax)?;
+                asm.mov(dword_ptr(CTX_REG + off + 4), 0i32)?;
+            } else {
+                load64(asm, alloc, a.args[0], SCRATCH0)?;
+                asm.mov(qword_ptr(CTX_REG + off), SCRATCH0)?;
+            }
+            asm.mov(qword_ptr(CTX_REG + off + 8), 0i32)?;
+        }
+
         Op::Add32 => emit_binop_32(asm, alloc, a, dst_vr, BinKind::Add)?,
         Op::Add64 => emit_binop_64(asm, alloc, a, dst_vr, BinKind::Add)?,
         Op::Sub32 => emit_binop_32(asm, alloc, a, dst_vr, BinKind::Sub)?,

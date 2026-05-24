@@ -59,6 +59,7 @@ pub fn translate_instruction(em: &mut IrEmitter<'_>, inst: u32) -> Result<InstSt
         Operation::DP_1SRC(insn)          => translate::dp_1src::translate(em, insn),
         Operation::DP_2SRC(insn)          => translate::dp_2src::translate(em, insn),
         Operation::DP_3SRC(insn)          => translate::dp_3src::translate(em, insn),
+        Operation::FLOATDP1(insn)         => translate::fp_dp1::translate(em, insn),
         _ => Err(Error::Unsupported { pc: em.current_pc, opcode: inst }),
     }
 }

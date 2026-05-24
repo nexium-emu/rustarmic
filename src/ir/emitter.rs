@@ -116,6 +116,36 @@ impl<'b> IrEmitter<'b> {
         }
     }
 
+    // ─── V (SIMD/FP) register lanes ─────────────────────────────────────────
+    /// Read the low 32 bits of V[reg] (S-precision scalar view).
+    pub fn get_v_s(&mut self, reg: u8) -> ValueRef {
+        debug_assert!((reg as usize) < crate::arch::NUM_VREGS);
+        self.push(Armlet::new(Op::GetV, Ty::U32).with_imm(reg as u64))
+    }
+
+    /// Read the low 64 bits of V[reg] (D-precision scalar view).
+    pub fn get_v_d(&mut self, reg: u8) -> ValueRef {
+        debug_assert!((reg as usize) < crate::arch::NUM_VREGS);
+        self.push(Armlet::new(Op::GetV, Ty::U64).with_imm(reg as u64))
+    }
+
+    /// Write 32-bit lane to V[reg], zeroing the upper 96 bits.
+    pub fn set_v_s(&mut self, reg: u8, value: ValueRef) {
+        debug_assert!((reg as usize) < crate::arch::NUM_VREGS);
+        self.push(Armlet::new(Op::SetV, Ty::Void)
+            .with_args(&[value])
+            .with_imm(reg as u64)
+            .with_flags(ArmletFlags::W_SIZED));
+    }
+
+    /// Write 64-bit lane to V[reg], zeroing the upper 64 bits.
+    pub fn set_v_d(&mut self, reg: u8, value: ValueRef) {
+        debug_assert!((reg as usize) < crate::arch::NUM_VREGS);
+        self.push(Armlet::new(Op::SetV, Ty::Void)
+            .with_args(&[value])
+            .with_imm(reg as u64));
+    }
+
     // ─── NZCV ───────────────────────────────────────────────────────────────
     pub fn get_nzcv(&mut self) -> ValueRef {
         self.push(Armlet::new(Op::GetNzcv, Ty::Nzcv))
