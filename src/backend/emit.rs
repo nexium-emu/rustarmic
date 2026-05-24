@@ -145,6 +145,3 @@ fn emit_two_way_patches(
     chain_specs.push((*taken_label, taken_pc));
     Ok(())
 }
-
-#[allow(dead_code)]
-fn _unused() { let _ = Allocation { locs: vec![], spill_bytes: 0 }; }

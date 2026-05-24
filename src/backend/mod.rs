@@ -2,11 +2,10 @@
 //!
 //! The backend is intentionally narrow for the first milestone:
 //!
-//! - **Register allocator**: every SSA value spills to a fixed slot in a
-//!   per-block scratch area on the host stack. This keeps the allocator
-//!   trivial (O(n), zero state) while still letting us pin a small set of
-//!   guest GPRs to host registers across the block. We'll upgrade to a
-//!   real linear-scan in a follow-up pass — the IR layout makes it easy.
+//! - **Register allocator**: linear-scan over a small callee-saved GPR pool
+//!   (RBX, R12, R13, R14) with stack spill slots as fallback. Honors
+//!   per-op clobber masks and coalesces Identity / two-address binops with
+//!   their source register when the source dies at the op.
 //!
 //! - **Code emission**: `iced-x86`'s `CodeAssembler` builds an instruction
 //!   stream that the `BlockEncoder` then resolves into a `Vec<u8>` with
@@ -23,7 +22,6 @@ pub mod abi;
 pub mod clobbers;
 pub mod operand;
 pub mod regalloc;
-pub mod reg_alloc;
 pub mod isel;
 pub mod prologue;
 pub mod emit;
