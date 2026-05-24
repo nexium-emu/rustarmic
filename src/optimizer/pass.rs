@@ -104,7 +104,8 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
             Op::SetNzcv => { reach_nzcv = a.args[0]; }
 
             Op::AddsFlags32 | Op::AddsFlags64
-            | Op::SubsFlags32 | Op::SubsFlags64 => {
+            | Op::SubsFlags32 | Op::SubsFlags64
+            | Op::Fcmp32 | Op::Fcmp64 => {
                 reach_nzcv = ValueRef::NONE;
             }
 

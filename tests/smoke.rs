@@ -1057,3 +1057,37 @@ fn fnmul_d_negates_product() {
     run(code, &mut ctx);
     assert_eq!(f64::from_bits(ctx.v[0][0]), -6.0);
 }
+
+#[test]
+fn fccmp_d_cond_holds_runs_fcmp() {
+    // fccmp d1, d2, #0, eq
+    //   pre-NZCV = 0100 (Z=1) → cond EQ holds → FCMP runs: 1.0 < 2.0 → NZCV=1000
+    let code = build_code(&[
+        0x1E62_0420,
+        0xD4200000,
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.nzcv = 0b0100; // Z=1
+    ctx.v[1] = [(1.0_f64).to_bits(), 0];
+    ctx.v[2] = [(2.0_f64).to_bits(), 0];
+    run(code, &mut ctx);
+    assert_eq!(ctx.nzcv, 0b1000, "cond held → FCMP set N");
+}
+
+#[test]
+fn fccmp_d_cond_fails_uses_immediate_nzcv() {
+    // fccmp d1, d2, #0xA, eq  (imm4 = 0xA = 1010)
+    //   pre-NZCV = 0000 → EQ fails → final NZCV = imm4 = 1010
+    let code = build_code(&[
+        0x1E62_042A,  // imm4=0xA in low nibble
+        0xD4200000,
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.nzcv = 0;
+    ctx.v[1] = [(1.0_f64).to_bits(), 0];
+    ctx.v[2] = [(2.0_f64).to_bits(), 0];
+    run(code, &mut ctx);
+    assert_eq!(ctx.nzcv, 0b1010, "cond failed → NZCV = imm4");
+}

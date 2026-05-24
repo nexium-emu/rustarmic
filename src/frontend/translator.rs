@@ -63,6 +63,7 @@ pub fn translate_instruction(em: &mut IrEmitter<'_>, inst: u32) -> Result<InstSt
         Operation::FLOATDP2(insn)         => translate::fp_dp2::translate(em, insn),
         Operation::FLOATDP3(insn)         => translate::fp_dp3::translate(em, insn),
         Operation::FLOATCMP(insn)         => translate::fp_cmp::translate(em, insn),
+        Operation::FLOATCCMP(insn)        => translate::fp_ccmp::translate(em, insn),
         Operation::FLOATSEL(insn)         => translate::fp_sel::translate(em, insn),
         Operation::FLOATIMM(insn)         => translate::fp_imm::translate(em, insn),
         Operation::FLOAT2INT(insn)        => translate::fp_conv::translate(em, insn),
