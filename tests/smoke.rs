@@ -723,3 +723,41 @@ fn fcmp_d_against_zero_immediate() {
     run(code, &mut ctx);
     assert_eq!(ctx.nzcv, 0b0010, "5.0 > 0 should set C");
 }
+
+#[test]
+fn fcsel_d_picks_taken_when_eq() {
+    // movz x0, ... ; load 7.5 into d0, 3.5 into d1
+    // fcmp d2, d3   ; if eq (we make them eq) → fcsel picks d0
+    // fcsel d4, d0, d1, eq
+    // brk
+    let code = build_code(&[
+        0x1E63_2040, // fcmp d2, d3
+        0x1E61_0C04, // fcsel d4, d0, d1, eq
+        0xD4200000,
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[0] = [(7.5_f64).to_bits(), 0];
+    ctx.v[1] = [(3.5_f64).to_bits(), 0];
+    ctx.v[2] = [(1.0_f64).to_bits(), 0];
+    ctx.v[3] = [(1.0_f64).to_bits(), 0];
+    run(code, &mut ctx);
+    assert_eq!(f64::from_bits(ctx.v[4][0]), 7.5, "EQ → fcsel picks Fn (d0)");
+}
+
+#[test]
+fn fcsel_d_picks_not_taken_when_ne() {
+    let code = build_code(&[
+        0x1E63_2040, // fcmp d2, d3
+        0x1E61_1C04, // fcsel d4, d0, d1, ne  (cond=0001)
+        0xD4200000,
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[0] = [(7.5_f64).to_bits(), 0];
+    ctx.v[1] = [(3.5_f64).to_bits(), 0];
+    ctx.v[2] = [(1.0_f64).to_bits(), 0];
+    ctx.v[3] = [(1.0_f64).to_bits(), 0];  // 1.0 == 1.0 → NE fails
+    run(code, &mut ctx);
+    assert_eq!(f64::from_bits(ctx.v[4][0]), 3.5, "NE fails → fcsel picks Fm (d1)");
+}
