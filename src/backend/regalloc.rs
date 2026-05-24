@@ -66,6 +66,9 @@ impl LiveRange {
 pub struct Allocation {
     pub locs:        Vec<Loc>,
     pub spill_bytes: i32,
+    /// Bitmask of XMM registers (0..15) used as spill slots within this
+    /// block. The prologue must save these into the per-block frame.
+    pub used_xmms:   u16,
 }
 
 impl Allocation {
@@ -74,9 +77,28 @@ impl Allocation {
         self.locs[v.as_usize()]
     }
 
+    /// 16 bytes per saved XMM register.
+    #[inline]
+    pub fn xmm_save_bytes(&self) -> i32 {
+        self.used_xmms.count_ones() as i32 * 16
+    }
+
+    /// Iterates the indices of XMM registers used as spill slots in the order
+    /// they were assigned save slots (ascending XMM index).
+    pub fn iter_used_xmms(&self) -> impl Iterator<Item = u8> + '_ {
+        (0..16u8).filter(move |i| (self.used_xmms >> i) & 1 != 0)
+    }
+
+    /// Offset (positive, subtracted from `rbp`) of the save slot for a given
+    /// XMM register. Only valid for indices in `iter_used_xmms`.
+    pub fn xmm_save_offset(&self, xmm: u8) -> i32 {
+        let position = self.iter_used_xmms().position(|x| x == xmm).expect("xmm not in saved set");
+        SAVED_SIZE + 16 * (position as i32 + 1)
+    }
+
     #[inline]
     pub fn frame_bytes(&self) -> i32 {
-        (self.spill_bytes + 15) & -16
+        (self.spill_bytes + self.xmm_save_bytes() + 15) & -16
     }
 }
 
@@ -124,6 +146,18 @@ pub fn compute_live_ranges(block: &Block) -> Vec<LiveRange> {
 
 pub const ALLOCATABLE_GPRS: &[u8] = &[3, 12, 13, 14];
 
+/// XMM registers used as fast spill slots (movq/movd round-trip beats a
+/// stack store). On Windows these are callee-saved (XMM6..XMM15), so the
+/// prologue restores any that the block actually uses.
+#[cfg(target_os = "windows")]
+pub const SPILL_XMMS: &[u8] = &[6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+
+/// On SysV every XMM is caller-saved, so using them across memory callbacks
+/// is unsafe without per-call save/restore — leave the XMM spill pool empty
+/// and fall back to stack spills there for now.
+#[cfg(not(target_os = "windows"))]
+pub const SPILL_XMMS: &[u8] = &[];
+
 pub fn op_clobbers(op: Op) -> GprMask {
     clobbers_for_op(op).gpr
 }
@@ -143,7 +177,19 @@ pub fn linear_scan(block: &Block, ranges: &[LiveRange], pool: &[u8]) -> Allocati
     let mut locs = vec![Loc::None; n];
     let mut spill_cursor: i32 = SAVED_SIZE;
     let mut free: Vec<u8> = pool.iter().copied().rev().collect();
+    let mut xmm_free: Vec<u8> = SPILL_XMMS.iter().copied().rev().collect();
+    let mut used_xmms: u16 = 0;
     let mut active: Vec<(u32, u8, usize)> = Vec::new();
+
+    // Lambda that allocates a spill slot, preferring an XMM register.
+    let mut take_spill = |spill_cursor: &mut i32, xmm_free: &mut Vec<u8>, used_xmms: &mut u16| -> Loc {
+        if let Some(x) = xmm_free.pop() {
+            *used_xmms |= 1 << x;
+            Loc::Xmm(x)
+        } else {
+            Loc::Spill(alloc_spill_slot(spill_cursor))
+        }
+    };
 
     let clobber_masks: Vec<GprMask> = block.code.iter()
         .map(|a| if a.is_eliminated() { GprMask::empty() } else { clobbers_for_op(a.op).gpr })
@@ -200,8 +246,7 @@ pub fn linear_scan(block: &Block, ranges: &[LiveRange], pool: &[u8]) -> Allocati
             locs[vr_idx] = Loc::Reg(reg);
             active.push((end, reg, vr_idx));
         } else if active.is_empty() {
-            let off = alloc_spill_slot(&mut spill_cursor);
-            locs[vr_idx] = Loc::Spill(off);
+            locs[vr_idx] = take_spill(&mut spill_cursor, &mut xmm_free, &mut used_xmms);
         } else {
             let candidate = active
                 .iter()
@@ -211,24 +256,31 @@ pub fn linear_scan(block: &Block, ranges: &[LiveRange], pool: &[u8]) -> Allocati
 
             if let Some((spill_pos, &(victim_end, victim_reg, victim_vr))) = candidate {
                 if victim_end > end {
-                    let off = alloc_spill_slot(&mut spill_cursor);
-                    locs[victim_vr] = Loc::Spill(off);
+                    let spilled = take_spill(&mut spill_cursor, &mut xmm_free, &mut used_xmms);
+                    locs[victim_vr] = spilled;
                     locs[vr_idx]    = Loc::Reg(victim_reg);
                     active[spill_pos] = (end, victim_reg, vr_idx);
                 } else {
-                    let off = alloc_spill_slot(&mut spill_cursor);
-                    locs[vr_idx] = Loc::Spill(off);
+                    locs[vr_idx] = take_spill(&mut spill_cursor, &mut xmm_free, &mut used_xmms);
                 }
             } else {
-                let off = alloc_spill_slot(&mut spill_cursor);
-                locs[vr_idx] = Loc::Spill(off);
+                locs[vr_idx] = take_spill(&mut spill_cursor, &mut xmm_free, &mut used_xmms);
             }
         }
     }
 
+    let xmm_save_bytes = used_xmms.count_ones() as i32 * 16;
+    if xmm_save_bytes > 0 {
+        for loc in locs.iter_mut() {
+            if let Loc::Spill(off) = loc {
+                *off += xmm_save_bytes;
+            }
+        }
+    }
     Allocation {
         locs,
         spill_bytes: spill_cursor - SAVED_SIZE,
+        used_xmms,
     }
 }
 
@@ -377,7 +429,7 @@ mod tests {
         }
         assert_eq!(spilled, extra);
         assert_eq!(in_reg, pool);
-        assert!(alloc.spill_bytes > 0);
+        assert!(alloc.spill_bytes > 0 || alloc.used_xmms != 0);
     }
 
     #[test]
@@ -392,9 +444,10 @@ mod tests {
         let ranges = compute_live_ranges(&b);
         let alloc = linear_scan(&b, &ranges, ALLOCATABLE_GPRS);
 
-        let any_spill = alloc.locs.iter().any(|l| matches!(l, Loc::Spill(_)));
+        let any_spill = alloc.locs.iter().any(|l| matches!(l, Loc::Spill(_) | Loc::Xmm(_)));
         assert!(!any_spill);
         assert_eq!(alloc.spill_bytes, 0);
+        assert_eq!(alloc.used_xmms, 0);
     }
 
     #[test]
@@ -427,8 +480,9 @@ mod tests {
         let alloc = linear_scan(&b, &ranges, &[1]);
 
         assert!(
-            matches!(alloc.locs[val.as_usize()], Loc::Spill(_)),
-            "val crosses a shift that clobbers RCX, so it cannot live in RCX"
+            matches!(alloc.locs[val.as_usize()], Loc::Spill(_) | Loc::Xmm(_)),
+            "val crosses a shift that clobbers RCX, so it cannot live in RCX (got {:?})",
+            alloc.locs[val.as_usize()]
         );
     }
 }

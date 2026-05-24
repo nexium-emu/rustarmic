@@ -29,11 +29,10 @@ const BITNESS: u32 = 64;
 pub fn emit_block(block: &Block) -> Result<EmittedBlock> {
     let ranges = compute_live_ranges(block);
     let alloc = linear_scan(block, &ranges, ALLOCATABLE_GPRS);
-    let frame_bytes = alloc.frame_bytes();
 
     let mut asm = CodeAssembler::new(BITNESS)?;
 
-    emit_prologue(&mut asm, frame_bytes)?;
+    emit_prologue(&mut asm, &alloc)?;
 
     let mut body_label = asm.create_label();
     asm.set_label(&mut body_label)?;
@@ -91,7 +90,7 @@ pub fn emit_block(block: &Block) -> Result<EmittedBlock> {
     }
 
     asm.set_label(&mut epilogue_label)?;
-    emit_epilogue(&mut asm, frame_bytes)?;
+    emit_epilogue(&mut asm, &alloc)?;
 
     let result = asm.assemble_options(0, BlockEncoderOptions::RETURN_NEW_INSTRUCTION_OFFSETS)
         .map_err(|e| Error::Backend(e.to_string()))?;
