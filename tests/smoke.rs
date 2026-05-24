@@ -983,3 +983,32 @@ fn fmov_x_from_d_copies_bits() {
     run(code, &mut ctx);
     assert_eq!(f64::from_bits(ctx.x[0]), 2.5);
 }
+
+#[test]
+fn fcvt_s_to_d_promotes_float() {
+    // fcvt d0, s1
+    let code = build_code(&[
+        0x1E22_C020,
+        0xD4200000,
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [(1.5_f32).to_bits() as u64, 0];
+    run(code, &mut ctx);
+    assert_eq!(f64::from_bits(ctx.v[0][0]), 1.5_f64);
+}
+
+#[test]
+fn fcvt_d_to_s_demotes_double() {
+    // fcvt s0, d1
+    let code = build_code(&[
+        0x1E62_4020,
+        0xD4200000,
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [(2.25_f64).to_bits(), 0];
+    run(code, &mut ctx);
+    assert_eq!(f32::from_bits(ctx.v[0][0] as u32), 2.25_f32);
+    assert_eq!(ctx.v[0][0] >> 32, 0);
+}

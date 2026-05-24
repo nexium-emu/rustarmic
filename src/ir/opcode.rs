@@ -133,6 +133,8 @@ pub enum Op {
     ScvtfXS  = 0x545,  // i64 → single
     ScvtfWD  = 0x546,  // i32 → double
     ScvtfXD  = 0x547,  // i64 → double
+    FcvtSD   = 0x548,  // single → double
+    FcvtDS   = 0x549,  // double → single
 
     VecAdd  = 0x600,
     VecSub  = 0x604,

@@ -188,6 +188,8 @@ pub fn emit_armlet(
         Op::ScvtfXS  => emit_scvtf(asm, alloc, a, dst_vr, false, true)?,
         Op::ScvtfWD  => emit_scvtf(asm, alloc, a, dst_vr, true,  false)?,
         Op::ScvtfXD  => emit_scvtf(asm, alloc, a, dst_vr, true,  true)?,
+        Op::FcvtSD   => emit_fcvt_precision(asm, alloc, a, dst_vr, false)?,
+        Op::FcvtDS   => emit_fcvt_precision(asm, alloc, a, dst_vr, true)?,
 
         op if op.is_terminator() => {}
 
@@ -832,6 +834,28 @@ fn emit_fbinop(
             FpBinKind::Div => asm.divss(xmm0, xmm1)?,
         }
         if let Some(d) = dst { store_xmm_s(asm, alloc, d, xmm0)?; }
+    }
+    Ok(())
+}
+
+/// `FCVT` between single and double precision.
+/// `src_is_double = false` → single → double (CVTSS2SD);
+/// `src_is_double = true`  → double → single (CVTSD2SS).
+fn emit_fcvt_precision(
+    asm: &mut CodeAssembler,
+    alloc: &Allocation,
+    a: Armlet,
+    dst: Option<ValueRef>,
+    src_is_double: bool,
+) -> Result<()> {
+    if src_is_double {
+        load_xmm_d(asm, alloc, a.args[0], xmm0)?;
+        asm.cvtsd2ss(xmm0, xmm0)?;
+        if let Some(d) = dst { store_xmm_s(asm, alloc, d, xmm0)?; }
+    } else {
+        load_xmm_s(asm, alloc, a.args[0], xmm0)?;
+        asm.cvtss2sd(xmm0, xmm0)?;
+        if let Some(d) = dst { store_xmm_d(asm, alloc, d, xmm0)?; }
     }
     Ok(())
 }
