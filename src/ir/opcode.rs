@@ -249,6 +249,11 @@ pub enum Op {
     // 3-op variant; deferred.)
     VecXtn = 0x6BC,
 
+    /// TBL (single-register form): args (vn = table, vm = indices); Q-flag
+    /// in `imm` bit 0. Each byte of vm is an index into vn's 16 bytes;
+    /// values >= 16 produce zero in the result lane.
+    VecTbl = 0x6C0,
+
     Mrs            = 0x700,
     Msr            = 0x704,
     Hint           = 0x708,

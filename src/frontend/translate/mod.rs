@@ -44,3 +44,4 @@ pub mod asimd_ins;
 pub mod asimd_perm;
 pub mod asimd_all;
 pub mod asimd_diff;
+pub mod asimd_tbl;

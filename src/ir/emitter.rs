@@ -467,6 +467,12 @@ impl<'b> IrEmitter<'b> {
         self.push(Armlet::new(Op::VecXtn, Ty::U128).with_args(&[vn]).with_imm(imm))
     }
 
+    /// TBL with a single-register table. Each byte of `indices` selects a
+    /// byte from `table`; values >= 16 produce zero.
+    pub fn vec_tbl(&mut self, table: ValueRef, indices: ValueRef, q: bool) -> ValueRef {
+        self.push(Armlet::new(Op::VecTbl, Ty::U128).with_args(&[table, indices]).with_imm(q as u64))
+    }
+
     // ─── NZCV ───────────────────────────────────────────────────────────────
     pub fn get_nzcv(&mut self) -> ValueRef {
         self.push(Armlet::new(Op::GetNzcv, Ty::Nzcv))

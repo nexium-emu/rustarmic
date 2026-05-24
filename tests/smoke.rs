@@ -2012,3 +2012,40 @@ fn vec_xtn_8b_truncates_each_h_lane() {
     assert_eq!(ctx.v[0][0], 0xFEBE_CEED_3478_BCF0);
     assert_eq!(ctx.v[0][1], 0, "upper 64 zeroed for XTN.8B");
 }
+
+#[test]
+fn vec_tbl_16b_single_table_with_out_of_range() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    // Table V1 = bytes 0xA0..0xAF
+    ctx.v[1] = [0xA7A6_A5A4_A3A2_A1A0, 0xAFAE_ADAC_ABAA_A9A8];
+    // Indices V2 = [0, 5, 10, 15, 16, 100, 200, 7,  1, 2, 3, 4, 6, 8, 9, 11]
+    //   First four read 0xA0, 0xA5, 0xAA, 0xAF.
+    //   Indices 16/100/200 are out-of-range → zero.
+    //   Then 0xA7, 0xA1, 0xA2, 0xA3, 0xA4, 0xA6, 0xA8, 0xA9, 0xAB.
+    ctx.v[2] = [0x07_C8_64_10_0F_0A_05_00, 0x0B_09_08_06_04_03_02_01];
+    let code = build_code(&[
+        0x4E02_0020, // tbl v0.16b, {v1.16b}, v2.16b
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    assert_eq!(ctx.v[0][0], 0xA7_00_00_00_AF_AA_A5_A0);
+    assert_eq!(ctx.v[0][1], 0xAB_A9_A8_A6_A4_A3_A2_A1);
+}
+
+#[test]
+fn vec_tbl_8b_zeros_upper_half() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [0x0706_0504_0302_0100, 0x0F0E_0D0C_0B0A_0908];
+    // Indices: low 8 = [0,2,4,6,8,10,12,14], high 8 ignored
+    ctx.v[2] = [0x0E_0C_0A_08_06_04_02_00, 0xDEAD_BEEF_CAFE_BABE];
+    let code = build_code(&[
+        0x0E02_0020, // tbl v0.8b, {v1.16b}, v2.8b
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // Picks bytes 0,2,4,6,8,10,12,14 of V1 → 0x00, 0x02, 0x04, 0x06, 0x08, 0x0A, 0x0C, 0x0E
+    assert_eq!(ctx.v[0][0], 0x0E_0C_0A_08_06_04_02_00);
+    assert_eq!(ctx.v[0][1], 0, "8B form zeros upper 64");
+}

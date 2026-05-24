@@ -191,6 +191,7 @@ fn dispatch_op(op: Op) -> Option<EmitFn> {
         VecSaddl => emit_op_vec_addl_signed,
         VecUaddl => emit_op_vec_addl_unsigned,
         VecXtn   => emit_op_vec_xtn,
+        VecTbl   => emit_op_vec_tbl,
 
         Hint | MemoryBarrier => emit_nop,
         Clrex => emit_op_clrex,
@@ -1146,6 +1147,36 @@ fn emit_op_vec_addl_unsigned(asm: &mut CodeAssembler, block: &Block, alloc: &All
     let a = block.code[idx];
     let d = dst_of(&a, idx).unwrap();
     emit_widening_addl(asm, alloc, a, d, false)
+}
+
+// ── TBL (single-register table permute) ──────────────────────────────────
+//
+// x86 PSHUFB zeroes destination bytes only when the index byte's bit 7 is
+// set; for indices 16..127 it does (index & 0x0F) instead of zeroing, which
+// disagrees with ARM TBL ("any index >= 16 → 0"). We fix this by saturating-
+// adding 0x70 to each index byte first: now any vm >= 16 has bit 7 set
+// (16+0x70 = 0x80) and PSHUFB zeroes those lanes.
+fn emit_op_vec_tbl(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let d = dst_of(&a, idx).unwrap();
+    let q_form = (a.imm & 1) != 0;
+    let working = working_xmm_for(alloc, d, xmm0);
+
+    // Build per-byte 0x70 mask in xmm2.
+    asm.mov(rax, 0x7070_7070_7070_7070u64 as i64)?;
+    asm.movq(xmm2, rax)?;
+    asm.punpcklqdq(xmm2, xmm2)?;
+
+    // Modified indices in xmm1 = vm + 0x70 saturating.
+    into_xmm_q(asm, alloc, a.args[1], xmm1)?;
+    asm.paddusb(xmm1, xmm2)?;
+
+    // Table in working; shuffle.
+    into_xmm_q(asm, alloc, a.args[0], working)?;
+    asm.pshufb(working, xmm1)?;
+
+    if !q_form { asm.movq(working, working)?; }
+    store_xmm_q(asm, alloc, d, working)
 }
 
 // ── Narrowing truncate (XTN) ─────────────────────────────────────────────
