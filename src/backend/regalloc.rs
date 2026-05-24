@@ -3,7 +3,13 @@ use crate::ir::{Block, Op, Terminal, Ty};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Loc {
+    /// Lives in a host GPR. `u8` is the x86 register encoding (0=RAX, 3=RBX, …).
     Reg(u8),
+    /// Lives in a host XMM register, used as a fast non-cache-touching spill
+    /// slot per the Intel optimisation manual recommendation. `u8` is the XMM
+    /// index (0..15). Loads/stores use `movq` / `movd`.
+    Xmm(u8),
+    /// Lives on the host stack at `[rbp - offset]`.
     Spill(i32),
     None,
 }
@@ -334,7 +340,7 @@ mod tests {
         for &vr in &vrs {
             match alloc.locs[vr.as_usize()] {
                 Loc::Reg(_) => in_reg += 1,
-                Loc::Spill(_) => spilled += 1,
+                Loc::Spill(_) | Loc::Xmm(_) => spilled += 1,
                 Loc::None => panic!("live value should not be Loc::None"),
             }
         }

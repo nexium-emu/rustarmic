@@ -24,6 +24,16 @@ pub fn gpr32(n: u8) -> AsmRegister32 {
     }
 }
 
+pub fn xmm(n: u8) -> AsmRegisterXmm {
+    match n {
+        0  => xmm0,  1  => xmm1,  2  => xmm2,  3  => xmm3,
+        4  => xmm4,  5  => xmm5,  6  => xmm6,  7  => xmm7,
+        8  => xmm8,  9  => xmm9,  10 => xmm10, 11 => xmm11,
+        12 => xmm12, 13 => xmm13, 14 => xmm14, 15 => xmm15,
+        _ => panic!("invalid XMM encoding: {}", n),
+    }
+}
+
 pub fn load64(
     asm: &mut CodeAssembler,
     alloc: &Allocation,
@@ -36,6 +46,9 @@ pub fn load64(
             if src != dst {
                 asm.mov(dst, src).map_err(into_err)?;
             }
+        }
+        Loc::Xmm(x) => {
+            asm.movq(dst, xmm(x)).map_err(into_err)?;
         }
         Loc::Spill(off) => {
             asm.mov(dst, qword_ptr(rbp - off)).map_err(into_err)?;
@@ -58,6 +71,9 @@ pub fn load32(
                 asm.mov(dst, src).map_err(into_err)?;
             }
         }
+        Loc::Xmm(x) => {
+            asm.movd(dst, xmm(x)).map_err(into_err)?;
+        }
         Loc::Spill(off) => {
             asm.mov(dst, dword_ptr(rbp - off)).map_err(into_err)?;
         }
@@ -78,6 +94,9 @@ pub fn store64(
             if dst != src {
                 asm.mov(dst, src).map_err(into_err)?;
             }
+        }
+        Loc::Xmm(x) => {
+            asm.movq(xmm(x), src).map_err(into_err)?;
         }
         Loc::Spill(off) => {
             asm.mov(qword_ptr(rbp - off), src).map_err(into_err)?;
@@ -100,6 +119,9 @@ pub fn store32(
                 asm.mov(dst, src).map_err(into_err)?;
             }
         }
+        Loc::Xmm(x) => {
+            asm.movd(xmm(x), src).map_err(into_err)?;
+        }
         Loc::Spill(off) => {
             asm.mov(dword_ptr(rbp - off), src).map_err(into_err)?;
         }
@@ -116,6 +138,10 @@ pub fn load_xmm_s(
 ) -> Result<()> {
     match alloc.loc(vr) {
         Loc::Reg(r) => asm.movd(dst, gpr32(r)).map_err(into_err)?,
+        Loc::Xmm(x) => {
+            let src = xmm(x);
+            if src != dst { asm.movdqa(dst, src).map_err(into_err)?; }
+        }
         Loc::Spill(off) => asm.movd(dst, dword_ptr(rbp - off)).map_err(into_err)?,
         Loc::None => return Err(Error::Backend(format!("load_xmm_s from Loc::None ({:?})", vr))),
     }
@@ -130,6 +156,10 @@ pub fn load_xmm_d(
 ) -> Result<()> {
     match alloc.loc(vr) {
         Loc::Reg(r) => asm.movq(dst, gpr64(r)).map_err(into_err)?,
+        Loc::Xmm(x) => {
+            let src = xmm(x);
+            if src != dst { asm.movdqa(dst, src).map_err(into_err)?; }
+        }
         Loc::Spill(off) => asm.movq(dst, qword_ptr(rbp - off)).map_err(into_err)?,
         Loc::None => return Err(Error::Backend(format!("load_xmm_d from Loc::None ({:?})", vr))),
     }
@@ -144,6 +174,10 @@ pub fn store_xmm_s(
 ) -> Result<()> {
     match alloc.loc(vr) {
         Loc::Reg(r) => asm.movd(gpr32(r), src).map_err(into_err)?,
+        Loc::Xmm(x) => {
+            let dst = xmm(x);
+            if dst != src { asm.movdqa(dst, src).map_err(into_err)?; }
+        }
         Loc::Spill(off) => asm.movd(dword_ptr(rbp - off), src).map_err(into_err)?,
         Loc::None => {}
     }
@@ -158,6 +192,10 @@ pub fn store_xmm_d(
 ) -> Result<()> {
     match alloc.loc(vr) {
         Loc::Reg(r) => asm.movq(gpr64(r), src).map_err(into_err)?,
+        Loc::Xmm(x) => {
+            let dst = xmm(x);
+            if dst != src { asm.movdqa(dst, src).map_err(into_err)?; }
+        }
         Loc::Spill(off) => asm.movq(qword_ptr(rbp - off), src).map_err(into_err)?,
         Loc::None => {}
     }
