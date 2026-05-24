@@ -154,6 +154,16 @@ fn dispatch_op(op: Op) -> Option<EmitFn> {
         VecUshrImm16 | VecUshrImm32 | VecUshrImm64 => emit_op_vec_ushr_imm,
         VecSshrImm16 | VecSshrImm32                => emit_op_vec_sshr_imm,
 
+        VecCmEq8 | VecCmEq16 | VecCmEq32 | VecCmEq64 => emit_op_vec_cmeq,
+        VecCmGt8 | VecCmGt16 | VecCmGt32 | VecCmGt64 => emit_op_vec_cmgt,
+        VecCmGe8 | VecCmGe16 | VecCmGe32 | VecCmGe64 => emit_op_vec_cmge,
+        VecCmHi16 | VecCmHi32 | VecCmHi64            => emit_op_vec_cmhi,
+        VecCmHs16 | VecCmHs32 | VecCmHs64            => emit_op_vec_cmhs,
+
+        VecBit => emit_op_vec_bit,
+        VecBif => emit_op_vec_bif,
+        VecBsl => emit_op_vec_bsl,
+
         Hint | MemoryBarrier => emit_nop,
         Clrex => emit_op_clrex,
 
@@ -668,6 +678,182 @@ fn emit_op_vec_sshr_imm(asm: &mut CodeAssembler, block: &Block, alloc: &Allocati
         2 => asm.psrad(working, shift as i32)?,
         _ => return Err(Error::Backend(format!("VecSshrImm lane {} not supported (no PSRAQ pre-AVX-512)", a.op.size_log2()))),
     }
+    if !q_form { asm.movq(working, working)?; }
+    store_xmm_q(asm, alloc, d, working)
+}
+
+// ── Compare ops ──────────────────────────────────────────────────────────
+fn emit_op_vec_cmeq(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let d = dst_of(&a, idx).unwrap();
+    let q_form = (a.imm & 1) != 0;
+    let working = working_xmm_for(alloc, d, xmm0);
+    into_xmm_q(asm, alloc, a.args[0], working)?;
+    let other = get_xmm_q(asm, alloc, a.args[1], xmm1)?;
+    match a.op.size_log2() {
+        0 => asm.pcmpeqb(working, other)?,
+        1 => asm.pcmpeqw(working, other)?,
+        2 => asm.pcmpeqd(working, other)?,
+        3 => asm.pcmpeqq(working, other)?,
+        _ => unreachable!(),
+    }
+    if !q_form { asm.movq(working, working)?; }
+    store_xmm_q(asm, alloc, d, working)
+}
+
+fn emit_op_vec_cmgt(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let d = dst_of(&a, idx).unwrap();
+    let q_form = (a.imm & 1) != 0;
+    let working = working_xmm_for(alloc, d, xmm0);
+    into_xmm_q(asm, alloc, a.args[0], working)?;
+    let other = get_xmm_q(asm, alloc, a.args[1], xmm1)?;
+    match a.op.size_log2() {
+        0 => asm.pcmpgtb(working, other)?,
+        1 => asm.pcmpgtw(working, other)?,
+        2 => asm.pcmpgtd(working, other)?,
+        3 => asm.pcmpgtq(working, other)?,
+        _ => unreachable!(),
+    }
+    if !q_form { asm.movq(working, working)?; }
+    store_xmm_q(asm, alloc, d, working)
+}
+
+/// CMGE Vd, Vn, Vm  ⇒  Vd = ~(Vm >s Vn). Compute pcmpgt(Vm, Vn), then
+/// invert with all-ones XOR.
+fn emit_op_vec_cmge(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let d = dst_of(&a, idx).unwrap();
+    let q_form = (a.imm & 1) != 0;
+    let working = working_xmm_for(alloc, d, xmm0);
+    // Load Vm into working (it gets the >-vs-Vn applied).
+    into_xmm_q(asm, alloc, a.args[1], working)?;
+    let vn = get_xmm_q(asm, alloc, a.args[0], xmm1)?;
+    match a.op.size_log2() {
+        0 => asm.pcmpgtb(working, vn)?,
+        1 => asm.pcmpgtw(working, vn)?,
+        2 => asm.pcmpgtd(working, vn)?,
+        3 => asm.pcmpgtq(working, vn)?,
+        _ => unreachable!(),
+    }
+    asm.pcmpeqd(xmm2, xmm2)?;
+    asm.pxor(working, xmm2)?;
+    if !q_form { asm.movq(working, working)?; }
+    store_xmm_q(asm, alloc, d, working)
+}
+
+/// Unsigned a > b  ⇔  signed (a ^ sign) > (b ^ sign). We materialize the
+/// sign mask per lane via `pcmpeqd; psll<X>` and apply pxor before the
+/// signed compare.
+fn emit_unsigned_cmp(
+    asm: &mut CodeAssembler,
+    alloc: &Allocation,
+    a: Armlet,
+    d: ValueRef,
+    invert: bool, // true for >=, false for >
+) -> Result<()> {
+    let q_form = (a.imm & 1) != 0;
+    let lane = a.op.size_log2();
+    let working = working_xmm_for(alloc, d, xmm0);
+
+    // Build the per-lane sign-bit mask in xmm2.
+    asm.pcmpeqd(xmm2, xmm2)?;
+    let lane_bits_minus_1: i32 = ((8 << lane) - 1) as i32;
+    match lane {
+        1 => asm.psllw(xmm2, lane_bits_minus_1)?,
+        2 => asm.pslld(xmm2, lane_bits_minus_1)?,
+        3 => asm.psllq(xmm2, lane_bits_minus_1)?,
+        _ => return Err(Error::Backend(format!("unsigned cmp lane {} not supported", lane))),
+    }
+
+    // working = (a ^ sign), other = (b ^ sign). For invert=true (CMHS) we
+    // compute (b > a) and flip, so we swap which arg gets loaded into working.
+    let (work_src, other_src) = if invert { (a.args[1], a.args[0]) } else { (a.args[0], a.args[1]) };
+    into_xmm_q(asm, alloc, work_src, working)?;
+    asm.pxor(working, xmm2)?;
+
+    // Load other into xmm1, apply sign flip.
+    let other_src_xmm = get_xmm_q(asm, alloc, other_src, xmm1)?;
+    if other_src_xmm != xmm1 {
+        asm.movdqa(xmm1, other_src_xmm)?;
+    }
+    asm.pxor(xmm1, xmm2)?;
+
+    match lane {
+        1 => asm.pcmpgtw(working, xmm1)?,
+        2 => asm.pcmpgtd(working, xmm1)?,
+        3 => asm.pcmpgtq(working, xmm1)?,
+        _ => unreachable!(),
+    }
+    if invert {
+        asm.pcmpeqd(xmm2, xmm2)?;
+        asm.pxor(working, xmm2)?;
+    }
+    if !q_form { asm.movq(working, working)?; }
+    store_xmm_q(asm, alloc, d, working)
+}
+
+fn emit_op_vec_cmhi(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let d = dst_of(&a, idx).unwrap();
+    emit_unsigned_cmp(asm, alloc, a, d, false)
+}
+fn emit_op_vec_cmhs(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let d = dst_of(&a, idx).unwrap();
+    emit_unsigned_cmp(asm, alloc, a, d, true)
+}
+
+// ── Bit-select ───────────────────────────────────────────────────────────
+// args[0] = vd_prev, args[1] = vn, args[2] = vm.
+fn emit_op_vec_bit(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let d = dst_of(&a, idx).unwrap();
+    let q_form = (a.imm & 1) != 0;
+    let working = working_xmm_for(alloc, d, xmm0);
+    // result = (vd & ~vm) | (vn & vm) = pandn(vm, vd) | (vn & vm)
+    // Plan: working = vm; xmm1 = vn AND vm; then working = pandn(working, vd) = ~vm & vd; then por.
+    into_xmm_q(asm, alloc, a.args[2], working)?;             // working = vm
+    let vn = get_xmm_q(asm, alloc, a.args[1], xmm1)?;
+    asm.movdqa(xmm2, working)?;                              // xmm2 = vm
+    asm.pand(xmm2, vn)?;                                     // xmm2 = vn & vm
+    let vd = get_xmm_q(asm, alloc, a.args[0], xmm1)?;
+    asm.pandn(working, vd)?;                                 // working = ~vm & vd
+    asm.por(working, xmm2)?;
+    if !q_form { asm.movq(working, working)?; }
+    store_xmm_q(asm, alloc, d, working)
+}
+
+fn emit_op_vec_bif(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let d = dst_of(&a, idx).unwrap();
+    let q_form = (a.imm & 1) != 0;
+    let working = working_xmm_for(alloc, d, xmm0);
+    // result = (vd & vm) | (vn & ~vm) = (vd & vm) | pandn(vm, vn)
+    into_xmm_q(asm, alloc, a.args[2], working)?;             // working = vm
+    let vd = get_xmm_q(asm, alloc, a.args[0], xmm1)?;
+    asm.movdqa(xmm2, working)?;                              // xmm2 = vm
+    asm.pand(xmm2, vd)?;                                     // xmm2 = vd & vm
+    let vn = get_xmm_q(asm, alloc, a.args[1], xmm1)?;
+    asm.pandn(working, vn)?;                                 // working = ~vm & vn
+    asm.por(working, xmm2)?;
+    if !q_form { asm.movq(working, working)?; }
+    store_xmm_q(asm, alloc, d, working)
+}
+
+fn emit_op_vec_bsl(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let d = dst_of(&a, idx).unwrap();
+    let q_form = (a.imm & 1) != 0;
+    let working = working_xmm_for(alloc, d, xmm0);
+    // result = (vn & vd) | (vm & ~vd) = (vn & vd) | pandn(vd, vm)
+    into_xmm_q(asm, alloc, a.args[0], working)?;             // working = vd
+    let vn = get_xmm_q(asm, alloc, a.args[1], xmm1)?;
+    asm.movdqa(xmm2, working)?;                              // xmm2 = vd
+    asm.pand(xmm2, vn)?;                                     // xmm2 = vn & vd
+    let vm = get_xmm_q(asm, alloc, a.args[2], xmm1)?;
+    asm.pandn(working, vm)?;                                 // working = ~vd & vm
+    asm.por(working, xmm2)?;
     if !q_form { asm.movq(working, working)?; }
     store_xmm_q(asm, alloc, d, working)
 }

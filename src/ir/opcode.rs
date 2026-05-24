@@ -187,6 +187,23 @@ pub enum Op {
     VecUshrImm8 = 0x654, VecUshrImm16 = 0x655, VecUshrImm32 = 0x656, VecUshrImm64 = 0x657,
     VecSshrImm8 = 0x658, VecSshrImm16 = 0x659, VecSshrImm32 = 0x65A, VecSshrImm64 = 0x65B,
 
+    // Per-lane compare. Result lane is all-ones on true, zero on false — matches
+    // ARM NEON CMxx semantics and x86 PCMPxx exactly.
+    VecCmEq8 = 0x65C, VecCmEq16 = 0x65D, VecCmEq32 = 0x65E, VecCmEq64 = 0x65F,
+    VecCmGt8 = 0x660, VecCmGt16 = 0x661, VecCmGt32 = 0x662, VecCmGt64 = 0x663, // signed >
+    VecCmGe8 = 0x664, VecCmGe16 = 0x665, VecCmGe32 = 0x666, VecCmGe64 = 0x667, // signed >=
+    VecCmHi8 = 0x668, VecCmHi16 = 0x669, VecCmHi32 = 0x66A, VecCmHi64 = 0x66B, // unsigned >
+    VecCmHs8 = 0x66C, VecCmHs16 = 0x66D, VecCmHs32 = 0x66E, VecCmHs64 = 0x66F, // unsigned >=
+
+    // Bit-select trio. All three are 3-operand reads of Vd as well, so each
+    // op takes args (vd_prev, vn, vm) and writes the combined result.
+    //   BIT: vd = (vd & ~vm) | (vn & vm)     — bit insert if mask bit set
+    //   BIF: vd = (vd &  vm) | (vn & ~vm)    — bit insert if mask bit clear
+    //   BSL: vd = (vn &  vd) | (vm & ~vd)    — vd is the mask
+    VecBit = 0x670,
+    VecBif = 0x674,
+    VecBsl = 0x678,
+
     Mrs            = 0x700,
     Msr            = 0x704,
     Hint           = 0x708,

@@ -284,6 +284,55 @@ impl<'b> IrEmitter<'b> {
         self.push(Armlet::new(op, Ty::U128).with_args(&[vn]).with_imm(imm))
     }
 
+    // ─── Per-lane compares ──────────────────────────────────────────────────
+    pub fn vec_cmeq(&mut self, vn: ValueRef, vm: ValueRef, lane_log2: u32, q: bool) -> ValueRef {
+        let op = match lane_log2 {
+            0 => Op::VecCmEq8, 1 => Op::VecCmEq16, 2 => Op::VecCmEq32, 3 => Op::VecCmEq64,
+            _ => unreachable!(),
+        };
+        self.push(Armlet::new(op, Ty::U128).with_args(&[vn, vm]).with_imm(q as u64))
+    }
+    pub fn vec_cmgt(&mut self, vn: ValueRef, vm: ValueRef, lane_log2: u32, q: bool) -> ValueRef {
+        let op = match lane_log2 {
+            0 => Op::VecCmGt8, 1 => Op::VecCmGt16, 2 => Op::VecCmGt32, 3 => Op::VecCmGt64,
+            _ => unreachable!(),
+        };
+        self.push(Armlet::new(op, Ty::U128).with_args(&[vn, vm]).with_imm(q as u64))
+    }
+    pub fn vec_cmge(&mut self, vn: ValueRef, vm: ValueRef, lane_log2: u32, q: bool) -> ValueRef {
+        let op = match lane_log2 {
+            0 => Op::VecCmGe8, 1 => Op::VecCmGe16, 2 => Op::VecCmGe32, 3 => Op::VecCmGe64,
+            _ => unreachable!(),
+        };
+        self.push(Armlet::new(op, Ty::U128).with_args(&[vn, vm]).with_imm(q as u64))
+    }
+    pub fn vec_cmhi(&mut self, vn: ValueRef, vm: ValueRef, lane_log2: u32, q: bool) -> ValueRef {
+        let op = match lane_log2 {
+            0 => Op::VecCmHi8, 1 => Op::VecCmHi16, 2 => Op::VecCmHi32, 3 => Op::VecCmHi64,
+            _ => unreachable!(),
+        };
+        self.push(Armlet::new(op, Ty::U128).with_args(&[vn, vm]).with_imm(q as u64))
+    }
+    pub fn vec_cmhs(&mut self, vn: ValueRef, vm: ValueRef, lane_log2: u32, q: bool) -> ValueRef {
+        let op = match lane_log2 {
+            0 => Op::VecCmHs8, 1 => Op::VecCmHs16, 2 => Op::VecCmHs32, 3 => Op::VecCmHs64,
+            _ => unreachable!(),
+        };
+        self.push(Armlet::new(op, Ty::U128).with_args(&[vn, vm]).with_imm(q as u64))
+    }
+
+    /// Bit-select. ARM BIT/BIF/BSL all read Vd as one of the inputs, so the
+    /// IR op takes three sources: (vd_prev, vn, vm).
+    pub fn vec_bit(&mut self, vd_prev: ValueRef, vn: ValueRef, vm: ValueRef, q: bool) -> ValueRef {
+        self.push(Armlet::new(Op::VecBit, Ty::U128).with_args(&[vd_prev, vn, vm]).with_imm(q as u64))
+    }
+    pub fn vec_bif(&mut self, vd_prev: ValueRef, vn: ValueRef, vm: ValueRef, q: bool) -> ValueRef {
+        self.push(Armlet::new(Op::VecBif, Ty::U128).with_args(&[vd_prev, vn, vm]).with_imm(q as u64))
+    }
+    pub fn vec_bsl(&mut self, vd_prev: ValueRef, vn: ValueRef, vm: ValueRef, q: bool) -> ValueRef {
+        self.push(Armlet::new(Op::VecBsl, Ty::U128).with_args(&[vd_prev, vn, vm]).with_imm(q as u64))
+    }
+
     // ─── NZCV ───────────────────────────────────────────────────────────────
     pub fn get_nzcv(&mut self) -> ValueRef {
         self.push(Armlet::new(Op::GetNzcv, Ty::Nzcv))

@@ -1403,3 +1403,157 @@ fn vec_sshr_imm_4s() {
     assert_eq!(ctx.v[0][0], 0x0000_3FFF_E000_0000);
     assert_eq!(ctx.v[0][1], 0xFC00_0000_0000_0004);
 }
+
+#[test]
+fn vec_cmeq_4s() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [0x0000_0002_0000_0001, 0x0000_0004_0000_0003];
+    ctx.v[2] = [0x0000_0099_0000_0001, 0x0000_0004_0000_0099];
+    let code = build_code(&[
+        0x6EA2_8C20, // cmeq v0.4s, v1.4s, v2.4s
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // Lane equality: lane0=eq (1==1), lane1=ne, lane2=ne, lane3=eq (4==4)
+    assert_eq!(ctx.v[0][0], 0x0000_0000_FFFF_FFFF);
+    assert_eq!(ctx.v[0][1], 0xFFFF_FFFF_0000_0000);
+}
+
+#[test]
+fn vec_cmgt_signed_4s() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [0x0000_0005_FFFF_FFFE, 0x7FFF_FFFF_8000_0000];
+    ctx.v[2] = [0x0000_0003_FFFF_FFFD, 0x0000_0000_FFFF_FFFF];
+    let code = build_code(&[
+        0x4EA2_3420, // cmgt v0.4s, v1.4s, v2.4s
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // Signed compare:
+    //   lane0: -2  >s -3  → true
+    //   lane1:  5  >s  3  → true
+    //   lane2: 0x80000000 (= -2147483648) >s -1 → false
+    //   lane3: 0x7FFFFFFF (max int) >s 0 → true
+    assert_eq!(ctx.v[0][0], 0xFFFF_FFFF_FFFF_FFFF);
+    assert_eq!(ctx.v[0][1], 0xFFFF_FFFF_0000_0000);
+}
+
+#[test]
+fn vec_cmge_signed_4s() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [0x0000_0005_0000_0003, 0xFFFF_FFFE_FFFF_FFFE];
+    ctx.v[2] = [0x0000_0005_0000_0004, 0xFFFF_FFFE_FFFF_FFFD];
+    let code = build_code(&[
+        0x4EA2_3C20, // cmge v0.4s, v1.4s, v2.4s
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // lane0: 3 >= 4 → false
+    // lane1: 5 >= 5 → true
+    // lane2: -2 >= -3 → true
+    // lane3: -2 >= -2 → true
+    assert_eq!(ctx.v[0][0], 0xFFFF_FFFF_0000_0000);
+    assert_eq!(ctx.v[0][1], 0xFFFF_FFFF_FFFF_FFFF);
+}
+
+#[test]
+fn vec_cmhi_unsigned_4s() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [0x0000_0005_FFFF_FFFE, 0x7FFF_FFFF_8000_0000];
+    ctx.v[2] = [0x0000_0003_FFFF_FFFD, 0x0000_0000_FFFF_FFFF];
+    let code = build_code(&[
+        0x6EA2_3420, // cmhi v0.4s, v1.4s, v2.4s
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // Unsigned compare:
+    //   lane0: 0xFFFFFFFE  >u 0xFFFFFFFD → true
+    //   lane1: 5 >u 3 → true
+    //   lane2: 0x80000000 >u 0xFFFFFFFF → false (0x80000000 < 0xFFFFFFFF unsigned)
+    //   lane3: 0x7FFFFFFF >u 0 → true
+    assert_eq!(ctx.v[0][0], 0xFFFF_FFFF_FFFF_FFFF);
+    assert_eq!(ctx.v[0][1], 0xFFFF_FFFF_0000_0000);
+}
+
+#[test]
+fn vec_cmhs_unsigned_4s() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [0x0000_0005_0000_0003, 0x8000_0000_FFFF_FFFF];
+    ctx.v[2] = [0x0000_0005_0000_0004, 0xFFFF_FFFF_FFFF_FFFF];
+    let code = build_code(&[
+        0x6EA2_3C20, // cmhs v0.4s, v1.4s, v2.4s
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // Unsigned >=:
+    //   lane0: 3 >=u 4 → false
+    //   lane1: 5 >=u 5 → true
+    //   lane2: 0xFFFFFFFF >=u 0xFFFFFFFF → true
+    //   lane3: 0x80000000 >=u 0xFFFFFFFF → false
+    assert_eq!(ctx.v[0][0], 0xFFFF_FFFF_0000_0000);
+    assert_eq!(ctx.v[0][1], 0x0000_0000_FFFF_FFFF);
+}
+
+#[test]
+fn vec_bit_inserts_when_mask_set() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    // BIT Vd, Vn, Vm  →  Vd = (Vd & ~Vm) | (Vn & Vm)
+    ctx.v[0] = [0xAAAA_AAAA_AAAA_AAAA, 0xBBBB_BBBB_BBBB_BBBB]; // initial Vd
+    ctx.v[1] = [0x1234_5678_9ABC_DEF0, 0xCAFE_BABE_DEAD_BEEF]; // Vn (insertion source)
+    ctx.v[2] = [0xFF00_FF00_FF00_FF00, 0x0000_FFFF_FFFF_0000]; // Vm (mask)
+    let code = build_code(&[
+        0x6EA2_1C20, // bit v0.16b, v1.16b, v2.16b
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    let exp0 = (0xAAAA_AAAA_AAAA_AAAAu64 & !0xFF00_FF00_FF00_FF00) | (0x1234_5678_9ABC_DEF0 & 0xFF00_FF00_FF00_FF00);
+    let exp1 = (0xBBBB_BBBB_BBBB_BBBBu64 & !0x0000_FFFF_FFFF_0000) | (0xCAFE_BABE_DEAD_BEEF & 0x0000_FFFF_FFFF_0000);
+    assert_eq!(ctx.v[0][0], exp0);
+    assert_eq!(ctx.v[0][1], exp1);
+}
+
+#[test]
+fn vec_bif_inserts_when_mask_clear() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    // BIF Vd, Vn, Vm  →  Vd = (Vd & Vm) | (Vn & ~Vm)
+    ctx.v[0] = [0xAAAA_AAAA_AAAA_AAAA, 0xBBBB_BBBB_BBBB_BBBB];
+    ctx.v[1] = [0x1234_5678_9ABC_DEF0, 0xCAFE_BABE_DEAD_BEEF];
+    ctx.v[2] = [0xFF00_FF00_FF00_FF00, 0x0000_FFFF_FFFF_0000];
+    let code = build_code(&[
+        0x6EE2_1C20, // bif v0.16b, v1.16b, v2.16b
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    let exp0 = (0xAAAA_AAAA_AAAA_AAAAu64 & 0xFF00_FF00_FF00_FF00) | (0x1234_5678_9ABC_DEF0 & !0xFF00_FF00_FF00_FF00);
+    let exp1 = (0xBBBB_BBBB_BBBB_BBBBu64 & 0x0000_FFFF_FFFF_0000) | (0xCAFE_BABE_DEAD_BEEF & !0x0000_FFFF_FFFF_0000);
+    assert_eq!(ctx.v[0][0], exp0);
+    assert_eq!(ctx.v[0][1], exp1);
+}
+
+#[test]
+fn vec_bsl_selects_per_bit() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    // BSL Vd, Vn, Vm  →  Vd = (Vn & Vd) | (Vm & ~Vd)  (Vd is the mask)
+    ctx.v[0] = [0xFF00_FF00_FF00_FF00, 0x0000_FFFF_FFFF_0000]; // Vd is the mask
+    ctx.v[1] = [0x1111_1111_1111_1111, 0x2222_2222_2222_2222]; // Vn (take where Vd=1)
+    ctx.v[2] = [0xAAAA_AAAA_AAAA_AAAA, 0xBBBB_BBBB_BBBB_BBBB]; // Vm (take where Vd=0)
+    let code = build_code(&[
+        0x6E62_1C20, // bsl v0.16b, v1.16b, v2.16b
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    let mask0 = 0xFF00_FF00_FF00_FF00u64;
+    let mask1 = 0x0000_FFFF_FFFF_0000u64;
+    let exp0 = (0x1111_1111_1111_1111u64 & mask0) | (0xAAAA_AAAA_AAAA_AAAA & !mask0);
+    let exp1 = (0x2222_2222_2222_2222u64 & mask1) | (0xBBBB_BBBB_BBBB_BBBB & !mask1);
+    assert_eq!(ctx.v[0][0], exp0);
+    assert_eq!(ctx.v[0][1], exp1);
+}
