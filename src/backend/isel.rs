@@ -31,12 +31,14 @@ pub fn emit_armlet(
         Op::Void => {}
         Op::Identity => {
             if let Some(d) = dst_vr {
-                if a.ty.bits() <= 32 {
-                    load32(asm, alloc, a.args[0], eax)?;
-                    store32(asm, alloc, d, eax)?;
-                } else {
-                    load64(asm, alloc, a.args[0], SCRATCH0)?;
-                    store64(asm, alloc, d, SCRATCH0)?;
+                if alloc.loc(a.args[0]) != alloc.loc(d) {
+                    if a.ty.bits() <= 32 {
+                        load32(asm, alloc, a.args[0], eax)?;
+                        store32(asm, alloc, d, eax)?;
+                    } else {
+                        load64(asm, alloc, a.args[0], SCRATCH0)?;
+                        store64(asm, alloc, d, SCRATCH0)?;
+                    }
                 }
             }
         }

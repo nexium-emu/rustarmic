@@ -124,6 +124,25 @@ pub fn linear_scan(block: &Block, ranges: &[LiveRange], pool: &[u8]) -> Allocati
             }
         });
 
+        if block.code[vr_idx].op == Op::Identity {
+            let src = block.code[vr_idx].args[0];
+            if src.is_some() {
+                let src_idx = src.as_usize();
+                if src_idx < n
+                    && !ranges[src_idx].is_dead()
+                    && ranges[src_idx].end == start
+                {
+                    locs[vr_idx] = locs[src_idx];
+                    if let Loc::Reg(reg) = locs[src_idx] {
+                        if let Some(slot) = active.iter_mut().find(|(_, r, vi)| *r == reg && *vi == src_idx) {
+                            *slot = (range.end, reg, vr_idx);
+                        }
+                    }
+                    continue;
+                }
+            }
+        }
+
         let forbidden = interior_clobber_mask(&clobber_masks, range);
 
         let safe_pos = free.iter().rposition(|&r| !mask_contains_gpr(forbidden, r));
@@ -326,6 +345,21 @@ mod tests {
         let any_spill = alloc.locs.iter().any(|l| matches!(l, Loc::Spill(_)));
         assert!(!any_spill);
         assert_eq!(alloc.spill_bytes, 0);
+    }
+
+    #[test]
+    fn identity_shares_reg_with_src_when_src_dies_at_identity() {
+        let mut b = fresh_block();
+        let mut em = IrEmitter::new(&mut b, 0x1000);
+        let src = em.const_u64(0xABCD);
+        let id = em.push(Armlet::new(Op::Identity, Ty::U64).with_args(&[src]));
+        em.set_x(0, id);
+
+        let ranges = compute_live_ranges(&b);
+        let alloc = linear_scan(&b, &ranges, ALLOCATABLE_GPRS);
+
+        assert_eq!(alloc.locs[src.as_usize()], alloc.locs[id.as_usize()]);
+        assert!(matches!(alloc.locs[id.as_usize()], Loc::Reg(_)));
     }
 
     #[test]
