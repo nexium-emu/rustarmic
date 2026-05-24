@@ -160,6 +160,21 @@ impl<'b> IrEmitter<'b> {
             .with_imm(reg as u64));
     }
 
+    /// Combine two u64 halves into a u128 (lo = bits 0..63, hi = bits 64..127).
+    pub fn vec_build_q(&mut self, lo: ValueRef, hi: ValueRef) -> ValueRef {
+        self.push(Armlet::new(Op::VecBuildQ, Ty::U128).with_args(&[lo, hi]))
+    }
+
+    /// Extract the low 64 bits of a u128.
+    pub fn vec_extract_lo64(&mut self, q: ValueRef) -> ValueRef {
+        self.push(Armlet::new(Op::VecExtractLo64, Ty::U64).with_args(&[q]))
+    }
+
+    /// Extract the high 64 bits of a u128.
+    pub fn vec_extract_hi64(&mut self, q: ValueRef) -> ValueRef {
+        self.push(Armlet::new(Op::VecExtractHi64, Ty::U64).with_args(&[q]))
+    }
+
     // ─── NZCV ───────────────────────────────────────────────────────────────
     pub fn get_nzcv(&mut self) -> ValueRef {
         self.push(Armlet::new(Op::GetNzcv, Ty::Nzcv))

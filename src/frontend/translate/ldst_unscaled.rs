@@ -4,7 +4,7 @@ use crate::arch::RegSize;
 use crate::error::{Error, Result};
 use crate::frontend::translator::InstStatus;
 use crate::ir::IrEmitter;
-use crate::util::bits::{bits, sign_extend};
+use crate::util::bits::{bit, bits, sign_extend};
 
 enum Kind { LoadU, LoadS, Store, FpLoad, FpStore }
 
@@ -30,7 +30,8 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: LDST_UNSCALED) -> Result<InstStat
     let rn    = bits(raw, 5, 5) as u8;
     let rt    = bits(raw, 0, 5) as u8;
 
-    let bytes  = 1u32 << size;
+    let q_form = matches!(kind, Kind::FpLoad | Kind::FpStore) && size == 0 && bit(raw, 23) == 1;
+    let bytes  = if q_form { 16 } else { 1u32 << size };
     let offset = sign_extend(imm9 as u64, 9);
 
     let base = em.get_x_or_sp(rn, true);
@@ -58,20 +59,36 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: LDST_UNSCALED) -> Result<InstStat
             if target_x { em.set_x(rt, sx); } else { em.set_w(rt, sx); }
         }
         Kind::FpLoad => {
-            let v = em.load(addr, bytes);
-            if bytes == 8 { em.set_v_d(rt, v); }
-            else if bytes == 4 { em.set_v_s(rt, v); }
+            if bytes == 16 {
+                let lo = em.load(addr, 8);
+                let eight = em.const_u64(8);
+                let addr_hi = em.add(addr, eight, RegSize::X);
+                let hi = em.load(addr_hi, 8);
+                let q = em.vec_build_q(lo, hi);
+                em.set_v_q(rt, q);
+            } else if bytes == 8 { let v = em.load(addr, bytes); em.set_v_d(rt, v); }
+            else if bytes == 4 { let v = em.load(addr, bytes); em.set_v_s(rt, v); }
             else {
                 return Err(Error::Unsupported { pc: em.current_pc, opcode: raw });
             }
         }
         Kind::FpStore => {
-            let v = if bytes == 8 { em.get_v_d(rt) }
-                    else if bytes == 4 { em.get_v_s(rt) }
-                    else {
-                        return Err(Error::Unsupported { pc: em.current_pc, opcode: raw });
-                    };
-            em.store(addr, v, bytes);
+            if bytes == 16 {
+                let q = em.get_v_q(rt);
+                let lo = em.vec_extract_lo64(q);
+                let hi = em.vec_extract_hi64(q);
+                em.store(addr, lo, 8);
+                let eight = em.const_u64(8);
+                let addr_hi = em.add(addr, eight, RegSize::X);
+                em.store(addr_hi, hi, 8);
+            } else {
+                let v = if bytes == 8 { em.get_v_d(rt) }
+                        else if bytes == 4 { em.get_v_s(rt) }
+                        else {
+                            return Err(Error::Unsupported { pc: em.current_pc, opcode: raw });
+                        };
+                em.store(addr, v, bytes);
+            }
         }
     }
     Ok(InstStatus::Continue)

@@ -67,6 +67,7 @@ pub fn translate_instruction(em: &mut IrEmitter<'_>, inst: u32) -> Result<InstSt
         Operation::FLOATSEL(insn)         => translate::fp_sel::translate(em, insn),
         Operation::FLOATIMM(insn)         => translate::fp_imm::translate(em, insn),
         Operation::FLOAT2INT(insn)        => translate::fp_conv::translate(em, insn),
+        Operation::ASIMDSAME(insn)        => translate::asimd_same::translate(em, insn),
         _ => Err(Error::Unsupported { pc: em.current_pc, opcode: inst }),
     }
 }

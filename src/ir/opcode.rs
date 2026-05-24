@@ -149,6 +149,14 @@ pub enum Op {
     Umov    = 0x620,
     Smov    = 0x624,
 
+    // Glue ops for 128-bit values without dedicated 128-bit memory callbacks:
+    // BuildQ assembles two u64 halves into a u128; ExtractLo/Hi64 pull them
+    // back out. These map to single x86 instructions (movq / pinsrq / pextrq)
+    // and let the optimizer fold round-trips when both halves are visible.
+    VecBuildQ      = 0x628,
+    VecExtractLo64 = 0x62C,
+    VecExtractHi64 = 0x630,
+
     Mrs            = 0x700,
     Msr            = 0x704,
     Hint           = 0x708,

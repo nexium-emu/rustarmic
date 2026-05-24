@@ -37,3 +37,4 @@ pub mod condcmp_reg;
 pub mod dp_1src;
 pub mod dp_2src;
 pub mod dp_3src;
+pub mod asimd_same;

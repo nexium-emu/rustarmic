@@ -299,3 +299,52 @@ fn ldr_st_loads_float_from_memory() {
     assert_eq!(f32::from_bits(ctx.v[0][0] as u32), 1.5);
     assert_eq!(ctx.v[0][0] >> 32, 0, "upper 32 of lane 0 zeroed");
 }
+
+#[test]
+fn ldr_q_loads_full_128_from_memory() {
+    mem_init(0x10000);
+    mem_write(DATA_BASE + 0xB00, 0x1122_3344_5566_7788, 8);
+    mem_write(DATA_BASE + 0xB08, 0x99AA_BBCC_DDEE_FF00, 8);
+
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.x[1] = DATA_BASE + 0xB00;
+    let code = build_code(&[
+        0x3DC0_0020, // ldr q0, [x1, #0]
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    assert_eq!(ctx.v[0][0], 0x1122_3344_5566_7788, "lo half of Q loaded");
+    assert_eq!(ctx.v[0][1], 0x99AA_BBCC_DDEE_FF00, "hi half of Q loaded");
+}
+
+#[test]
+fn str_q_writes_full_128_to_memory() {
+    mem_init(0x10000);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.x[1] = DATA_BASE + 0xC00;
+    ctx.v[0] = [0xAAAA_AAAA_BBBB_BBBB, 0xCCCC_CCCC_DDDD_DDDD];
+
+    let code = build_code(&[
+        0x3D80_0020, // str q0, [x1, #0]
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    assert_eq!(mem_read(DATA_BASE + 0xC00, 8), 0xAAAA_AAAA_BBBB_BBBB);
+    assert_eq!(mem_read(DATA_BASE + 0xC08, 8), 0xCCCC_CCCC_DDDD_DDDD);
+}
+
+#[test]
+fn mov_v_16b_copies_full_register() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [0x0F0E_0D0C_0B0A_0908, 0x1716_1514_1312_1110];
+
+    let code = build_code(&[
+        0x4EA1_1C20, // mov v0.16b, v1.16b  (ORR V0, V1, V1)
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    assert_eq!(ctx.v[0], ctx.v[1], "V0 should be a bit-exact copy of V1");
+}

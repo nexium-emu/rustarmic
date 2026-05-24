@@ -215,6 +215,27 @@ pub fn emit_armlet(
         Op::FcvtSD   => emit_fcvt_precision(asm, alloc, a, dst_vr, false)?,
         Op::FcvtDS   => emit_fcvt_precision(asm, alloc, a, dst_vr, true)?,
 
+        Op::VecBuildQ => {
+            let d = dst_vr.unwrap();
+            load64(asm, alloc, a.args[0], rax)?;
+            asm.movq(xmm0, rax)?;
+            load64(asm, alloc, a.args[1], rax)?;
+            asm.pinsrq(xmm0, rax, 1)?;
+            store_xmm_q(asm, alloc, d, xmm0)?;
+        }
+        Op::VecExtractLo64 => {
+            let d = dst_vr.unwrap();
+            load_xmm_q(asm, alloc, a.args[0], xmm0)?;
+            asm.movq(rax, xmm0)?;
+            store64(asm, alloc, d, rax)?;
+        }
+        Op::VecExtractHi64 => {
+            let d = dst_vr.unwrap();
+            load_xmm_q(asm, alloc, a.args[0], xmm0)?;
+            asm.pextrq(rax, xmm0, 1)?;
+            store64(asm, alloc, d, rax)?;
+        }
+
         op if op.is_terminator() => {}
 
         Op::Hint | Op::MemoryBarrier => {}
