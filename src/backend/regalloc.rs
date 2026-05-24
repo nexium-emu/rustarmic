@@ -102,6 +102,10 @@ pub fn linear_scan(block: &Block, ranges: &[LiveRange], pool: &[u8]) -> Allocati
     let mut free: Vec<u8> = pool.iter().copied().rev().collect();
     let mut active: Vec<(u32, u8, usize)> = Vec::new();
 
+    let clobber_masks: Vec<GprMask> = block.code.iter()
+        .map(|a| if a.is_eliminated() { GprMask::empty() } else { clobbers_for_op(a.op).gpr })
+        .collect();
+
     let mut intervals: Vec<usize> = (0..n)
         .filter(|&i| !ranges[i].is_dead() && block.code[i].ty != Ty::Void)
         .collect();
@@ -120,24 +124,33 @@ pub fn linear_scan(block: &Block, ranges: &[LiveRange], pool: &[u8]) -> Allocati
             }
         });
 
-        if let Some(reg) = free.pop() {
+        let forbidden = interior_clobber_mask(&clobber_masks, range);
+
+        let safe_pos = free.iter().rposition(|&r| !mask_contains_gpr(forbidden, r));
+        if let Some(pos) = safe_pos {
+            let reg = free.remove(pos);
             locs[vr_idx] = Loc::Reg(reg);
             active.push((range.end, reg, vr_idx));
         } else if active.is_empty() {
             let off = alloc_spill_slot(&mut spill_cursor);
             locs[vr_idx] = Loc::Spill(off);
         } else {
-            let (spill_pos, &(victim_end, victim_reg, victim_vr)) = active
+            let candidate = active
                 .iter()
                 .enumerate()
-                .max_by_key(|(_, e)| e.0)
-                .unwrap();
+                .filter(|&(_, &(_, reg, _))| !mask_contains_gpr(forbidden, reg))
+                .max_by_key(|(_, e)| e.0);
 
-            if victim_end > range.end {
-                let off = alloc_spill_slot(&mut spill_cursor);
-                locs[victim_vr] = Loc::Spill(off);
-                locs[vr_idx]    = Loc::Reg(victim_reg);
-                active[spill_pos] = (range.end, victim_reg, vr_idx);
+            if let Some((spill_pos, &(victim_end, victim_reg, victim_vr))) = candidate {
+                if victim_end > range.end {
+                    let off = alloc_spill_slot(&mut spill_cursor);
+                    locs[victim_vr] = Loc::Spill(off);
+                    locs[vr_idx]    = Loc::Reg(victim_reg);
+                    active[spill_pos] = (range.end, victim_reg, vr_idx);
+                } else {
+                    let off = alloc_spill_slot(&mut spill_cursor);
+                    locs[vr_idx] = Loc::Spill(off);
+                }
             } else {
                 let off = alloc_spill_slot(&mut spill_cursor);
                 locs[vr_idx] = Loc::Spill(off);
@@ -149,6 +162,23 @@ pub fn linear_scan(block: &Block, ranges: &[LiveRange], pool: &[u8]) -> Allocati
         locs,
         spill_bytes: spill_cursor - SAVED_SIZE,
     }
+}
+
+#[inline]
+fn mask_contains_gpr(mask: GprMask, gpr: u8) -> bool {
+    mask.bits() & (1u16 << gpr) != 0
+}
+
+fn interior_clobber_mask(clobber_masks: &[GprMask], range: LiveRange) -> GprMask {
+    let mut mask = GprMask::empty();
+    let start = range.start as usize;
+    let end = range.end as usize;
+    if end > start + 1 {
+        for i in (start + 1)..end {
+            mask |= clobber_masks[i];
+        }
+    }
+    mask
 }
 
 fn alloc_spill_slot(cursor: &mut i32) -> i32 {
@@ -296,5 +326,25 @@ mod tests {
         let any_spill = alloc.locs.iter().any(|l| matches!(l, Loc::Spill(_)));
         assert!(!any_spill);
         assert_eq!(alloc.spill_bytes, 0);
+    }
+
+    #[test]
+    fn linear_scan_avoids_pool_reg_clobbered_across_live_range() {
+        use crate::arch::RegSize;
+
+        let mut b = fresh_block();
+        let mut em = IrEmitter::new(&mut b, 0x1000);
+        let amount = em.const_u64(1);
+        let val = em.const_u64(0xDEAD);
+        let shifted = em.push(Armlet::new(Op::Lsl64, Ty::U64).with_args(&[val, amount]));
+        let _ = em.add(val, shifted, RegSize::X);
+
+        let ranges = compute_live_ranges(&b);
+        let alloc = linear_scan(&b, &ranges, &[1]);
+
+        assert!(
+            matches!(alloc.locs[val.as_usize()], Loc::Spill(_)),
+            "val crosses a shift that clobbers RCX, so it cannot live in RCX"
+        );
     }
 }
