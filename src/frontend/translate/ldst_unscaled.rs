@@ -6,7 +6,7 @@ use crate::frontend::translator::InstStatus;
 use crate::ir::IrEmitter;
 use crate::util::bits::{bits, sign_extend};
 
-enum Kind { LoadU, LoadS, Store }
+enum Kind { LoadU, LoadS, Store, FpLoad, FpStore }
 
 pub fn translate(em: &mut IrEmitter<'_>, insn: LDST_UNSCALED) -> Result<InstStatus> {
     use LDST_UNSCALED::*;
@@ -20,6 +20,8 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: LDST_UNSCALED) -> Result<InstStat
         STUR_Rt_ADDR_SIMM9(i)   => (i.0, Kind::Store, true),
         STURB_Rt_ADDR_SIMM9(i)  => (i.0, Kind::Store, false),
         STURH_Rt_ADDR_SIMM9(i)  => (i.0, Kind::Store, false),
+        LDUR_Ft_ADDR_SIMM9(i)   => (i.0, Kind::FpLoad, false),
+        STUR_Ft_ADDR_SIMM9(i)   => (i.0, Kind::FpStore, false),
         _ => return Err(Error::Unsupported { pc: em.current_pc, opcode: 0 }),
     };
 
@@ -54,6 +56,22 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: LDST_UNSCALED) -> Result<InstStat
             let shl2 = em.const_u64(64 - width_bits);
             let sx = em.asr(s1, shl2, RegSize::X);
             if target_x { em.set_x(rt, sx); } else { em.set_w(rt, sx); }
+        }
+        Kind::FpLoad => {
+            let v = em.load(addr, bytes);
+            if bytes == 8 { em.set_v_d(rt, v); }
+            else if bytes == 4 { em.set_v_s(rt, v); }
+            else {
+                return Err(Error::Unsupported { pc: em.current_pc, opcode: raw });
+            }
+        }
+        Kind::FpStore => {
+            let v = if bytes == 8 { em.get_v_d(rt) }
+                    else if bytes == 4 { em.get_v_s(rt) }
+                    else {
+                        return Err(Error::Unsupported { pc: em.current_pc, opcode: raw });
+                    };
+            em.store(addr, v, bytes);
         }
     }
     Ok(InstStatus::Continue)
