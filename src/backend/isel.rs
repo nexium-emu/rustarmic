@@ -167,6 +167,10 @@ fn dispatch_op(op: Op) -> Option<EmitFn> {
         VecDupGpr8 | VecDupGpr16 | VecDupGpr32 | VecDupGpr64 => emit_op_vec_dup_gpr,
         VecInsGpr8 | VecInsGpr16 | VecInsGpr32 | VecInsGpr64 => emit_op_vec_ins_gpr,
 
+        VecExt => emit_op_vec_ext,
+        VecZip1_8 | VecZip1_16 | VecZip1_32 | VecZip1_64 => emit_op_vec_zip1,
+        VecZip2_8 | VecZip2_16 | VecZip2_32 | VecZip2_64 => emit_op_vec_zip2,
+
         Hint | MemoryBarrier => emit_nop,
         Clrex => emit_op_clrex,
 
@@ -899,6 +903,79 @@ fn emit_op_vec_dup_gpr(asm: &mut CodeAssembler, block: &Block, alloc: &Allocatio
         _ => unreachable!(),
     }
     if !q_form { asm.movq(working, working)?; }
+    store_xmm_q(asm, alloc, d, working)
+}
+
+// ── EXT (palignr) ────────────────────────────────────────────────────────
+fn emit_op_vec_ext(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let d = dst_of(&a, idx).unwrap();
+    let q_form = (a.imm & 1) != 0;
+    let byte_off = (a.imm >> 1) as i32;
+    let working = working_xmm_for(alloc, d, xmm0);
+    // ARM EXT result = bytes [byte_off .. byte_off+16) of concat(Vm, Vn) where
+    // Vm is the HIGH 128. x86 PALIGNR dst, src, imm shifts {dst:src} right by
+    // `imm` bytes and keeps the low 128. So we load Vm into working (the
+    // "dst" of palignr → high 128) and Vn becomes the src (low 128).
+    into_xmm_q(asm, alloc, a.args[1], working)?;
+    let vn = get_xmm_q(asm, alloc, a.args[0], xmm1)?;
+    asm.palignr(working, vn, byte_off)?;
+    if !q_form { asm.movq(working, working)?; }
+    store_xmm_q(asm, alloc, d, working)
+}
+
+// ── ZIP1 / ZIP2 (punpcklXX / punpckhXX) ──────────────────────────────────
+fn emit_op_vec_zip1(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let d = dst_of(&a, idx).unwrap();
+    let q_form = (a.imm & 1) != 0;
+    let working = working_xmm_for(alloc, d, xmm0);
+    into_xmm_q(asm, alloc, a.args[0], working)?;
+    let other = get_xmm_q(asm, alloc, a.args[1], xmm1)?;
+    match a.op.size_log2() {
+        0 => asm.punpcklbw (working, other)?,
+        1 => asm.punpcklwd (working, other)?,
+        2 => asm.punpckldq (working, other)?,
+        3 => asm.punpcklqdq(working, other)?,
+        _ => unreachable!(),
+    }
+    if !q_form { asm.movq(working, working)?; }
+    store_xmm_q(asm, alloc, d, working)
+}
+
+fn emit_op_vec_zip2(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let d = dst_of(&a, idx).unwrap();
+    let q_form = (a.imm & 1) != 0;
+    let working = working_xmm_for(alloc, d, xmm0);
+    into_xmm_q(asm, alloc, a.args[0], working)?;
+    let other = get_xmm_q(asm, alloc, a.args[1], xmm1)?;
+    if q_form {
+        // ZIP2 = interleave the HIGH halves. PUNPCKH on 128-bit registers does
+        // exactly that.
+        match a.op.size_log2() {
+            0 => asm.punpckhbw (working, other)?,
+            1 => asm.punpckhwd (working, other)?,
+            2 => asm.punpckhdq (working, other)?,
+            3 => asm.punpckhqdq(working, other)?,
+            _ => unreachable!(),
+        }
+    } else {
+        // For the 64-bit form, the "halves" we want to interleave are the
+        // upper 32 bits of each source — i.e. bytes 4..8. The standard fix
+        // is to shift each source right by 4 bytes (psrldq 4), then PUNPCKL
+        // at the requested lane size.
+        asm.psrldq(working, 4)?;
+        asm.movdqa(xmm2, other)?;
+        asm.psrldq(xmm2, 4)?;
+        match a.op.size_log2() {
+            0 => asm.punpcklbw(working, xmm2)?,
+            1 => asm.punpcklwd(working, xmm2)?,
+            2 => asm.punpckldq(working, xmm2)?,
+            _ => return Err(Error::Backend("ZIP2 64-bit lane requires Q form".into())),
+        }
+        asm.movq(working, working)?;
+    }
     store_xmm_q(asm, alloc, d, working)
 }
 

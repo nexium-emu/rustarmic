@@ -71,6 +71,8 @@ pub fn translate_instruction(em: &mut IrEmitter<'_>, inst: u32) -> Result<InstSt
         Operation::ASIMDMISC(insn)        => translate::asimd_misc::translate(em, insn),
         Operation::ASIMDSHF(insn)         => translate::asimd_shf::translate(em, insn),
         Operation::ASIMDINS(insn)         => translate::asimd_ins::translate(em, insn),
+        Operation::ASIMDEXT(insn)         => translate::asimd_perm::translate_ext(em, insn),
+        Operation::ASIMDPERM(insn)        => translate::asimd_perm::translate_perm(em, insn),
         _ => Err(Error::Unsupported { pc: em.current_pc, opcode: inst }),
     }
 }

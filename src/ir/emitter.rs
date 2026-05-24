@@ -354,6 +354,27 @@ impl<'b> IrEmitter<'b> {
         self.push(Armlet::new(op, Ty::U128).with_args(&[vd_prev, gpr_val]).with_imm(imm))
     }
 
+    /// EXT: concat(vm, vn) shifted right by `byte_off` bytes; low 16 written.
+    pub fn vec_ext(&mut self, vn: ValueRef, vm: ValueRef, byte_off: u32, q: bool) -> ValueRef {
+        let imm = (q as u64) | ((byte_off as u64) << 1);
+        self.push(Armlet::new(Op::VecExt, Ty::U128).with_args(&[vn, vm]).with_imm(imm))
+    }
+
+    pub fn vec_zip1(&mut self, vn: ValueRef, vm: ValueRef, lane_log2: u32, q: bool) -> ValueRef {
+        let op = match lane_log2 {
+            0 => Op::VecZip1_8, 1 => Op::VecZip1_16, 2 => Op::VecZip1_32, 3 => Op::VecZip1_64,
+            _ => unreachable!(),
+        };
+        self.push(Armlet::new(op, Ty::U128).with_args(&[vn, vm]).with_imm(q as u64))
+    }
+    pub fn vec_zip2(&mut self, vn: ValueRef, vm: ValueRef, lane_log2: u32, q: bool) -> ValueRef {
+        let op = match lane_log2 {
+            0 => Op::VecZip2_8, 1 => Op::VecZip2_16, 2 => Op::VecZip2_32, 3 => Op::VecZip2_64,
+            _ => unreachable!(),
+        };
+        self.push(Armlet::new(op, Ty::U128).with_args(&[vn, vm]).with_imm(q as u64))
+    }
+
     // ─── NZCV ───────────────────────────────────────────────────────────────
     pub fn get_nzcv(&mut self) -> ValueRef {
         self.push(Armlet::new(Op::GetNzcv, Ty::Nzcv))

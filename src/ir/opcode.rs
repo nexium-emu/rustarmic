@@ -204,6 +204,15 @@ pub enum Op {
     VecBif = 0x674,
     VecBsl = 0x678,
 
+    /// EXT Vd, Vn, Vm, #imm: concatenate (Vm:Vn) and extract 16 bytes
+    /// starting at byte offset `imm`. `imm` field carries `(byte_off << 1) | q`.
+    VecExt = 0x67C,
+
+    /// Per-lane ZIP: interleave the LOW (Zip1) or HIGH (Zip2) halves of the
+    /// two source vectors. Lane size in low 2 bits; q_form in `imm` bit 0.
+    VecZip1_8 = 0x680, VecZip1_16 = 0x681, VecZip1_32 = 0x682, VecZip1_64 = 0x683,
+    VecZip2_8 = 0x684, VecZip2_16 = 0x685, VecZip2_32 = 0x686, VecZip2_64 = 0x687,
+
     Mrs            = 0x700,
     Msr            = 0x704,
     Hint           = 0x708,

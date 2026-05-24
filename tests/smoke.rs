@@ -1664,3 +1664,71 @@ fn vec_dup_4s_from_element() {
     assert_eq!(ctx.v[0][0], 0x2222_2222_2222_2222);
     assert_eq!(ctx.v[0][1], 0x2222_2222_2222_2222);
 }
+
+#[test]
+fn vec_ext_byte_offset_4() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    // V1 bytes 0x00..0x0F, V2 bytes 0x10..0x1F (little-endian within u64).
+    ctx.v[1] = [0x0706_0504_0302_0100, 0x0F0E_0D0C_0B0A_0908];
+    ctx.v[2] = [0x1716_1514_1312_1110, 0x1F1E_1D1C_1B1A_1918];
+    let code = build_code(&[
+        0x6E02_2020, // ext v0.16b, v1.16b, v2.16b, #4
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // EXT byte-offset 4 of {V2:V1}: bytes [4..16) of V1 then [0..4) of V2.
+    assert_eq!(ctx.v[0][0], 0x0B0A_0908_0706_0504);
+    assert_eq!(ctx.v[0][1], 0x1312_1110_0F0E_0D0C);
+}
+
+#[test]
+fn vec_zip1_4s_interleaves_low_halves() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    // 4S lanes: lane0..lane3
+    // V1 = [A0, A1, A2, A3], V2 = [B0, B1, B2, B3]
+    // ZIP1 = [A0, B0, A1, B1]
+    ctx.v[1] = [0x0000_00A1_0000_00A0, 0x0000_00A3_0000_00A2];
+    ctx.v[2] = [0x0000_00B1_0000_00B0, 0x0000_00B3_0000_00B2];
+    let code = build_code(&[
+        0x4E82_3820, // zip1 v0.4s, v1.4s, v2.4s
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // Result lanes [A0, B0, A1, B1] → v[0][0]=B0:A0, v[0][1]=B1:A1
+    assert_eq!(ctx.v[0][0], 0x0000_00B0_0000_00A0);
+    assert_eq!(ctx.v[0][1], 0x0000_00B1_0000_00A1);
+}
+
+#[test]
+fn vec_zip2_4s_interleaves_high_halves() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [0x0000_00A1_0000_00A0, 0x0000_00A3_0000_00A2];
+    ctx.v[2] = [0x0000_00B1_0000_00B0, 0x0000_00B3_0000_00B2];
+    let code = build_code(&[
+        0x4E82_7820, // zip2 v0.4s, v1.4s, v2.4s
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // ZIP2 4S = [A2, B2, A3, B3] → v[0][0]=B2:A2, v[0][1]=B3:A3
+    assert_eq!(ctx.v[0][0], 0x0000_00B2_0000_00A2);
+    assert_eq!(ctx.v[0][1], 0x0000_00B3_0000_00A3);
+}
+
+#[test]
+fn vec_zip1_8h_interleaves_per_halfword() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [0xA3A3_A2A2_A1A1_A0A0, 0xA7A7_A6A6_A5A5_A4A4];
+    ctx.v[2] = [0xB3B3_B2B2_B1B1_B0B0, 0xB7B7_B6B6_B5B5_B4B4];
+    let code = build_code(&[
+        0x4E42_3820, // zip1 v0.8h, v1.8h, v2.8h
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // ZIP1 8H lanes = [A0,B0,A1,B1,A2,B2,A3,B3]
+    assert_eq!(ctx.v[0][0], 0xB1B1_A1A1_B0B0_A0A0);
+    assert_eq!(ctx.v[0][1], 0xB3B3_A3A3_B2B2_A2A2);
+}
