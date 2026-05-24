@@ -119,6 +119,15 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
                         Ty::U64 => a.become_const_u64(folded),
                         _ => {}
                     }
+                } else if let Some(simp) = try_strength_reduce(op, &a, &scratch.consts) {
+                    match simp {
+                        Simplify::ToConst(v) => match a.ty {
+                            Ty::U32 => a.become_const_u32(v as u32),
+                            Ty::U64 => a.become_const_u64(v),
+                            _ => {}
+                        },
+                        Simplify::ToIdentity(vr) => a.become_identity(vr),
+                    }
                 }
             }
 
@@ -228,6 +237,85 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
         }
         cursor = prev_cursor;
     }
+}
+
+enum Simplify {
+    /// Replace the result with a constant value (sized to the op's type).
+    ToConst(u64),
+    /// Replace the result with `Identity(vr)` — the value is already computed.
+    ToIdentity(ValueRef),
+}
+
+/// Algebraic identity strength-reductions for binops with at most one
+/// constant operand (or both operands identical). The full constant fold
+/// runs first; this catches the cases the fold misses.
+fn try_strength_reduce(
+    op: Op,
+    a: &Armlet,
+    consts: &[Option<u64>],
+) -> Option<Simplify> {
+    let arg0 = a.args[0];
+    let arg1 = a.args[1];
+    let c0 = if arg0.is_some() { consts.get(arg0.as_usize()).copied().flatten() } else { None };
+    let c1 = if arg1.is_some() { consts.get(arg1.as_usize()).copied().flatten() } else { None };
+
+    let all_ones_32: u64 = 0xFFFF_FFFF;
+    let all_ones_64: u64 = !0;
+
+    use Op::*;
+    match op {
+        Add32 | Add64 => {
+            if c0 == Some(0) { return Some(Simplify::ToIdentity(arg1)); }
+            if c1 == Some(0) { return Some(Simplify::ToIdentity(arg0)); }
+        }
+        Sub32 | Sub64 => {
+            if c1 == Some(0) { return Some(Simplify::ToIdentity(arg0)); }
+            if arg0 == arg1 && arg0.is_some() { return Some(Simplify::ToConst(0)); }
+        }
+        And32 => {
+            if c0 == Some(0) || c1 == Some(0) { return Some(Simplify::ToConst(0)); }
+            if c0 == Some(all_ones_32) { return Some(Simplify::ToIdentity(arg1)); }
+            if c1 == Some(all_ones_32) { return Some(Simplify::ToIdentity(arg0)); }
+            if arg0 == arg1 && arg0.is_some() { return Some(Simplify::ToIdentity(arg0)); }
+        }
+        And64 => {
+            if c0 == Some(0) || c1 == Some(0) { return Some(Simplify::ToConst(0)); }
+            if c0 == Some(all_ones_64) { return Some(Simplify::ToIdentity(arg1)); }
+            if c1 == Some(all_ones_64) { return Some(Simplify::ToIdentity(arg0)); }
+            if arg0 == arg1 && arg0.is_some() { return Some(Simplify::ToIdentity(arg0)); }
+        }
+        Or32 => {
+            if c0 == Some(0) { return Some(Simplify::ToIdentity(arg1)); }
+            if c1 == Some(0) { return Some(Simplify::ToIdentity(arg0)); }
+            if c0 == Some(all_ones_32) || c1 == Some(all_ones_32) {
+                return Some(Simplify::ToConst(all_ones_32));
+            }
+            if arg0 == arg1 && arg0.is_some() { return Some(Simplify::ToIdentity(arg0)); }
+        }
+        Or64 => {
+            if c0 == Some(0) { return Some(Simplify::ToIdentity(arg1)); }
+            if c1 == Some(0) { return Some(Simplify::ToIdentity(arg0)); }
+            if c0 == Some(all_ones_64) || c1 == Some(all_ones_64) {
+                return Some(Simplify::ToConst(all_ones_64));
+            }
+            if arg0 == arg1 && arg0.is_some() { return Some(Simplify::ToIdentity(arg0)); }
+        }
+        Eor32 | Eor64 => {
+            if c0 == Some(0) { return Some(Simplify::ToIdentity(arg1)); }
+            if c1 == Some(0) { return Some(Simplify::ToIdentity(arg0)); }
+            if arg0 == arg1 && arg0.is_some() { return Some(Simplify::ToConst(0)); }
+        }
+        Mul32 | Mul64 => {
+            if c0 == Some(0) || c1 == Some(0) { return Some(Simplify::ToConst(0)); }
+            if c0 == Some(1) { return Some(Simplify::ToIdentity(arg1)); }
+            if c1 == Some(1) { return Some(Simplify::ToIdentity(arg0)); }
+        }
+        Lsl32 | Lsl64 | Lsr32 | Lsr64 | Asr32 | Asr64 | Ror32 | Ror64 => {
+            if c1 == Some(0) { return Some(Simplify::ToIdentity(arg0)); }
+        }
+        _ => {}
+    }
+    None
 }
 
 struct Term {
@@ -423,4 +511,131 @@ mod tests {
     // other tests if extended later).
     #[allow(dead_code)]
     fn _silence_unused(_: RegSize) {}
+
+    /// After optimization the `Identity` we synthesise gets chased away by
+    /// the forward pass and unlinked by DCE, so tests inspect the SetX user
+    /// instead. Returns the final SetX's `args[0]`'s `(op, imm)`.
+    fn final_setx_source(block: &Block, set_idx: ValueRef) -> (Op, u64) {
+        let set = &block.code[set_idx.as_usize()];
+        assert_eq!(set.op, Op::SetX);
+        let src = &block.code[set.args[0].as_usize()];
+        (src.op, src.imm)
+    }
+
+    fn run_binop(op: Op, b_const: Option<u64>, ty: Ty) -> (Op, u64) {
+        let mut block = Block::new(0x1000);
+        let mut em = IrEmitter::new(&mut block, 0x1000);
+        let a = em.get_x(0);
+        let b = match b_const {
+            Some(v) if ty == Ty::U64 => em.const_u64(v),
+            Some(v)                  => em.const_u32(v as u32),
+            None                     => em.get_x(1),
+        };
+        let r = em.push(Armlet::new(op, ty).with_args(&[a, b]));
+        let set_vr = em.push(Armlet::new(Op::SetX, Ty::Void).with_args(&[r]).with_imm(2));
+        optimize(&mut block);
+        final_setx_source(&block, set_vr)
+    }
+
+    #[test]
+    fn strength_add_zero_propagates_to_setx() {
+        // Add(GetX(0), 0) → Identity(GetX(0)) → chased away; SetX reads GetX.
+        let (op, _) = run_binop(Op::Add64, Some(0), Ty::U64);
+        assert_eq!(op, Op::GetX, "x + 0 should reduce to x");
+    }
+
+    #[test]
+    fn strength_sub_zero_propagates_to_setx() {
+        let (op, _) = run_binop(Op::Sub64, Some(0), Ty::U64);
+        assert_eq!(op, Op::GetX, "x - 0 should reduce to x");
+    }
+
+    #[test]
+    fn strength_mul_zero_becomes_const_zero() {
+        let (op, imm) = run_binop(Op::Mul64, Some(0), Ty::U64);
+        assert_eq!(op, Op::ConstU64);
+        assert_eq!(imm, 0, "x * 0 should reduce to 0");
+    }
+
+    #[test]
+    fn strength_mul_one_propagates_to_setx() {
+        let (op, _) = run_binop(Op::Mul64, Some(1), Ty::U64);
+        assert_eq!(op, Op::GetX, "x * 1 should reduce to x");
+    }
+
+    #[test]
+    fn strength_and_zero_becomes_const_zero() {
+        let (op, imm) = run_binop(Op::And64, Some(0), Ty::U64);
+        assert_eq!(op, Op::ConstU64);
+        assert_eq!(imm, 0);
+    }
+
+    #[test]
+    fn strength_and_all_ones_propagates_to_setx() {
+        let (op, _) = run_binop(Op::And64, Some(!0), Ty::U64);
+        assert_eq!(op, Op::GetX, "x & ~0 should reduce to x");
+    }
+
+    #[test]
+    fn strength_or_zero_propagates_to_setx() {
+        let (op, _) = run_binop(Op::Or64, Some(0), Ty::U64);
+        assert_eq!(op, Op::GetX, "x | 0 should reduce to x");
+    }
+
+    #[test]
+    fn strength_or_all_ones_becomes_const() {
+        let (op, imm) = run_binop(Op::Or64, Some(!0), Ty::U64);
+        assert_eq!(op, Op::ConstU64);
+        assert_eq!(imm, !0);
+    }
+
+    #[test]
+    fn strength_eor_zero_propagates_to_setx() {
+        let (op, _) = run_binop(Op::Eor64, Some(0), Ty::U64);
+        assert_eq!(op, Op::GetX, "x ^ 0 should reduce to x");
+    }
+
+    #[test]
+    fn strength_lsl_zero_propagates_to_setx() {
+        let (op, _) = run_binop(Op::Lsl64, Some(0), Ty::U64);
+        assert_eq!(op, Op::GetX, "x << 0 should reduce to x");
+    }
+
+    #[test]
+    fn strength_xor_self_becomes_zero() {
+        let mut block = Block::new(0x1000);
+        let mut em = IrEmitter::new(&mut block, 0x1000);
+        let a = em.get_x(0);
+        let r = em.push(Armlet::new(Op::Eor64, Ty::U64).with_args(&[a, a]));
+        let set_vr = em.push(Armlet::new(Op::SetX, Ty::Void).with_args(&[r]).with_imm(1));
+        optimize(&mut block);
+        let (op, imm) = final_setx_source(&block, set_vr);
+        assert_eq!(op, Op::ConstU64);
+        assert_eq!(imm, 0);
+    }
+
+    #[test]
+    fn strength_sub_self_becomes_zero() {
+        let mut block = Block::new(0x1000);
+        let mut em = IrEmitter::new(&mut block, 0x1000);
+        let a = em.get_x(0);
+        let r = em.push(Armlet::new(Op::Sub64, Ty::U64).with_args(&[a, a]));
+        let set_vr = em.push(Armlet::new(Op::SetX, Ty::Void).with_args(&[r]).with_imm(1));
+        optimize(&mut block);
+        let (op, imm) = final_setx_source(&block, set_vr);
+        assert_eq!(op, Op::ConstU64);
+        assert_eq!(imm, 0);
+    }
+
+    #[test]
+    fn strength_and_self_propagates_to_setx() {
+        let mut block = Block::new(0x1000);
+        let mut em = IrEmitter::new(&mut block, 0x1000);
+        let a = em.get_x(0);
+        let r = em.push(Armlet::new(Op::And64, Ty::U64).with_args(&[a, a]));
+        let set_vr = em.push(Armlet::new(Op::SetX, Ty::Void).with_args(&[r]).with_imm(1));
+        optimize(&mut block);
+        let (op, _) = final_setx_source(&block, set_vr);
+        assert_eq!(op, Op::GetX, "x & x should reduce to x");
+    }
 }
