@@ -612,3 +612,39 @@ fn fmov_v_to_v_double_precision() {
     assert_eq!(ctx.v[1][0], 0x1122_3344_5566_7788, "D FMOV copies low 64 bits");
     assert_eq!(ctx.v[1][1], 0, "D FMOV zeros upper 64 bits");
 }
+
+#[test]
+fn fadd_d_two_doubles() {
+    // fadd d2, d0, d1   ; 1.5 + 2.25 = 3.75
+    let code = build_code(&[
+        0x1E61_2802,
+        0xD4200000,
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[0] = [(1.5_f64).to_bits(), 0];
+    ctx.v[1] = [(2.25_f64).to_bits(), 0];
+    run(code, &mut ctx);
+    let result = f64::from_bits(ctx.v[2][0]);
+    assert_eq!(result, 3.75, "FADD D should add doubles");
+    assert_eq!(ctx.v[2][1], 0, "FADD D zeros upper 64 bits");
+}
+
+#[test]
+fn fmul_s_two_floats() {
+    // fmul s2, s0, s1   ; 1.5 * 2.0 = 3.0
+    let code = build_code(&[
+        0x1E21_0802,
+        0xD4200000,
+    ]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[0] = [(1.5_f32).to_bits() as u64, 0];
+    ctx.v[1] = [(2.0_f32).to_bits() as u64, 0];
+    run(code, &mut ctx);
+    let bits = ctx.v[2][0] as u32;
+    let result = f32::from_bits(bits);
+    assert_eq!(result, 3.0, "FMUL S should multiply floats");
+    assert_eq!(ctx.v[2][1], 0, "FMUL S zeros upper 96 bits");
+    assert_eq!(ctx.v[2][0] >> 32, 0, "and the upper 32 bits of lane 0");
+}
