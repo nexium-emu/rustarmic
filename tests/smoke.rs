@@ -1267,3 +1267,139 @@ fn vec_orn_or_inverted() {
     // ~v2[1] = 0; OR v1[1] = 0x0F0F... → 0x0F0F0F0F0F0F0F0F
     assert_eq!(ctx.v[0][1], 0x0F0F_0F0F_0F0F_0F0F);
 }
+
+#[test]
+fn vec_neg_4s() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [0x0000_0001_FFFF_FFFE, 0x8000_0000_7FFF_FFFF];
+    let code = build_code(&[
+        0x6EA0_B820, // neg v0.4s, v1.4s
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // Per-lane two's complement:
+    //   0x00000001 -> 0xFFFFFFFF
+    //   0xFFFFFFFE -> 0x00000002
+    //   0x7FFFFFFF -> 0x80000001
+    //   0x80000000 -> 0x80000000 (wraps on its own representable bound)
+    assert_eq!(ctx.v[0][0], 0xFFFF_FFFF_0000_0002);
+    assert_eq!(ctx.v[0][1], 0x8000_0000_8000_0001);
+}
+
+#[test]
+fn vec_abs_4s() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [0x0000_0001_FFFF_FFFE, 0x8000_0001_7FFF_FFFF];
+    let code = build_code(&[
+        0x4EA0_B820, // abs v0.4s, v1.4s
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // |0x00000001|=1, |0xFFFFFFFE| = |-2| = 2, |0x7FFFFFFF|=0x7FFFFFFF,
+    // |0x80000001|= 0x7FFFFFFF
+    assert_eq!(ctx.v[0][0], 0x0000_0001_0000_0002);
+    assert_eq!(ctx.v[0][1], 0x7FFF_FFFF_7FFF_FFFF);
+}
+
+#[test]
+fn vec_not_16b() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [0xF0F0_F0F0_F0F0_F0F0, 0x0123_4567_89AB_CDEF];
+    let code = build_code(&[
+        0x6E20_5820, // not v0.16b, v1.16b
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    assert_eq!(ctx.v[0][0], !0xF0F0_F0F0_F0F0_F0F0);
+    assert_eq!(ctx.v[0][1], !0x0123_4567_89AB_CDEF);
+}
+
+#[test]
+fn vec_mul_8h() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    // Lane-by-lane H multiply: low 16 of (a*b)
+    ctx.v[1] = [0x0003_0002_0001_0000, 0x0007_0006_0005_0004];
+    ctx.v[2] = [0x0010_0010_0010_0010, 0x0010_0010_0010_0010];
+    let code = build_code(&[
+        0x4E62_9C20, // mul v0.8h, v1.8h, v2.8h
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    assert_eq!(ctx.v[0][0], 0x0030_0020_0010_0000);
+    assert_eq!(ctx.v[0][1], 0x0070_0060_0050_0040);
+}
+
+#[test]
+fn vec_mul_4s_wraps_within_lane() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [0x0000_0002_FFFF_FFFF, 0x0000_0003_0000_0004];
+    ctx.v[2] = [0x0000_0003_0000_0002, 0x0000_0005_0000_0010];
+    let code = build_code(&[
+        0x4EA2_9C20, // mul v0.4s, v1.4s, v2.4s
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // 0xFFFFFFFF * 2 = 0x1_FFFFFFFE -> low 32 = 0xFFFFFFFE
+    // 0x2 * 0x3 = 6
+    // 0x4 * 0x10 = 0x40
+    // 0x3 * 0x5 = 0xF
+    assert_eq!(ctx.v[0][0], 0x0000_0006_FFFF_FFFE);
+    assert_eq!(ctx.v[0][1], 0x0000_000F_0000_0040);
+}
+
+#[test]
+fn vec_shl_imm_4s() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [0x0000_0001_0000_00FF, 0x0000_0010_0000_0100];
+    let code = build_code(&[
+        0x4F22_5420, // shl v0.4s, v1.4s, #2
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    assert_eq!(ctx.v[0][0], 0x0000_0004_0000_03FC);
+    assert_eq!(ctx.v[0][1], 0x0000_0040_0000_0400);
+}
+
+#[test]
+fn vec_ushr_imm_4s() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [0x0000_FFFF_8000_0000, 0xF000_0000_0000_0010];
+    let code = build_code(&[
+        0x6F3E_0420, // ushr v0.4s, v1.4s, #2
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // Each 32-bit lane >> 2 unsigned:
+    //   0x80000000 >> 2 = 0x20000000
+    //   0x0000FFFF >> 2 = 0x00003FFF
+    //   0x00000010 >> 2 = 0x00000004
+    //   0xF0000000 >> 2 = 0x3C000000
+    assert_eq!(ctx.v[0][0], 0x0000_3FFF_2000_0000);
+    assert_eq!(ctx.v[0][1], 0x3C00_0000_0000_0004);
+}
+
+#[test]
+fn vec_sshr_imm_4s() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [0x0000_FFFF_8000_0000, 0xF000_0000_0000_0010];
+    let code = build_code(&[
+        0x4F3E_0420, // sshr v0.4s, v1.4s, #2
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // Arithmetic >> 2:
+    //   0x80000000 -> 0xE0000000 (sign-extended)
+    //   0x0000FFFF -> 0x00003FFF
+    //   0x00000010 -> 0x00000004
+    //   0xF0000000 -> 0xFC000000
+    assert_eq!(ctx.v[0][0], 0x0000_3FFF_E000_0000);
+    assert_eq!(ctx.v[0][1], 0xFC00_0000_0000_0004);
+}

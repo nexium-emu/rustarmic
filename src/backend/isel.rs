@@ -144,6 +144,16 @@ fn dispatch_op(op: Op) -> Option<EmitFn> {
         VecBic => emit_op_vec_bic,
         VecOrn => emit_op_vec_orn,
 
+        VecNeg8 | VecNeg16 | VecNeg32 | VecNeg64 => emit_op_vec_neg,
+        VecAbs8 | VecAbs16 | VecAbs32           => emit_op_vec_abs,
+        VecNot => emit_op_vec_not,
+
+        VecMul16 | VecMul32 => emit_op_vec_mul,
+
+        VecShlImm16 | VecShlImm32 | VecShlImm64   => emit_op_vec_shl_imm,
+        VecUshrImm16 | VecUshrImm32 | VecUshrImm64 => emit_op_vec_ushr_imm,
+        VecSshrImm16 | VecSshrImm32                => emit_op_vec_sshr_imm,
+
         Hint | MemoryBarrier => emit_nop,
         Clrex => emit_op_clrex,
 
@@ -547,6 +557,120 @@ adapt_vec_logic!(emit_op_vec_orr, VecBinKind::Orr);
 adapt_vec_logic!(emit_op_vec_eor, VecBinKind::Eor);
 adapt_vec_logic!(emit_op_vec_bic, VecBinKind::Bic);
 adapt_vec_logic!(emit_op_vec_orn, VecBinKind::Orn);
+
+fn emit_op_vec_neg(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let d = dst_of(&a, idx).unwrap();
+    let q_form = (a.imm & 1) != 0;
+    let working = working_xmm_for(alloc, d, xmm0);
+    // working = 0 - vn (per lane). pxor zeros working; psubX subtracts vn.
+    asm.pxor(working, working)?;
+    let src = get_xmm_q(asm, alloc, a.args[0], xmm1)?;
+    match a.op.size_log2() {
+        0 => asm.psubb(working, src)?,
+        1 => asm.psubw(working, src)?,
+        2 => asm.psubd(working, src)?,
+        3 => asm.psubq(working, src)?,
+        _ => unreachable!(),
+    }
+    if !q_form { asm.movq(working, working)?; }
+    store_xmm_q(asm, alloc, d, working)
+}
+
+fn emit_op_vec_abs(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let d = dst_of(&a, idx).unwrap();
+    let q_form = (a.imm & 1) != 0;
+    let working = working_xmm_for(alloc, d, xmm0);
+    let src = get_xmm_q(asm, alloc, a.args[0], xmm1)?;
+    match a.op.size_log2() {
+        0 => asm.pabsb(working, src)?,
+        1 => asm.pabsw(working, src)?,
+        2 => asm.pabsd(working, src)?,
+        _ => return Err(Error::Backend(format!("VecAbs lane {} not supported", a.op.size_log2()))),
+    }
+    if !q_form { asm.movq(working, working)?; }
+    store_xmm_q(asm, alloc, d, working)
+}
+
+fn emit_op_vec_not(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let d = dst_of(&a, idx).unwrap();
+    let q_form = (a.imm & 1) != 0;
+    let working = working_xmm_for(alloc, d, xmm0);
+    // working = vn ^ all-ones
+    into_xmm_q(asm, alloc, a.args[0], working)?;
+    asm.pcmpeqd(xmm1, xmm1)?;
+    asm.pxor(working, xmm1)?;
+    if !q_form { asm.movq(working, working)?; }
+    store_xmm_q(asm, alloc, d, working)
+}
+
+fn emit_op_vec_mul(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let d = dst_of(&a, idx).unwrap();
+    let q_form = (a.imm & 1) != 0;
+    let working = working_xmm_for(alloc, d, xmm0);
+    into_xmm_q(asm, alloc, a.args[0], working)?;
+    let other = get_xmm_q(asm, alloc, a.args[1], xmm1)?;
+    match a.op.size_log2() {
+        1 => asm.pmullw(working, other)?,
+        2 => asm.pmulld(working, other)?,
+        _ => return Err(Error::Backend(format!("VecMul lane {} not supported", a.op.size_log2()))),
+    }
+    if !q_form { asm.movq(working, working)?; }
+    store_xmm_q(asm, alloc, d, working)
+}
+
+fn emit_op_vec_shl_imm(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let d = dst_of(&a, idx).unwrap();
+    let q_form = (a.imm & 1) != 0;
+    let shift = (a.imm >> 1) as u32;
+    let working = working_xmm_for(alloc, d, xmm0);
+    into_xmm_q(asm, alloc, a.args[0], working)?;
+    match a.op.size_log2() {
+        1 => asm.psllw(working, shift as i32)?,
+        2 => asm.pslld(working, shift as i32)?,
+        3 => asm.psllq(working, shift as i32)?,
+        _ => return Err(Error::Backend(format!("VecShlImm lane {} not supported", a.op.size_log2()))),
+    }
+    if !q_form { asm.movq(working, working)?; }
+    store_xmm_q(asm, alloc, d, working)
+}
+
+fn emit_op_vec_ushr_imm(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let d = dst_of(&a, idx).unwrap();
+    let q_form = (a.imm & 1) != 0;
+    let shift = (a.imm >> 1) as u32;
+    let working = working_xmm_for(alloc, d, xmm0);
+    into_xmm_q(asm, alloc, a.args[0], working)?;
+    match a.op.size_log2() {
+        1 => asm.psrlw(working, shift as i32)?,
+        2 => asm.psrld(working, shift as i32)?,
+        3 => asm.psrlq(working, shift as i32)?,
+        _ => return Err(Error::Backend(format!("VecUshrImm lane {} not supported", a.op.size_log2()))),
+    }
+    if !q_form { asm.movq(working, working)?; }
+    store_xmm_q(asm, alloc, d, working)
+}
+
+fn emit_op_vec_sshr_imm(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let d = dst_of(&a, idx).unwrap();
+    let q_form = (a.imm & 1) != 0;
+    let shift = (a.imm >> 1) as u32;
+    let working = working_xmm_for(alloc, d, xmm0);
+    into_xmm_q(asm, alloc, a.args[0], working)?;
+    match a.op.size_log2() {
+        1 => asm.psraw(working, shift as i32)?,
+        2 => asm.psrad(working, shift as i32)?,
+        _ => return Err(Error::Backend(format!("VecSshrImm lane {} not supported (no PSRAQ pre-AVX-512)", a.op.size_log2()))),
+    }
+    if !q_form { asm.movq(working, working)?; }
+    store_xmm_q(asm, alloc, d, working)
+}
 
 // ── System / misc adapters ───────────────────────────────────────────────
 fn emit_op_clrex(asm: &mut CodeAssembler, _block: &Block, _alloc: &Allocation, _idx: usize) -> Result<()> {

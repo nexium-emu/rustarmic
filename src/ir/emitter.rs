@@ -229,6 +229,61 @@ impl<'b> IrEmitter<'b> {
         self.push(Armlet::new(Op::VecOrn, Ty::U128).with_args(&[vn, vm]).with_imm(q as u64))
     }
 
+    pub fn vec_neg(&mut self, vn: ValueRef, lane_log2: u32, q: bool) -> ValueRef {
+        let op = match lane_log2 {
+            0 => Op::VecNeg8, 1 => Op::VecNeg16, 2 => Op::VecNeg32, 3 => Op::VecNeg64,
+            _ => unreachable!(),
+        };
+        self.push(Armlet::new(op, Ty::U128).with_args(&[vn]).with_imm(q as u64))
+    }
+
+    pub fn vec_abs(&mut self, vn: ValueRef, lane_log2: u32, q: bool) -> ValueRef {
+        let op = match lane_log2 {
+            0 => Op::VecAbs8, 1 => Op::VecAbs16, 2 => Op::VecAbs32, 3 => Op::VecAbs64,
+            _ => unreachable!(),
+        };
+        self.push(Armlet::new(op, Ty::U128).with_args(&[vn]).with_imm(q as u64))
+    }
+
+    pub fn vec_not(&mut self, vn: ValueRef, q: bool) -> ValueRef {
+        self.push(Armlet::new(Op::VecNot, Ty::U128).with_args(&[vn]).with_imm(q as u64))
+    }
+
+    pub fn vec_mul(&mut self, vn: ValueRef, vm: ValueRef, lane_log2: u32, q: bool) -> ValueRef {
+        let op = match lane_log2 {
+            0 => Op::VecMul8, 1 => Op::VecMul16, 2 => Op::VecMul32, 3 => Op::VecMul64,
+            _ => unreachable!(),
+        };
+        self.push(Armlet::new(op, Ty::U128).with_args(&[vn, vm]).with_imm(q as u64))
+    }
+
+    /// Immediate shift. `shift` is the shift amount (0..lane_bits); the
+    /// Q-flag lives in imm bit 0 with the shift amount in bits 1..8.
+    pub fn vec_shl_imm(&mut self, vn: ValueRef, lane_log2: u32, shift: u32, q: bool) -> ValueRef {
+        let op = match lane_log2 {
+            0 => Op::VecShlImm8, 1 => Op::VecShlImm16, 2 => Op::VecShlImm32, 3 => Op::VecShlImm64,
+            _ => unreachable!(),
+        };
+        let imm = (q as u64) | ((shift as u64) << 1);
+        self.push(Armlet::new(op, Ty::U128).with_args(&[vn]).with_imm(imm))
+    }
+    pub fn vec_ushr_imm(&mut self, vn: ValueRef, lane_log2: u32, shift: u32, q: bool) -> ValueRef {
+        let op = match lane_log2 {
+            0 => Op::VecUshrImm8, 1 => Op::VecUshrImm16, 2 => Op::VecUshrImm32, 3 => Op::VecUshrImm64,
+            _ => unreachable!(),
+        };
+        let imm = (q as u64) | ((shift as u64) << 1);
+        self.push(Armlet::new(op, Ty::U128).with_args(&[vn]).with_imm(imm))
+    }
+    pub fn vec_sshr_imm(&mut self, vn: ValueRef, lane_log2: u32, shift: u32, q: bool) -> ValueRef {
+        let op = match lane_log2 {
+            0 => Op::VecSshrImm8, 1 => Op::VecSshrImm16, 2 => Op::VecSshrImm32, 3 => Op::VecSshrImm64,
+            _ => unreachable!(),
+        };
+        let imm = (q as u64) | ((shift as u64) << 1);
+        self.push(Armlet::new(op, Ty::U128).with_args(&[vn]).with_imm(imm))
+    }
+
     // ─── NZCV ───────────────────────────────────────────────────────────────
     pub fn get_nzcv(&mut self) -> ValueRef {
         self.push(Armlet::new(Op::GetNzcv, Ty::Nzcv))

@@ -14,7 +14,7 @@ use crate::util::bits::{bit, bits};
 
 #[derive(Clone, Copy)]
 enum Kind {
-    Add, Sub,
+    Add, Sub, Mul,
     And, Orr, Eor, Bic, Orn,
 }
 
@@ -23,6 +23,7 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDSAME) -> Result<InstStatus> 
     let (raw, kind) = match insn {
         ADD_Vd_Vn_Vm(i) => (i.0, Kind::Add),
         SUB_Vd_Vn_Vm(i) => (i.0, Kind::Sub),
+        MUL_Vd_Vn_Vm(i) => (i.0, Kind::Mul),
         AND_Vd_Vn_Vm(i) => (i.0, Kind::And),
         ORR_Vd_Vn_Vm(i) => (i.0, Kind::Orr),
         EOR_Vd_Vn_Vm(i) => (i.0, Kind::Eor),
@@ -43,6 +44,14 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDSAME) -> Result<InstStatus> 
     let result = match kind {
         Kind::Add => em.vec_add(vn, vm, size, q),
         Kind::Sub => em.vec_sub(vn, vm, size, q),
+        Kind::Mul => {
+            // Only 16/32-bit lanes are wired through SSE today; surface a clear
+            // error for 8/64-bit lane MUL until we add the decomposition.
+            if size != 1 && size != 2 {
+                return Err(Error::Unsupported { pc: em.current_pc, opcode: raw });
+            }
+            em.vec_mul(vn, vm, size, q)
+        }
         Kind::And => em.vec_and(vn, vm, q),
         Kind::Orr => em.vec_orr(vn, vm, q),
         Kind::Eor => em.vec_eor(vn, vm, q),

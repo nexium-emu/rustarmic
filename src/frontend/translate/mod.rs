@@ -38,3 +38,5 @@ pub mod dp_1src;
 pub mod dp_2src;
 pub mod dp_3src;
 pub mod asimd_same;
+pub mod asimd_misc;
+pub mod asimd_shf;

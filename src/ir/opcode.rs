@@ -173,6 +173,20 @@ pub enum Op {
     VecExtract16 = 0x639,
     VecExtract32 = 0x63A,
 
+    // Unary per-lane ops. Lane size in low 2 bits; Q-flag in imm bit 0.
+    VecNeg8  = 0x640, VecNeg16 = 0x641, VecNeg32 = 0x642, VecNeg64 = 0x643,
+    VecAbs8  = 0x644, VecAbs16 = 0x645, VecAbs32 = 0x646, VecAbs64 = 0x647,
+    VecNot   = 0x648,
+
+    // Per-lane multiply. Only 16/32-bit lanes are directly supported by SSE2
+    // (PMULLW / PMULLD); 8 and 64-bit lane MUL are emulated or unsupported.
+    VecMul8  = 0x64C, VecMul16 = 0x64D, VecMul32 = 0x64E, VecMul64 = 0x64F,
+
+    // Immediate shifts. Shift amount in `imm` bits 1..8; Q-flag in imm bit 0.
+    VecShlImm8  = 0x650, VecShlImm16  = 0x651, VecShlImm32  = 0x652, VecShlImm64  = 0x653,
+    VecUshrImm8 = 0x654, VecUshrImm16 = 0x655, VecUshrImm32 = 0x656, VecUshrImm64 = 0x657,
+    VecSshrImm8 = 0x658, VecSshrImm16 = 0x659, VecSshrImm32 = 0x65A, VecSshrImm64 = 0x65B,
+
     Mrs            = 0x700,
     Msr            = 0x704,
     Hint           = 0x708,
