@@ -248,6 +248,60 @@ pub fn store_xmm_q(
     Ok(())
 }
 
+/// Return an XMM register holding the full 128 bits of `vr`. If `vr`'s
+/// regalloc'd location is already an XMM, returns that register directly
+/// — no load is emitted. Otherwise loads from spill into `fallback` and
+/// returns `fallback`. Either way the caller can use the returned register
+/// as a source operand without worrying about where the value lives.
+pub fn get_xmm_q(
+    asm: &mut CodeAssembler,
+    alloc: &Allocation,
+    vr: ValueRef,
+    fallback: AsmRegisterXmm,
+) -> Result<AsmRegisterXmm> {
+    match alloc.loc(vr) {
+        Loc::Xmm(x) => Ok(xmm(x)),
+        Loc::Spill(off) => {
+            asm.movdqu(fallback, xmmword_ptr(rbp - off)).map_err(into_err)?;
+            Ok(fallback)
+        }
+        Loc::Reg(_) | Loc::None =>
+            Err(Error::Backend(format!("get_xmm_q from invalid loc ({:?})", vr))),
+    }
+}
+
+/// Materialize `vr` into `target`. If `vr` is already in `target`, emits
+/// nothing. Used when the emitter needs the value at a specific register
+/// (e.g. it's about to perform an in-place op on `target`).
+pub fn into_xmm_q(
+    asm: &mut CodeAssembler,
+    alloc: &Allocation,
+    vr: ValueRef,
+    target: AsmRegisterXmm,
+) -> Result<()> {
+    match alloc.loc(vr) {
+        Loc::Xmm(x) => {
+            let src = xmm(x);
+            if src != target { asm.movdqa(target, src).map_err(into_err)?; }
+        }
+        Loc::Spill(off) => asm.movdqu(target, xmmword_ptr(rbp - off)).map_err(into_err)?,
+        Loc::Reg(_) | Loc::None =>
+            return Err(Error::Backend(format!("into_xmm_q from invalid loc ({:?})", vr))),
+    }
+    Ok(())
+}
+
+/// Pick the working XMM for an operation whose result will be written to
+/// `dst_vr`. When dst is XMM-resident, returns dst's XMM so we can compute
+/// in place. Otherwise returns `scratch` and the caller is expected to
+/// store-back to dst after the op.
+pub fn working_xmm_for(alloc: &Allocation, dst_vr: ValueRef, scratch: AsmRegisterXmm) -> AsmRegisterXmm {
+    match alloc.loc(dst_vr) {
+        Loc::Xmm(x) => xmm(x),
+        _ => scratch,
+    }
+}
+
 fn into_err(e: iced_x86::IcedError) -> Error {
     Error::Backend(e.to_string())
 }

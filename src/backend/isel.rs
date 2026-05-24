@@ -5,8 +5,8 @@ use crate::backend::abi::{
     ARG3_REG, CALL_PRECALL_SUB, CTX_REG, SCRATCH0, SCRATCH1, SCRATCH2, SCRATCH3,
 };
 use crate::backend::operand::{
-    gpr32, gpr64, load32, load64, load_xmm_d, load_xmm_q, load_xmm_s, store32, store64,
-    store_xmm_d, store_xmm_q, store_xmm_s,
+    get_xmm_q, gpr32, gpr64, into_xmm_q, load32, load64, load_xmm_d, load_xmm_s, store32,
+    store64, store_xmm_d, store_xmm_q, store_xmm_s, working_xmm_for,
 };
 use crate::backend::regalloc::{Allocation, Loc};
 use crate::error::{Error, Result};
@@ -141,8 +141,8 @@ pub fn emit_armlet(
                     asm.mov(qword_ptr(CTX_REG + off + 8), 0i32)?;
                 }
                 Ty::U128 => {
-                    load_xmm_q(asm, alloc, a.args[0], xmm0)?;
-                    asm.movdqu(xmmword_ptr(CTX_REG + off), xmm0)?;
+                    let src = get_xmm_q(asm, alloc, a.args[0], xmm0)?;
+                    asm.movdqu(xmmword_ptr(CTX_REG + off), src)?;
                 }
                 other => return Err(Error::Backend(
                     format!("SetV with unsupported src ty {:?}", other))),
@@ -217,22 +217,27 @@ pub fn emit_armlet(
 
         Op::VecBuildQ => {
             let d = dst_vr.unwrap();
+            let working = working_xmm_for(alloc, d, xmm0);
+            // working_low = args[0]
             load64(asm, alloc, a.args[0], rax)?;
-            asm.movq(xmm0, rax)?;
+            asm.movq(working, rax)?;
+            // working_high = args[1]
             load64(asm, alloc, a.args[1], rax)?;
-            asm.pinsrq(xmm0, rax, 1)?;
-            store_xmm_q(asm, alloc, d, xmm0)?;
+            asm.pinsrq(working, rax, 1)?;
+            store_xmm_q(asm, alloc, d, working)?;
         }
         Op::VecExtractLo64 => {
             let d = dst_vr.unwrap();
-            load_xmm_q(asm, alloc, a.args[0], xmm0)?;
-            asm.movq(rax, xmm0)?;
+            // Source already lives in some XMM; movq directly from it into the
+            // dst GPR or spill slot — no need to bounce through xmm0.
+            let src = get_xmm_q(asm, alloc, a.args[0], xmm0)?;
+            asm.movq(rax, src)?;
             store64(asm, alloc, d, rax)?;
         }
         Op::VecExtractHi64 => {
             let d = dst_vr.unwrap();
-            load_xmm_q(asm, alloc, a.args[0], xmm0)?;
-            asm.pextrq(rax, xmm0, 1)?;
+            let src = get_xmm_q(asm, alloc, a.args[0], xmm0)?;
+            asm.pextrq(rax, src, 1)?;
             store64(asm, alloc, d, rax)?;
         }
 
@@ -1166,6 +1171,10 @@ enum VecBinKind {
 }
 
 /// Apply a 128-bit XMM binop, then mask off the high 64 bits when `q=0`.
+///
+/// Tries to compute in-place in dst's XMM (saving a movdqa) and to consume
+/// each source straight from its allocator-chosen XMM (saving a load). xmm0
+/// only gets used as a fallback when dst spills or a source spills.
 fn emit_vec_binop(
     asm: &mut CodeAssembler,
     alloc: &Allocation,
@@ -1176,49 +1185,53 @@ fn emit_vec_binop(
     let d = dst.unwrap();
     let q_form = (a.imm & 1) != 0;
 
-    // Load Vn into xmm0, Vm into xmm1, then act on xmm0.
-    load_xmm_q(asm, alloc, a.args[0], xmm0)?;
-    load_xmm_q(asm, alloc, a.args[1], xmm1)?;
+    // BIC and ORN are non-commutative against the regular pandn/por-not pattern,
+    // so the operand the working register needs to hold is different:
+    //   - BIC:  working = Vm   (so PANDN working, Vn → ~Vm & Vn = Vn & ~Vm) ✓
+    //   - ORN:  working = Vn   (we'll NOT a scratch copy of Vm and OR into working)
+    //   - rest: working = Vn   (so OP working, Vm)
+    let (working_src, other_src) = match kind {
+        VecBinKind::Bic => (a.args[1], a.args[0]),
+        _               => (a.args[0], a.args[1]),
+    };
+
+    let working = working_xmm_for(alloc, d, xmm0);
+    into_xmm_q(asm, alloc, working_src, working)?;
+    let other = get_xmm_q(asm, alloc, other_src, xmm1)?;
 
     match kind {
         VecBinKind::Add(sz) => match sz {
-            0 => asm.paddb(xmm0, xmm1)?,
-            1 => asm.paddw(xmm0, xmm1)?,
-            2 => asm.paddd(xmm0, xmm1)?,
-            3 => asm.paddq(xmm0, xmm1)?,
+            0 => asm.paddb(working, other)?,
+            1 => asm.paddw(working, other)?,
+            2 => asm.paddd(working, other)?,
+            3 => asm.paddq(working, other)?,
             _ => unreachable!(),
         },
         VecBinKind::Sub(sz) => match sz {
-            0 => asm.psubb(xmm0, xmm1)?,
-            1 => asm.psubw(xmm0, xmm1)?,
-            2 => asm.psubd(xmm0, xmm1)?,
-            3 => asm.psubq(xmm0, xmm1)?,
+            0 => asm.psubb(working, other)?,
+            1 => asm.psubw(working, other)?,
+            2 => asm.psubd(working, other)?,
+            3 => asm.psubq(working, other)?,
             _ => unreachable!(),
         },
-        VecBinKind::And => asm.pand(xmm0, xmm1)?,
-        VecBinKind::Orr => asm.por (xmm0, xmm1)?,
-        VecBinKind::Eor => asm.pxor(xmm0, xmm1)?,
-        VecBinKind::Bic => {
-            // ARM BIC = Vn AND NOT Vm. x86 PANDN dst, src computes ~dst & src,
-            // so we need ~Vm & Vn — load Vm into xmm0 (the to-be-NOT-ed side)
-            // and Vn into xmm1, then `pandn xmm0, xmm1`.
-            load_xmm_q(asm, alloc, a.args[1], xmm0)?;
-            load_xmm_q(asm, alloc, a.args[0], xmm1)?;
-            asm.pandn(xmm0, xmm1)?;
-        }
+        VecBinKind::And => asm.pand (working, other)?,
+        VecBinKind::Orr => asm.por  (working, other)?,
+        VecBinKind::Eor => asm.pxor (working, other)?,
+        VecBinKind::Bic => asm.pandn(working, other)?, // working=~Vm, other=Vn → Vn & ~Vm
         VecBinKind::Orn => {
-            // ARM ORN = Vn OR NOT Vm. x86: invert Vm via pxor with all-ones,
-            // then por with Vn.
-            asm.pcmpeqd(xmm2, xmm2)?; // all-ones
-            asm.pxor(xmm1, xmm2)?;    // xmm1 = ~Vm
-            asm.por (xmm0, xmm1)?;
+            // working = Vn; we need Vn | ~Vm. Invert Vm into xmm2 then por.
+            asm.pcmpeqd(xmm2, xmm2)?;        // all-ones
+            // xmm2 ^= other  (= ~Vm). xor with a register source is fine.
+            asm.pxor(xmm2, other)?;
+            asm.por (working, xmm2)?;
         }
     }
 
     if !q_form {
-        // 64-bit form: zero the upper 64 bits. movq xmm, xmm zeros high half.
-        asm.movq(xmm0, xmm0)?;
+        // 64-bit form: zero the upper 64 bits. movq xmm, xmm copies the low
+        // 64 and clears the high 64.
+        asm.movq(working, working)?;
     }
-    store_xmm_q(asm, alloc, d, xmm0)?;
+    store_xmm_q(asm, alloc, d, working)?;
     Ok(())
 }
