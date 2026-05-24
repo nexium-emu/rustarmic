@@ -17,6 +17,16 @@ use crate::jit::memory::{
     addr_mem_write8, addr_mem_write16, addr_mem_write32, addr_mem_write64,
 };
 
+/// Function-pointer shape every per-op emitter conforms to. The block + idx
+/// give the emitter the armlet, its destination value (derived from idx +
+/// `ty != Void`), and full SSA context if needed.
+pub type EmitFn = fn(&mut CodeAssembler, &Block, &Allocation, usize) -> Result<()>;
+
+#[inline]
+fn dst_of(a: &Armlet, idx: usize) -> Option<ValueRef> {
+    if a.ty != Ty::Void { Some(ValueRef::new(idx as u32)) } else { None }
+}
+
 pub fn emit_armlet(
     asm: &mut CodeAssembler,
     block: &Block,
@@ -25,268 +35,531 @@ pub fn emit_armlet(
 ) -> Result<()> {
     let a = block.code[idx];
     if a.is_eliminated() { return Ok(()); }
+    if a.op.is_terminator() { return Ok(()); }
 
-    let dst_vr: Option<ValueRef> = if a.ty != Ty::Void {
-        Some(ValueRef::new(idx as u32))
-    } else { None };
+    let f = dispatch_op(a.op).ok_or(Error::Unsupported {
+        pc: block.start_pc,
+        opcode: a.op as u32,
+    })?;
+    f(asm, block, alloc, idx)
+}
 
-    match a.op {
-        Op::Void => {}
-        Op::Identity => {
-            if let Some(d) = dst_vr {
-                if alloc.loc(a.args[0]) != alloc.loc(d) {
-                    if a.ty.bits() <= 32 {
-                        load32(asm, alloc, a.args[0], eax)?;
-                        store32(asm, alloc, d, eax)?;
-                    } else {
-                        load64(asm, alloc, a.args[0], SCRATCH0)?;
-                        store64(asm, alloc, d, SCRATCH0)?;
-                    }
-                }
-            }
-        }
+/// Map each opcode to its emit function. LLVM compiles this match into a
+/// jump table indexed by the discriminant — exactly the "dispatch table"
+/// shape we want, just expressed as a `match` so each entry is type-checked
+/// at compile time rather than maintained as a parallel const array.
+fn dispatch_op(op: Op) -> Option<EmitFn> {
+    use Op::*;
+    Some(match op {
+        Void => emit_nop,
+        Identity => emit_op_identity,
 
-        Op::ConstU32 => {
-            let d = dst_vr.unwrap();
-            asm.mov(eax, (a.imm as u32) as i32)?;
-            store32(asm, alloc, d, eax)?;
-        }
-        Op::ConstU64 => {
-            let d = dst_vr.unwrap();
-            asm.mov(SCRATCH0, a.imm as i64)?;
-            store64(asm, alloc, d, SCRATCH0)?;
-        }
+        ConstU32 => emit_op_const_u32,
+        ConstU64 => emit_op_const_u64,
 
-        Op::GetX => {
-            let d = dst_vr.unwrap();
-            let reg = a.imm as usize;
-            load_guest_x(asm, SCRATCH0, reg)?;
-            store64(asm, alloc, d, SCRATCH0)?;
-        }
-        Op::GetW => {
-            let d = dst_vr.unwrap();
-            let reg = a.imm as usize;
-            load_guest_x(asm, SCRATCH0, reg)?;
-            store32(asm, alloc, d, eax)?;
-        }
-        Op::SetX => {
-            let reg = a.imm as usize;
-            load64(asm, alloc, a.args[0], SCRATCH0)?;
-            store_guest_x(asm, reg, SCRATCH0)?;
-        }
-        Op::SetW => {
-            let reg = a.imm as usize;
-            load32(asm, alloc, a.args[0], eax)?;
-            store_guest_x(asm, reg, SCRATCH0)?;
-        }
-        Op::GetSp => {
-            let d = dst_vr.unwrap();
-            asm.mov(SCRATCH0, qword_ptr(CTX_REG + cpu_offsets::sp() as i32))?;
-            store64(asm, alloc, d, SCRATCH0)?;
-        }
-        Op::SetSp => {
-            load64(asm, alloc, a.args[0], SCRATCH0)?;
-            asm.mov(qword_ptr(CTX_REG + cpu_offsets::sp() as i32), SCRATCH0)?;
-        }
-        Op::GetNzcv => {
-            let d = dst_vr.unwrap();
-            asm.movzx(eax, byte_ptr(CTX_REG + cpu_offsets::nzcv() as i32))?;
-            store32(asm, alloc, d, eax)?;
-        }
-        Op::SetNzcv => {
-            load32(asm, alloc, a.args[0], eax)?;
-            asm.mov(byte_ptr(CTX_REG + cpu_offsets::nzcv() as i32), al)?;
-        }
-        Op::GetPc => {
-            let d = dst_vr.unwrap();
-            asm.mov(SCRATCH0, a.imm as i64)?;
-            store64(asm, alloc, d, SCRATCH0)?;
-        }
+        GetX => emit_op_get_x,
+        GetW => emit_op_get_w,
+        SetX => emit_op_set_x,
+        SetW => emit_op_set_w,
+        GetSp => emit_op_get_sp,
+        SetSp => emit_op_set_sp,
+        GetNzcv => emit_op_get_nzcv,
+        SetNzcv => emit_op_set_nzcv,
+        GetPc => emit_op_get_pc,
+        GetV => emit_op_get_v,
+        SetV => emit_op_set_v,
 
-        Op::GetV => {
-            let d = dst_vr.unwrap();
-            let reg = a.imm as usize;
-            let off = cpu_offsets::vreg(reg) as i32;
-            match a.ty {
-                Ty::U32 => {
-                    asm.mov(eax, dword_ptr(CTX_REG + off))?;
-                    store32(asm, alloc, d, eax)?;
-                }
-                Ty::U64 => {
-                    asm.mov(SCRATCH0, qword_ptr(CTX_REG + off))?;
-                    store64(asm, alloc, d, SCRATCH0)?;
-                }
-                Ty::U128 => {
-                    asm.movdqu(xmm0, xmmword_ptr(CTX_REG + off))?;
-                    store_xmm_q(asm, alloc, d, xmm0)?;
-                }
-                other => return Err(Error::Backend(
-                    format!("GetV with unsupported ty {:?}", other))),
-            }
-        }
-        Op::SetV => {
-            let reg = a.imm as usize;
-            let off = cpu_offsets::vreg(reg) as i32;
-            let src_ty = block.code[a.args[0].as_usize()].ty;
-            match src_ty {
-                Ty::U32 => {
-                    load32(asm, alloc, a.args[0], eax)?;
-                    asm.mov(dword_ptr(CTX_REG + off), eax)?;
-                    asm.mov(dword_ptr(CTX_REG + off + 4), 0i32)?;
-                    asm.mov(qword_ptr(CTX_REG + off + 8), 0i32)?;
-                }
-                Ty::U64 => {
-                    load64(asm, alloc, a.args[0], SCRATCH0)?;
-                    asm.mov(qword_ptr(CTX_REG + off), SCRATCH0)?;
-                    asm.mov(qword_ptr(CTX_REG + off + 8), 0i32)?;
-                }
-                Ty::U128 => {
-                    let src = get_xmm_q(asm, alloc, a.args[0], xmm0)?;
-                    asm.movdqu(xmmword_ptr(CTX_REG + off), src)?;
-                }
-                other => return Err(Error::Backend(
-                    format!("SetV with unsupported src ty {:?}", other))),
-            }
-        }
+        Add32 | Add64 => emit_op_add,
+        Sub32 | Sub64 => emit_op_sub,
+        And32 | And64 => emit_op_and,
+        Or32  | Or64  => emit_op_or,
+        Eor32 | Eor64 => emit_op_xor,
+        Mul32 | Mul64 => emit_op_mul,
 
-        Op::Add32 | Op::Add64 => emit_binop(asm, alloc, a, dst_vr, BinKind::Add,  a.op.size_bits())?,
-        Op::Sub32 | Op::Sub64 => emit_binop(asm, alloc, a, dst_vr, BinKind::Sub,  a.op.size_bits())?,
-        Op::And32 | Op::And64 => emit_binop(asm, alloc, a, dst_vr, BinKind::And,  a.op.size_bits())?,
-        Op::Or32  | Op::Or64  => emit_binop(asm, alloc, a, dst_vr, BinKind::Or,   a.op.size_bits())?,
-        Op::Eor32 | Op::Eor64 => emit_binop(asm, alloc, a, dst_vr, BinKind::Xor,  a.op.size_bits())?,
-        Op::Mul32 | Op::Mul64 => emit_binop(asm, alloc, a, dst_vr, BinKind::Imul, a.op.size_bits())?,
+        Adc32 | Adc64 => emit_op_adc,
+        Sbc32 | Sbc64 => emit_op_sbc,
 
-        Op::Adc32 | Op::Adc64 => emit_adc_sbc(asm, alloc, a, dst_vr, false, a.op.size_bits())?,
-        Op::Sbc32 | Op::Sbc64 => emit_adc_sbc(asm, alloc, a, dst_vr, true,  a.op.size_bits())?,
+        UDiv32 | UDiv64 => emit_op_udiv,
+        SDiv32 | SDiv64 => emit_op_sdiv,
 
-        Op::UDiv32 | Op::UDiv64 => emit_div(asm, alloc, a, dst_vr, false, a.op.size_bits())?,
-        Op::SDiv32 | Op::SDiv64 => emit_div(asm, alloc, a, dst_vr, true,  a.op.size_bits())?,
+        Clz32  | Clz64  => emit_op_clz,
+        Cls32  | Cls64  => emit_op_cls,
+        Rbit32 | Rbit64 => emit_op_rbit,
+        Rev16  => emit_op_rev16,
+        Rev32  => emit_op_rev32,
+        Rev64  => emit_op_rev64,
 
-        Op::Clz32  | Op::Clz64  => emit_clz(asm, alloc, a, dst_vr, a.op.size_bits())?,
-        Op::Cls32  | Op::Cls64  => emit_cls(asm, alloc, a, dst_vr, a.op.size_bits())?,
-        Op::Rbit32 | Op::Rbit64 => emit_rbit(asm, alloc, a, dst_vr, a.op.size_bits())?,
-        Op::Rev16  => emit_rev16(asm, alloc, a, dst_vr, if a.ty == Ty::U64 { 64 } else { 32 })?,
-        Op::Rev32  => emit_rev32_within64(asm, alloc, a, dst_vr)?,
-        Op::Rev64  => emit_bswap(asm, alloc, a, dst_vr, if a.ty == Ty::U64 { 64 } else { 32 })?,
+        Lsl32 | Lsl64 => emit_op_lsl,
+        Lsr32 | Lsr64 => emit_op_lsr,
+        Asr32 | Asr64 => emit_op_asr,
+        Ror32 | Ror64 => emit_op_ror,
 
-        Op::Lsl32 | Op::Lsl64 => emit_shift(asm, alloc, a, dst_vr, ShiftKind::Lsl, a.op.size_bits())?,
-        Op::Lsr32 | Op::Lsr64 => emit_shift(asm, alloc, a, dst_vr, ShiftKind::Lsr, a.op.size_bits())?,
-        Op::Asr32 | Op::Asr64 => emit_shift(asm, alloc, a, dst_vr, ShiftKind::Asr, a.op.size_bits())?,
-        Op::Ror32 | Op::Ror64 => emit_shift(asm, alloc, a, dst_vr, ShiftKind::Ror, a.op.size_bits())?,
+        Not32 | Not64 => emit_op_not,
+        Neg32 | Neg64 => emit_op_neg,
 
-        Op::Not32 | Op::Not64 => emit_unop(asm, alloc, a, dst_vr, UnopKind::Not, a.op.size_bits())?,
-        Op::Neg32 | Op::Neg64 => emit_unop(asm, alloc, a, dst_vr, UnopKind::Neg, a.op.size_bits())?,
+        AddsFlags32 | AddsFlags64 | SubsFlags32 | SubsFlags64 => emit_op_flagged_addsub,
 
-        Op::AddsFlags32 | Op::AddsFlags64 | Op::SubsFlags32 | Op::SubsFlags64 => {
-            emit_flagged_addsub(asm, alloc, a, dst_vr)?;
-        }
+        Load8 | Load16 | Load32 | Load64 => emit_op_load,
+        Store8 | Store16 | Store32 | Store64 => emit_op_store,
 
-        Op::Load8 | Op::Load16 | Op::Load32 | Op::Load64 =>
-            emit_load(asm, alloc, a, dst_vr, a.op.size_bytes())?,
-        Op::Store8 | Op::Store16 | Op::Store32 | Op::Store64 =>
-            emit_store(asm, alloc, a, a.op.size_bytes())?,
+        LoadEx8 | LoadEx16 | LoadEx32 | LoadEx64 => emit_op_load_ex,
+        StoreEx8 | StoreEx16 | StoreEx32 | StoreEx64 => emit_op_store_ex,
 
-        Op::LoadEx8 | Op::LoadEx16 | Op::LoadEx32 | Op::LoadEx64 =>
-            emit_load_ex(asm, alloc, a, dst_vr, a.op.size_bytes())?,
-        Op::StoreEx8 | Op::StoreEx16 | Op::StoreEx32 | Op::StoreEx64 =>
-            emit_store_ex(asm, alloc, a, dst_vr, a.op.size_bytes())?,
+        Csel32 | Csel64 => emit_op_csel,
 
-        Op::Csel32 | Op::Csel64 => emit_csel(asm, alloc, a, dst_vr)?,
+        Fadd32 | Fadd64 => emit_op_fadd,
+        Fsub32 | Fsub64 => emit_op_fsub,
+        Fmul32 | Fmul64 => emit_op_fmul,
+        Fdiv32 | Fdiv64 => emit_op_fdiv,
+        Fmax32 | Fmax64 => emit_op_fmax,
+        Fmin32 | Fmin64 => emit_op_fmin,
+        Fcmp32 | Fcmp64 => emit_op_fcmp,
+        Fsqrt32 | Fsqrt64 => emit_op_fsqrt_,
+        Fneg32 | Fneg64 => emit_op_fneg_,
+        Fabs32 | Fabs64 => emit_op_fabs_,
 
-        Op::Fadd32 | Op::Fadd64 => emit_fbinop(asm, alloc, a, dst_vr, FpBinKind::Add, a.op.size_bits())?,
-        Op::Fsub32 | Op::Fsub64 => emit_fbinop(asm, alloc, a, dst_vr, FpBinKind::Sub, a.op.size_bits())?,
-        Op::Fmul32 | Op::Fmul64 => emit_fbinop(asm, alloc, a, dst_vr, FpBinKind::Mul, a.op.size_bits())?,
-        Op::Fdiv32 | Op::Fdiv64 => emit_fbinop(asm, alloc, a, dst_vr, FpBinKind::Div, a.op.size_bits())?,
-        Op::Fmax32 | Op::Fmax64 => emit_fbinop(asm, alloc, a, dst_vr, FpBinKind::Max, a.op.size_bits())?,
-        Op::Fmin32 | Op::Fmin64 => emit_fbinop(asm, alloc, a, dst_vr, FpBinKind::Min, a.op.size_bits())?,
-        Op::Fcmp32 | Op::Fcmp64 => emit_fcmp(asm, alloc, a, a.op.size_bits())?,
-        Op::Fsqrt32 | Op::Fsqrt64 => emit_fsqrt(asm, alloc, a, dst_vr, a.op.size_bits())?,
-        Op::Fneg32 | Op::Fneg64 => emit_fneg(asm, alloc, a, dst_vr, a.op.size_bits())?,
-        Op::Fabs32 | Op::Fabs64 => emit_fabs(asm, alloc, a, dst_vr, a.op.size_bits())?,
+        FcvtZsSW => emit_op_fcvt_zs_sw,
+        FcvtZsSX => emit_op_fcvt_zs_sx,
+        FcvtZsDW => emit_op_fcvt_zs_dw,
+        FcvtZsDX => emit_op_fcvt_zs_dx,
+        ScvtfWS  => emit_op_scvtf_ws,
+        ScvtfXS  => emit_op_scvtf_xs,
+        ScvtfWD  => emit_op_scvtf_wd,
+        ScvtfXD  => emit_op_scvtf_xd,
+        FcvtSD   => emit_op_fcvt_sd,
+        FcvtDS   => emit_op_fcvt_ds,
 
-        Op::FcvtZsSW => emit_fcvt_zs(asm, alloc, a, dst_vr, false, false)?,
-        Op::FcvtZsSX => emit_fcvt_zs(asm, alloc, a, dst_vr, false, true)?,
-        Op::FcvtZsDW => emit_fcvt_zs(asm, alloc, a, dst_vr, true,  false)?,
-        Op::FcvtZsDX => emit_fcvt_zs(asm, alloc, a, dst_vr, true,  true)?,
-        Op::ScvtfWS  => emit_scvtf(asm, alloc, a, dst_vr, false, false)?,
-        Op::ScvtfXS  => emit_scvtf(asm, alloc, a, dst_vr, false, true)?,
-        Op::ScvtfWD  => emit_scvtf(asm, alloc, a, dst_vr, true,  false)?,
-        Op::ScvtfXD  => emit_scvtf(asm, alloc, a, dst_vr, true,  true)?,
-        Op::FcvtSD   => emit_fcvt_precision(asm, alloc, a, dst_vr, false)?,
-        Op::FcvtDS   => emit_fcvt_precision(asm, alloc, a, dst_vr, true)?,
+        VecBuildQ      => emit_op_vec_build_q,
+        VecExtractLo64 => emit_op_vec_extract_lo64,
+        VecExtractHi64 => emit_op_vec_extract_hi64,
+        VecExtract8    => emit_op_vec_extract8,
+        VecExtract16   => emit_op_vec_extract16,
+        VecExtract32   => emit_op_vec_extract32,
 
-        Op::VecBuildQ => {
-            let d = dst_vr.unwrap();
-            let working = working_xmm_for(alloc, d, xmm0);
-            // working_low = args[0]
-            load64(asm, alloc, a.args[0], rax)?;
-            asm.movq(working, rax)?;
-            // working_high = args[1]
-            load64(asm, alloc, a.args[1], rax)?;
-            asm.pinsrq(working, rax, 1)?;
-            store_xmm_q(asm, alloc, d, working)?;
-        }
-        Op::VecExtractLo64 => {
-            let d = dst_vr.unwrap();
-            // Source already lives in some XMM; movq directly from it into the
-            // dst GPR or spill slot — no need to bounce through xmm0.
-            let src = get_xmm_q(asm, alloc, a.args[0], xmm0)?;
-            asm.movq(rax, src)?;
-            store64(asm, alloc, d, rax)?;
-        }
-        Op::VecExtractHi64 => {
-            let d = dst_vr.unwrap();
-            let src = get_xmm_q(asm, alloc, a.args[0], xmm0)?;
-            asm.pextrq(rax, src, 1)?;
-            store64(asm, alloc, d, rax)?;
-        }
-        Op::VecExtract8 => {
-            let d = dst_vr.unwrap();
-            let src = get_xmm_q(asm, alloc, a.args[0], xmm0)?;
-            asm.pextrb(eax, src, a.imm as i32)?;
-            store32(asm, alloc, d, eax)?;
-        }
-        Op::VecExtract16 => {
-            let d = dst_vr.unwrap();
-            let src = get_xmm_q(asm, alloc, a.args[0], xmm0)?;
-            asm.pextrw(eax, src, a.imm as i32)?;
-            store32(asm, alloc, d, eax)?;
-        }
-        Op::VecExtract32 => {
-            let d = dst_vr.unwrap();
-            let src = get_xmm_q(asm, alloc, a.args[0], xmm0)?;
-            asm.pextrd(eax, src, a.imm as i32)?;
-            store32(asm, alloc, d, eax)?;
-        }
+        VecAdd8 | VecAdd16 | VecAdd32 | VecAdd64 => emit_op_vec_add,
+        VecSub8 | VecSub16 | VecSub32 | VecSub64 => emit_op_vec_sub,
+        VecAnd => emit_op_vec_and,
+        VecOrr => emit_op_vec_orr,
+        VecEor => emit_op_vec_eor,
+        VecBic => emit_op_vec_bic,
+        VecOrn => emit_op_vec_orn,
 
-        Op::VecAdd8  | Op::VecAdd16 | Op::VecAdd32 | Op::VecAdd64 =>
-            emit_vec_binop(asm, alloc, a, dst_vr, VecBinKind::Add(a.op.size_log2()))?,
-        Op::VecSub8  | Op::VecSub16 | Op::VecSub32 | Op::VecSub64 =>
-            emit_vec_binop(asm, alloc, a, dst_vr, VecBinKind::Sub(a.op.size_log2()))?,
-        Op::VecAnd => emit_vec_binop(asm, alloc, a, dst_vr, VecBinKind::And)?,
-        Op::VecOrr => emit_vec_binop(asm, alloc, a, dst_vr, VecBinKind::Orr)?,
-        Op::VecEor => emit_vec_binop(asm, alloc, a, dst_vr, VecBinKind::Eor)?,
-        Op::VecBic => emit_vec_binop(asm, alloc, a, dst_vr, VecBinKind::Bic)?,
-        Op::VecOrn => emit_vec_binop(asm, alloc, a, dst_vr, VecBinKind::Orn)?,
+        Hint | MemoryBarrier => emit_nop,
+        Clrex => emit_op_clrex,
 
-        op if op.is_terminator() => {}
+        Mrs => emit_op_mrs,
+        Msr => emit_op_msr,
 
-        Op::Hint | Op::MemoryBarrier => {}
+        _ => return None,
+    })
+}
 
-        Op::Clrex => {
-            asm.mov(byte_ptr(CTX_REG + cpu_offsets::exclusive_size() as i32), 0i32)?;
-        }
+// ─── Per-op adapter functions ────────────────────────────────────────────
 
-        Op::Mrs => emit_mrs(asm, alloc, a, dst_vr)?,
-        Op::Msr => emit_msr(asm, alloc, a)?,
+fn emit_nop(_: &mut CodeAssembler, _: &Block, _: &Allocation, _: usize) -> Result<()> { Ok(()) }
 
-        other => return Err(Error::Unsupported {
-            pc: block.start_pc,
-            opcode: other as u32,
-        }),
+fn emit_op_identity(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let d = match dst_of(&a, idx) { Some(d) => d, None => return Ok(()) };
+    if alloc.loc(a.args[0]) == alloc.loc(d) { return Ok(()); }
+    if a.ty.bits() <= 32 {
+        load32(asm, alloc, a.args[0], eax)?;
+        store32(asm, alloc, d, eax)?;
+    } else {
+        load64(asm, alloc, a.args[0], SCRATCH0)?;
+        store64(asm, alloc, d, SCRATCH0)?;
     }
-
     Ok(())
+}
+
+fn emit_op_const_u32(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let d = dst_of(&a, idx).unwrap();
+    asm.mov(eax, (a.imm as u32) as i32)?;
+    store32(asm, alloc, d, eax)?;
+    Ok(())
+}
+fn emit_op_const_u64(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let d = dst_of(&a, idx).unwrap();
+    asm.mov(SCRATCH0, a.imm as i64)?;
+    store64(asm, alloc, d, SCRATCH0)?;
+    Ok(())
+}
+
+fn emit_op_get_x(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let d = dst_of(&a, idx).unwrap();
+    load_guest_x(asm, SCRATCH0, a.imm as usize)?;
+    store64(asm, alloc, d, SCRATCH0)?;
+    Ok(())
+}
+fn emit_op_get_w(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let d = dst_of(&a, idx).unwrap();
+    load_guest_x(asm, SCRATCH0, a.imm as usize)?;
+    store32(asm, alloc, d, eax)?;
+    Ok(())
+}
+fn emit_op_set_x(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    load64(asm, alloc, a.args[0], SCRATCH0)?;
+    store_guest_x(asm, a.imm as usize, SCRATCH0)?;
+    Ok(())
+}
+fn emit_op_set_w(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    load32(asm, alloc, a.args[0], eax)?;
+    store_guest_x(asm, a.imm as usize, SCRATCH0)?;
+    Ok(())
+}
+fn emit_op_get_sp(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let d = dst_of(&a, idx).unwrap();
+    asm.mov(SCRATCH0, qword_ptr(CTX_REG + cpu_offsets::sp() as i32))?;
+    store64(asm, alloc, d, SCRATCH0)?;
+    Ok(())
+}
+fn emit_op_set_sp(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, _idx: usize) -> Result<()> {
+    let a = block.code[_idx];
+    load64(asm, alloc, a.args[0], SCRATCH0)?;
+    asm.mov(qword_ptr(CTX_REG + cpu_offsets::sp() as i32), SCRATCH0)?;
+    Ok(())
+}
+fn emit_op_get_nzcv(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let d = dst_of(&a, idx).unwrap();
+    asm.movzx(eax, byte_ptr(CTX_REG + cpu_offsets::nzcv() as i32))?;
+    store32(asm, alloc, d, eax)?;
+    Ok(())
+}
+fn emit_op_set_nzcv(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    load32(asm, alloc, a.args[0], eax)?;
+    asm.mov(byte_ptr(CTX_REG + cpu_offsets::nzcv() as i32), al)?;
+    Ok(())
+}
+fn emit_op_get_pc(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let d = dst_of(&a, idx).unwrap();
+    asm.mov(SCRATCH0, a.imm as i64)?;
+    store64(asm, alloc, d, SCRATCH0)?;
+    Ok(())
+}
+
+fn emit_op_get_v(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let d = dst_of(&a, idx).unwrap();
+    let off = cpu_offsets::vreg(a.imm as usize) as i32;
+    match a.ty {
+        Ty::U32 => {
+            asm.mov(eax, dword_ptr(CTX_REG + off))?;
+            store32(asm, alloc, d, eax)?;
+        }
+        Ty::U64 => {
+            asm.mov(SCRATCH0, qword_ptr(CTX_REG + off))?;
+            store64(asm, alloc, d, SCRATCH0)?;
+        }
+        Ty::U128 => {
+            asm.movdqu(xmm0, xmmword_ptr(CTX_REG + off))?;
+            store_xmm_q(asm, alloc, d, xmm0)?;
+        }
+        other => return Err(Error::Backend(format!("GetV with unsupported ty {:?}", other))),
+    }
+    Ok(())
+}
+fn emit_op_set_v(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let off = cpu_offsets::vreg(a.imm as usize) as i32;
+    let src_ty = block.code[a.args[0].as_usize()].ty;
+    match src_ty {
+        Ty::U32 => {
+            load32(asm, alloc, a.args[0], eax)?;
+            asm.mov(dword_ptr(CTX_REG + off), eax)?;
+            asm.mov(dword_ptr(CTX_REG + off + 4), 0i32)?;
+            asm.mov(qword_ptr(CTX_REG + off + 8), 0i32)?;
+        }
+        Ty::U64 => {
+            load64(asm, alloc, a.args[0], SCRATCH0)?;
+            asm.mov(qword_ptr(CTX_REG + off), SCRATCH0)?;
+            asm.mov(qword_ptr(CTX_REG + off + 8), 0i32)?;
+        }
+        Ty::U128 => {
+            let src = get_xmm_q(asm, alloc, a.args[0], xmm0)?;
+            asm.movdqu(xmmword_ptr(CTX_REG + off), src)?;
+        }
+        other => return Err(Error::Backend(format!("SetV with unsupported src ty {:?}", other))),
+    }
+    Ok(())
+}
+
+// ── Integer ALU adapters (binops, unops, shifts) ─────────────────────────
+macro_rules! adapt_binop {
+    ($name:ident, $kind:expr) => {
+        fn $name(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+            let a = block.code[idx];
+            emit_binop(asm, alloc, a, dst_of(&a, idx), $kind, a.op.size_bits())
+        }
+    };
+}
+adapt_binop!(emit_op_add, BinKind::Add);
+adapt_binop!(emit_op_sub, BinKind::Sub);
+adapt_binop!(emit_op_and, BinKind::And);
+adapt_binop!(emit_op_or,  BinKind::Or);
+adapt_binop!(emit_op_xor, BinKind::Xor);
+adapt_binop!(emit_op_mul, BinKind::Imul);
+
+macro_rules! adapt_adc {
+    ($name:ident, $subtract:expr) => {
+        fn $name(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+            let a = block.code[idx];
+            emit_adc_sbc(asm, alloc, a, dst_of(&a, idx), $subtract, a.op.size_bits())
+        }
+    };
+}
+adapt_adc!(emit_op_adc, false);
+adapt_adc!(emit_op_sbc, true);
+
+macro_rules! adapt_div {
+    ($name:ident, $signed:expr) => {
+        fn $name(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+            let a = block.code[idx];
+            emit_div(asm, alloc, a, dst_of(&a, idx), $signed, a.op.size_bits())
+        }
+    };
+}
+adapt_div!(emit_op_udiv, false);
+adapt_div!(emit_op_sdiv, true);
+
+macro_rules! adapt_unop_count {
+    ($name:ident, $emit:ident) => {
+        fn $name(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+            let a = block.code[idx];
+            $emit(asm, alloc, a, dst_of(&a, idx), a.op.size_bits())
+        }
+    };
+}
+adapt_unop_count!(emit_op_clz,  emit_clz);
+adapt_unop_count!(emit_op_cls,  emit_cls);
+adapt_unop_count!(emit_op_rbit, emit_rbit);
+
+fn emit_op_rev16(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let bits = if a.ty == Ty::U64 { 64 } else { 32 };
+    emit_rev16(asm, alloc, a, dst_of(&a, idx), bits)
+}
+fn emit_op_rev32(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    emit_rev32_within64(asm, alloc, a, dst_of(&a, idx))
+}
+fn emit_op_rev64(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let bits = if a.ty == Ty::U64 { 64 } else { 32 };
+    emit_bswap(asm, alloc, a, dst_of(&a, idx), bits)
+}
+
+macro_rules! adapt_shift {
+    ($name:ident, $kind:expr) => {
+        fn $name(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+            let a = block.code[idx];
+            emit_shift(asm, alloc, a, dst_of(&a, idx), $kind, a.op.size_bits())
+        }
+    };
+}
+adapt_shift!(emit_op_lsl, ShiftKind::Lsl);
+adapt_shift!(emit_op_lsr, ShiftKind::Lsr);
+adapt_shift!(emit_op_asr, ShiftKind::Asr);
+adapt_shift!(emit_op_ror, ShiftKind::Ror);
+
+macro_rules! adapt_unop_simple {
+    ($name:ident, $kind:expr) => {
+        fn $name(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+            let a = block.code[idx];
+            emit_unop(asm, alloc, a, dst_of(&a, idx), $kind, a.op.size_bits())
+        }
+    };
+}
+adapt_unop_simple!(emit_op_not, UnopKind::Not);
+adapt_unop_simple!(emit_op_neg, UnopKind::Neg);
+
+fn emit_op_flagged_addsub(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    emit_flagged_addsub(asm, alloc, a, dst_of(&a, idx))
+}
+
+// ── Memory adapters ──────────────────────────────────────────────────────
+fn emit_op_load(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    emit_load(asm, alloc, a, dst_of(&a, idx), a.op.size_bytes())
+}
+fn emit_op_store(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    emit_store(asm, alloc, a, a.op.size_bytes())
+}
+fn emit_op_load_ex(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    emit_load_ex(asm, alloc, a, dst_of(&a, idx), a.op.size_bytes())
+}
+fn emit_op_store_ex(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    emit_store_ex(asm, alloc, a, dst_of(&a, idx), a.op.size_bytes())
+}
+
+fn emit_op_csel(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    emit_csel(asm, alloc, a, dst_of(&a, idx))
+}
+
+// ── FP scalar adapters ───────────────────────────────────────────────────
+macro_rules! adapt_fbinop {
+    ($name:ident, $kind:expr) => {
+        fn $name(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+            let a = block.code[idx];
+            emit_fbinop(asm, alloc, a, dst_of(&a, idx), $kind, a.op.size_bits())
+        }
+    };
+}
+adapt_fbinop!(emit_op_fadd, FpBinKind::Add);
+adapt_fbinop!(emit_op_fsub, FpBinKind::Sub);
+adapt_fbinop!(emit_op_fmul, FpBinKind::Mul);
+adapt_fbinop!(emit_op_fdiv, FpBinKind::Div);
+adapt_fbinop!(emit_op_fmax, FpBinKind::Max);
+adapt_fbinop!(emit_op_fmin, FpBinKind::Min);
+
+fn emit_op_fcmp(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    emit_fcmp(asm, alloc, a, a.op.size_bits())
+}
+fn emit_op_fsqrt_(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    emit_fsqrt(asm, alloc, a, dst_of(&a, idx), a.op.size_bits())
+}
+fn emit_op_fneg_(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    emit_fneg(asm, alloc, a, dst_of(&a, idx), a.op.size_bits())
+}
+fn emit_op_fabs_(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    emit_fabs(asm, alloc, a, dst_of(&a, idx), a.op.size_bits())
+}
+
+macro_rules! adapt_fcvt_zs {
+    ($name:ident, $double:expr, $to_x:expr) => {
+        fn $name(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+            let a = block.code[idx];
+            emit_fcvt_zs(asm, alloc, a, dst_of(&a, idx), $double, $to_x)
+        }
+    };
+}
+adapt_fcvt_zs!(emit_op_fcvt_zs_sw, false, false);
+adapt_fcvt_zs!(emit_op_fcvt_zs_sx, false, true);
+adapt_fcvt_zs!(emit_op_fcvt_zs_dw, true,  false);
+adapt_fcvt_zs!(emit_op_fcvt_zs_dx, true,  true);
+
+macro_rules! adapt_scvtf {
+    ($name:ident, $double:expr, $from_x:expr) => {
+        fn $name(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+            let a = block.code[idx];
+            emit_scvtf(asm, alloc, a, dst_of(&a, idx), $double, $from_x)
+        }
+    };
+}
+adapt_scvtf!(emit_op_scvtf_ws, false, false);
+adapt_scvtf!(emit_op_scvtf_xs, false, true);
+adapt_scvtf!(emit_op_scvtf_wd, true,  false);
+adapt_scvtf!(emit_op_scvtf_xd, true,  true);
+
+fn emit_op_fcvt_sd(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    emit_fcvt_precision(asm, alloc, a, dst_of(&a, idx), false)
+}
+fn emit_op_fcvt_ds(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    emit_fcvt_precision(asm, alloc, a, dst_of(&a, idx), true)
+}
+
+// ── Vector glue + per-lane ops ───────────────────────────────────────────
+fn emit_op_vec_build_q(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let d = dst_of(&a, idx).unwrap();
+    let working = working_xmm_for(alloc, d, xmm0);
+    load64(asm, alloc, a.args[0], rax)?;
+    asm.movq(working, rax)?;
+    load64(asm, alloc, a.args[1], rax)?;
+    asm.pinsrq(working, rax, 1)?;
+    store_xmm_q(asm, alloc, d, working)?;
+    Ok(())
+}
+fn emit_op_vec_extract_lo64(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let d = dst_of(&a, idx).unwrap();
+    let src = get_xmm_q(asm, alloc, a.args[0], xmm0)?;
+    asm.movq(rax, src)?;
+    store64(asm, alloc, d, rax)
+}
+fn emit_op_vec_extract_hi64(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let d = dst_of(&a, idx).unwrap();
+    let src = get_xmm_q(asm, alloc, a.args[0], xmm0)?;
+    asm.pextrq(rax, src, 1)?;
+    store64(asm, alloc, d, rax)
+}
+fn emit_op_vec_extract8(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let d = dst_of(&a, idx).unwrap();
+    let src = get_xmm_q(asm, alloc, a.args[0], xmm0)?;
+    asm.pextrb(eax, src, a.imm as i32)?;
+    store32(asm, alloc, d, eax)
+}
+fn emit_op_vec_extract16(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let d = dst_of(&a, idx).unwrap();
+    let src = get_xmm_q(asm, alloc, a.args[0], xmm0)?;
+    asm.pextrw(eax, src, a.imm as i32)?;
+    store32(asm, alloc, d, eax)
+}
+fn emit_op_vec_extract32(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let d = dst_of(&a, idx).unwrap();
+    let src = get_xmm_q(asm, alloc, a.args[0], xmm0)?;
+    asm.pextrd(eax, src, a.imm as i32)?;
+    store32(asm, alloc, d, eax)
+}
+
+fn emit_op_vec_add(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    emit_vec_binop(asm, alloc, a, dst_of(&a, idx), VecBinKind::Add(a.op.size_log2()))
+}
+fn emit_op_vec_sub(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    emit_vec_binop(asm, alloc, a, dst_of(&a, idx), VecBinKind::Sub(a.op.size_log2()))
+}
+macro_rules! adapt_vec_logic {
+    ($name:ident, $kind:expr) => {
+        fn $name(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+            let a = block.code[idx];
+            emit_vec_binop(asm, alloc, a, dst_of(&a, idx), $kind)
+        }
+    };
+}
+adapt_vec_logic!(emit_op_vec_and, VecBinKind::And);
+adapt_vec_logic!(emit_op_vec_orr, VecBinKind::Orr);
+adapt_vec_logic!(emit_op_vec_eor, VecBinKind::Eor);
+adapt_vec_logic!(emit_op_vec_bic, VecBinKind::Bic);
+adapt_vec_logic!(emit_op_vec_orn, VecBinKind::Orn);
+
+// ── System / misc adapters ───────────────────────────────────────────────
+fn emit_op_clrex(asm: &mut CodeAssembler, _block: &Block, _alloc: &Allocation, _idx: usize) -> Result<()> {
+    asm.mov(byte_ptr(CTX_REG + cpu_offsets::exclusive_size() as i32), 0i32)?;
+    Ok(())
+}
+fn emit_op_mrs(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    emit_mrs(asm, alloc, a, dst_of(&a, idx))
+}
+fn emit_op_msr(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    emit_msr(asm, alloc, a)
 }
 
 fn load_guest_x(asm: &mut CodeAssembler, dst: AsmRegister64, reg: usize) -> Result<()> {
