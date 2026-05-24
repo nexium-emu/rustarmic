@@ -1,14 +1,76 @@
 //! Shared harness for differential tests.
 
-use rustarmic::jit::memory::FlatMemory;
 use rustarmic::{CpuContext, ExitReason, Jit, JitConfig, Memory};
-use unicorn_engine::unicorn_const::{Arch, Mode, Permission};
-use unicorn_engine::{RegisterARM64, Unicorn};
+use std::sync::Mutex;
+use unicorn_engine::{Arch, Mode, Prot, RegisterARM64, Unicorn};
+
+// Flat backing store shared between rustarmic memory callbacks and the
+// harness setup helpers. Each test should call `mem_init` to size it before
+// running anything that touches memory. Lives at offset `DATA_BASE` in the
+// guest address space (matches the Unicorn mapping below).
+static MEM: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+
+#[allow(dead_code)]
+pub fn mem_init(size: usize) {
+    let mut m = MEM.lock().unwrap();
+    if m.len() < size { m.resize(size, 0); }
+}
+
+fn mem_offset(addr: u64) -> usize { (addr - DATA_BASE) as usize }
+
+fn read_bytes(addr: u64, bytes: usize) -> u64 {
+    let m = MEM.lock().unwrap();
+    let off = mem_offset(addr);
+    if off + bytes > m.len() { return 0; }
+    let mut buf = [0u8; 8];
+    buf[..bytes].copy_from_slice(&m[off..off + bytes]);
+    u64::from_le_bytes(buf)
+}
+
+fn write_bytes(addr: u64, value: u64, bytes: usize) {
+    let mut m = MEM.lock().unwrap();
+    let off = mem_offset(addr);
+    if off + bytes > m.len() { return; }
+    m[off..off + bytes].copy_from_slice(&value.to_le_bytes()[..bytes]);
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustarmic_mem_read8(_: u64, addr: u64, _: u64, _: *mut CpuContext) -> u8 {
+    read_bytes(addr, 1) as u8
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustarmic_mem_read16(_: u64, addr: u64, _: u64, _: *mut CpuContext) -> u16 {
+    read_bytes(addr, 2) as u16
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustarmic_mem_read32(_: u64, addr: u64, _: u64, _: *mut CpuContext) -> u32 {
+    read_bytes(addr, 4) as u32
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustarmic_mem_read64(_: u64, addr: u64, _: u64, _: *mut CpuContext) -> u64 {
+    read_bytes(addr, 8)
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustarmic_mem_write8(_: u64, addr: u64, v: u8, _: *mut CpuContext) {
+    write_bytes(addr, v as u64, 1)
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustarmic_mem_write16(_: u64, addr: u64, v: u16, _: *mut CpuContext) {
+    write_bytes(addr, v as u64, 2)
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustarmic_mem_write32(_: u64, addr: u64, v: u32, _: *mut CpuContext) {
+    write_bytes(addr, v as u64, 4)
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustarmic_mem_write64(_: u64, addr: u64, v: u64, _: *mut CpuContext) {
+    write_bytes(addr, v, 8)
+}
 
 pub const CODE_BASE: u64 = 0x1000;
-pub const CODE_SIZE: usize = 0x1000;
+pub const CODE_SIZE: u64 = 0x1000;
 pub const DATA_BASE: u64 = 0x10_0000;
-pub const DATA_SIZE: usize = 0x10_0000;
+pub const DATA_SIZE: u64 = 0x10_0000;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RegState {
@@ -31,11 +93,11 @@ fn run_unicorn(code: &[u8], init: RegState) -> RegState {
         .expect("unicorn init failed");
 
     // Map code region.
-    emu.mem_map(CODE_BASE, CODE_SIZE, Permission::ALL).unwrap();
+    emu.mem_map(CODE_BASE, CODE_SIZE, Prot::ALL).unwrap();
     emu.mem_write(CODE_BASE, code).unwrap();
 
     // Map data region (acts as stack + heap).
-    emu.mem_map(DATA_BASE, DATA_SIZE, Permission::ALL).unwrap();
+    emu.mem_map(DATA_BASE, DATA_SIZE, Prot::ALL).unwrap();
 
     // Seed registers.
     for i in 0..31 {

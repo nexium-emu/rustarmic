@@ -66,7 +66,8 @@ fn fuzz_small_blocks() {
     let mut fail_count = 0;
     let mut tested = 0;
     for case in 0..32 {
-        let code = gen_block(&mut rng, rng.r#gen_range(2..8));
+        let len = rng.r#gen_range(2..8);
+        let code = gen_block(&mut rng, len);
         let init = baseline_state(0x12345 + case);
         let (uni, jit) = run_pair(&code, init);
         tested += 1;
