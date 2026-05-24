@@ -106,24 +106,33 @@ pub fn compute_live_ranges(block: &Block) -> Vec<LiveRange> {
     let n = block.code.len();
     let mut ranges = vec![LiveRange::DEAD; n];
 
+    // "Time" is the linked-list position, NOT the Vec index. The optimizer's
+    // `insert_before` peepholes (mul-fold, const-combine) push new nodes to
+    // the tail of `code` but splice them in linked-list order, so idx-as-time
+    // gets uses appearing before defs. Walking the live list assigns ordinals
+    // matching execution order.
+    let mut pos: Vec<u32> = vec![0; n];
+    let mut t: u32 = 0;
     for (vr, _) in block.iter_live() {
+        pos[vr.as_usize()] = t;
         let i = vr.as_usize();
-        ranges[i] = LiveRange::point(vr.idx() as u16);
+        ranges[i] = LiveRange::point(t as u16);
+        t = t.saturating_add(1);
     }
 
     for (vr, armlet) in block.iter_live() {
-        let user_idx = vr.idx();
+        let user_t = pos[vr.as_usize()];
         for arg in armlet.args.iter() {
             if arg.is_some() {
                 let arg_idx = arg.as_usize();
-                if arg_idx < n && !ranges[arg_idx].is_dead() && ranges[arg_idx].end() < user_idx {
-                    ranges[arg_idx].extend_to(user_idx);
+                if arg_idx < n && !ranges[arg_idx].is_dead() && ranges[arg_idx].end() < user_t {
+                    ranges[arg_idx].extend_to(user_t);
                 }
             }
         }
     }
 
-    let last_live = block.tail_vr().map(|v| v.idx()).unwrap_or(0);
+    let last_live = block.tail_vr().map(|v| pos[v.as_usize()]).unwrap_or(0);
     let term_refs: [Option<crate::ir::ValueRef>; 2] = match block.terminal {
         Terminal::ConditionalBranch { cond_nzcv, .. } => [Some(cond_nzcv), None],
         Terminal::CompareBranchZero { value, .. } | Terminal::TestBranchBit { value, .. } => {
@@ -191,9 +200,18 @@ pub fn linear_scan(block: &Block, ranges: &[LiveRange], pool: &[u8]) -> Allocati
         }
     };
 
-    let clobber_masks: Vec<GprMask> = block.code.iter()
-        .map(|a| if a.is_eliminated() { GprMask::empty() } else { clobbers_for_op(a.op).gpr })
-        .collect();
+    // Clobber masks indexed by linked-list position (matching the time axis
+    // used by live ranges), not by Vec idx. Optimizer peepholes that insert
+    // new nodes via `insert_before` give them high Vec idx but earlier
+    // linked-list positions, so iterating `block.code` here would be wrong.
+    let mut clobber_masks: Vec<GprMask> = Vec::with_capacity(n);
+    for (_vr, armlet) in block.iter_live() {
+        clobber_masks.push(if armlet.is_eliminated() {
+            GprMask::empty()
+        } else {
+            clobbers_for_op(armlet.op).gpr
+        });
+    }
 
     let mut intervals: Vec<usize> = (0..n)
         .filter(|&i| !ranges[i].is_dead() && block.code[i].ty != Ty::Void)
@@ -328,10 +346,14 @@ mod tests {
         em.set_x(0, add2);
 
         let ranges = compute_live_ranges(&b);
+        // Ranges are now indexed by linked-list position; on this freshly
+        // built block (no peephole inserts) position == idx - 1 because the
+        // Op::Void sentinel occupies idx 0 but isn't in the live list.
+        let pos = |v: crate::ir::ValueRef| v.idx() - 1;
         assert!(!ranges[c1.as_usize()].is_dead());
-        assert_eq!(ranges[c1.as_usize()].end(), add1.idx());
-        assert_eq!(ranges[c2.as_usize()].end(), add2.idx());
-        assert!(ranges[add1.as_usize()].end() >= add2.idx());
+        assert_eq!(ranges[c1.as_usize()].end(), pos(add1));
+        assert_eq!(ranges[c2.as_usize()].end(), pos(add2));
+        assert!(ranges[add1.as_usize()].end() >= pos(add2));
     }
 
     #[test]
@@ -350,8 +372,8 @@ mod tests {
         };
 
         let ranges = compute_live_ranges(&b);
-        let last_idx = b.tail_vr().unwrap().idx();
-        assert_eq!(ranges[val.as_usize()].end(), last_idx);
+        let last_pos = b.tail_vr().unwrap().idx() - 1; // subtract sentinel
+        assert_eq!(ranges[val.as_usize()].end(), last_pos);
     }
 
     #[test]

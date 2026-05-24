@@ -123,7 +123,11 @@ pub fn store32(
             asm.movd(xmm(x), src).map_err(into_err)?;
         }
         Loc::Spill(off) => {
+            // ARM W-form writes zero-extend to 64. Stack spills are full 8
+            // bytes; write low 4 then zero the upper 4 so a later `load64`
+            // on the same slot doesn't pick up stale bits.
             asm.mov(dword_ptr(rbp - off), src).map_err(into_err)?;
+            asm.mov(dword_ptr(rbp - (off - 4)), 0i32).map_err(into_err)?;
         }
         Loc::None => {}
     }

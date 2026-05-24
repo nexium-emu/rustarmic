@@ -164,16 +164,9 @@ fn run_rustarmic(code: &[u8], init: RegState) -> RegState {
         ctx.x[i] = init.x[i];
     }
 
-    // Loop until the JIT signals an exception or returns Stopped.
-    let mut budget = 32;
-    while budget > 0 {
-        match jit.run(&mut ctx, &mut mem).unwrap_or(ExitReason::Stopped) {
-            ExitReason::Brk(_) | ExitReason::Svc(_) | ExitReason::Hvc(_) |
-            ExitReason::Stopped => break,
-            ExitReason::MemoryFault(_) => break,
-        }
-        budget -= 1;
-    }
+    // Each `run` chains through linked blocks internally and only returns on
+    // exception / unchainable exit; one call is enough for the harness.
+    let _ = jit.run(&mut ctx, &mut mem);
 
     let mut out = RegState::default();
     for i in 0..31 { out.x[i] = ctx.x[i]; }
