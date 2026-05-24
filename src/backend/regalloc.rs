@@ -1,0 +1,285 @@
+use crate::backend::clobbers::{clobbers_for_op, GprMask};
+use crate::ir::{Block, Op, Terminal, Ty};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Loc {
+    Reg(u8),
+    Spill(i32),
+    None,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LiveRange {
+    pub start: u32,
+    pub end:   u32,
+}
+
+impl LiveRange {
+    pub const DEAD: LiveRange = LiveRange { start: u32::MAX, end: 0 };
+
+    #[inline]
+    pub const fn is_dead(self) -> bool {
+        self.start > self.end
+    }
+
+    #[inline]
+    pub const fn contains(self, idx: u32) -> bool {
+        idx >= self.start && idx <= self.end && !self.is_dead()
+    }
+}
+
+pub struct Allocation {
+    pub locs:        Vec<Loc>,
+    pub spill_bytes: i32,
+}
+
+pub fn compute_live_ranges(block: &Block) -> Vec<LiveRange> {
+    let n = block.code.len();
+    let mut ranges = vec![LiveRange::DEAD; n];
+
+    for (vr, _) in block.iter_live() {
+        let i = vr.as_usize();
+        ranges[i] = LiveRange { start: vr.idx(), end: vr.idx() };
+    }
+
+    for (vr, armlet) in block.iter_live() {
+        let user_idx = vr.idx();
+        for arg in armlet.args.iter() {
+            if arg.is_some() {
+                let arg_idx = arg.as_usize();
+                if arg_idx < n && !ranges[arg_idx].is_dead() && ranges[arg_idx].end < user_idx {
+                    ranges[arg_idx].end = user_idx;
+                }
+            }
+        }
+    }
+
+    let last_live = block.tail_vr().map(|v| v.idx()).unwrap_or(0);
+    let term_refs: [Option<crate::ir::ValueRef>; 2] = match block.terminal {
+        Terminal::ConditionalBranch { cond_nzcv, .. } => [Some(cond_nzcv), None],
+        Terminal::CompareBranchZero { value, .. } | Terminal::TestBranchBit { value, .. } => {
+            [Some(value), None]
+        }
+        Terminal::IndirectBranch { target, .. } => [Some(target), None],
+        _ => [None, None],
+    };
+    for v in term_refs.into_iter().flatten() {
+        if v.is_some() {
+            let i = v.as_usize();
+            if i < n && !ranges[i].is_dead() && ranges[i].end < last_live {
+                ranges[i].end = last_live;
+            }
+        }
+    }
+
+    ranges
+}
+
+pub const ALLOCATABLE_GPRS: &[u8] = &[3, 12, 13, 14];
+
+pub fn op_clobbers(op: Op) -> GprMask {
+    clobbers_for_op(op).gpr
+}
+
+const SAVED_SIZE: i32 = 40;
+
+pub fn linear_scan(block: &Block, ranges: &[LiveRange]) -> Allocation {
+    let n = ranges.len();
+    let mut locs = vec![Loc::None; n];
+    let mut spill_cursor: i32 = SAVED_SIZE;
+    let mut free: Vec<u8> = ALLOCATABLE_GPRS.iter().copied().rev().collect();
+    let mut active: Vec<(u32, u8, usize)> = Vec::new();
+
+    let mut intervals: Vec<usize> = (0..n)
+        .filter(|&i| !ranges[i].is_dead() && block.code[i].ty != Ty::Void)
+        .collect();
+    intervals.sort_by_key(|&i| ranges[i].start);
+
+    for vr_idx in intervals {
+        let range = ranges[vr_idx];
+        let start = range.start;
+
+        active.retain(|&(end, reg, _)| {
+            if end < start {
+                free.push(reg);
+                false
+            } else {
+                true
+            }
+        });
+
+        if let Some(reg) = free.pop() {
+            locs[vr_idx] = Loc::Reg(reg);
+            active.push((range.end, reg, vr_idx));
+        } else {
+            let (spill_pos, &(victim_end, victim_reg, victim_vr)) = active
+                .iter()
+                .enumerate()
+                .max_by_key(|(_, e)| e.0)
+                .expect("active must be non-empty when free is empty");
+
+            if victim_end > range.end {
+                let off = alloc_spill_slot(&mut spill_cursor);
+                locs[victim_vr] = Loc::Spill(off);
+                locs[vr_idx]    = Loc::Reg(victim_reg);
+                active[spill_pos] = (range.end, victim_reg, vr_idx);
+            } else {
+                let off = alloc_spill_slot(&mut spill_cursor);
+                locs[vr_idx] = Loc::Spill(off);
+            }
+        }
+    }
+
+    Allocation {
+        locs,
+        spill_bytes: spill_cursor - SAVED_SIZE,
+    }
+}
+
+fn alloc_spill_slot(cursor: &mut i32) -> i32 {
+    let aligned = (*cursor + 7) & !7;
+    *cursor = aligned + 8;
+    *cursor
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::{Armlet, IrEmitter, Ty};
+
+    fn fresh_block() -> Block {
+        Block::new(0x1000)
+    }
+
+    #[test]
+    fn linear_chain_propagates_end_to_last_use() {
+        let mut b = fresh_block();
+        let mut em = IrEmitter::new(&mut b, 0x1000);
+        let c1 = em.const_u64(1);
+        let c2 = em.const_u64(2);
+        let add1 = em.add(c1, c2, crate::arch::RegSize::X);
+        let add2 = em.add(add1, c2, crate::arch::RegSize::X);
+        em.set_x(0, add2);
+
+        let ranges = compute_live_ranges(&b);
+        assert!(!ranges[c1.as_usize()].is_dead());
+        assert_eq!(ranges[c1.as_usize()].end, add1.idx());
+        assert_eq!(ranges[c2.as_usize()].end, add2.idx());
+        assert!(ranges[add1.as_usize()].end >= add2.idx());
+    }
+
+    #[test]
+    fn terminal_referenced_value_lives_to_last_armlet() {
+        let mut b = fresh_block();
+        let mut em = IrEmitter::new(&mut b, 0x1000);
+        let val = em.const_u64(0);
+        let _filler = em.const_u64(7);
+        let _filler2 = em.const_u64(8);
+        em.push(Armlet::new(Op::CbZ, Ty::Void).with_args(&[val]).with_imm(0x2000));
+        b.terminal = Terminal::CompareBranchZero {
+            value: val,
+            inverse: false,
+            taken_pc: 0x2000,
+            not_taken_pc: 0x1004,
+        };
+
+        let ranges = compute_live_ranges(&b);
+        let last_idx = b.tail_vr().unwrap().idx();
+        assert_eq!(ranges[val.as_usize()].end, last_idx);
+    }
+
+    #[test]
+    fn unlinked_armlet_has_dead_range() {
+        let mut b = fresh_block();
+        let mut em = IrEmitter::new(&mut b, 0x1000);
+        let c = em.const_u64(42);
+        let _add = em.add(c, c, crate::arch::RegSize::X);
+        let head = b.head_vr().unwrap();
+        b.unlink(head);
+
+        let ranges = compute_live_ranges(&b);
+        assert!(ranges[head.as_usize()].is_dead());
+    }
+
+    #[test]
+    fn div_clobbers_include_rax_rcx_rdx() {
+        let mask = op_clobbers(Op::SDiv64);
+        assert!(mask.contains(GprMask::RAX));
+        assert!(mask.contains(GprMask::RCX));
+        assert!(mask.contains(GprMask::RDX));
+    }
+
+    #[test]
+    fn linear_scan_assigns_regs_up_to_pool_size() {
+        let mut b = fresh_block();
+        let mut em = IrEmitter::new(&mut b, 0x1000);
+        let mut vrs = Vec::new();
+        for _ in 0..ALLOCATABLE_GPRS.len() {
+            vrs.push(em.const_u64(0));
+        }
+        for &vr in &vrs {
+            em.set_x(0, vr);
+        }
+
+        let ranges = compute_live_ranges(&b);
+        let alloc = linear_scan(&b, &ranges);
+
+        let mut assigned_regs = std::collections::HashSet::new();
+        for &vr in &vrs {
+            match alloc.locs[vr.as_usize()] {
+                Loc::Reg(r) => { assigned_regs.insert(r); }
+                other => panic!("expected Reg, got {:?}", other),
+            }
+        }
+        assert_eq!(assigned_regs.len(), ALLOCATABLE_GPRS.len());
+        assert_eq!(alloc.spill_bytes, 0);
+    }
+
+    #[test]
+    fn linear_scan_spills_when_pool_exhausted() {
+        let mut b = fresh_block();
+        let mut em = IrEmitter::new(&mut b, 0x1000);
+        let pool = ALLOCATABLE_GPRS.len();
+        let extra = 3;
+        let mut vrs = Vec::new();
+        for _ in 0..(pool + extra) {
+            vrs.push(em.const_u64(0));
+        }
+        for &vr in &vrs {
+            em.set_x(0, vr);
+        }
+
+        let ranges = compute_live_ranges(&b);
+        let alloc = linear_scan(&b, &ranges);
+
+        let mut spilled = 0;
+        let mut in_reg = 0;
+        for &vr in &vrs {
+            match alloc.locs[vr.as_usize()] {
+                Loc::Reg(_) => in_reg += 1,
+                Loc::Spill(_) => spilled += 1,
+                Loc::None => panic!("live value should not be Loc::None"),
+            }
+        }
+        assert_eq!(spilled, extra);
+        assert_eq!(in_reg, pool);
+        assert!(alloc.spill_bytes > 0);
+    }
+
+    #[test]
+    fn linear_scan_avoids_spills_when_values_die_in_time() {
+        let mut b = fresh_block();
+        let mut em = IrEmitter::new(&mut b, 0x1000);
+        for _ in 0..(ALLOCATABLE_GPRS.len() + 4) {
+            let c = em.const_u64(0);
+            em.set_x(0, c);
+        }
+
+        let ranges = compute_live_ranges(&b);
+        let alloc = linear_scan(&b, &ranges);
+
+        let any_spill = alloc.locs.iter().any(|l| matches!(l, Loc::Spill(_)));
+        assert!(!any_spill);
+        assert_eq!(alloc.spill_bytes, 0);
+    }
+}
