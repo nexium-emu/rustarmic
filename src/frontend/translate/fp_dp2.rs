@@ -3,7 +3,6 @@
 
 use disarm64::decoder::FLOATDP2;
 
-use crate::arch::RegSize;
 use crate::error::{Error, Result};
 use crate::frontend::translator::InstStatus;
 use crate::ir::{Armlet, IrEmitter, Op, Ty, ValueRef};
@@ -63,12 +62,8 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: FLOATDP2) -> Result<InstStatus> {
 fn fbin(em: &mut IrEmitter<'_>, a: ValueRef, b: ValueRef, k: Kind, is_double: bool) -> ValueRef {
     if matches!(k, Kind::Nmul) {
         let prod = fbin(em, a, b, Kind::Mul, is_double);
-        let (sign, size) = if is_double {
-            (em.const_u64(0x8000_0000_0000_0000), RegSize::X)
-        } else {
-            (em.const_u32(0x8000_0000), RegSize::W)
-        };
-        return em.eor(prod, sign, size);
+        let (op, ty) = if is_double { (Op::Fneg64, Ty::U64) } else { (Op::Fneg32, Ty::U32) };
+        return em.push(Armlet::new(op, ty).with_args(&[prod]));
     }
     let (op, ty) = match (k, is_double) {
         (Kind::Add, false) => (Op::Fadd32, Ty::U32),

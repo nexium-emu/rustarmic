@@ -4,7 +4,6 @@
 
 use disarm64::decoder::FLOATDP1;
 
-use crate::arch::RegSize;
 use crate::error::{Error, Result};
 use crate::frontend::translator::InstStatus;
 use crate::ir::{Armlet, IrEmitter, Op, Ty};
@@ -46,25 +45,16 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: FLOATDP1) -> Result<InstStatus> {
     };
 
     let src = if is_double { em.get_v_d(rn) } else { em.get_v_s(rn) };
-    let size = if is_double { RegSize::X } else { RegSize::W };
 
     let result = match kind {
         Kind::Mov => src,
         Kind::Neg => {
-            let sign = if is_double {
-                em.const_u64(0x8000_0000_0000_0000)
-            } else {
-                em.const_u32(0x8000_0000)
-            };
-            em.eor(src, sign, size)
+            let (op, ty) = if is_double { (Op::Fneg64, Ty::U64) } else { (Op::Fneg32, Ty::U32) };
+            em.push(Armlet::new(op, ty).with_args(&[src]))
         }
         Kind::Abs => {
-            let mask = if is_double {
-                em.const_u64(0x7FFF_FFFF_FFFF_FFFF)
-            } else {
-                em.const_u32(0x7FFF_FFFF)
-            };
-            em.and(src, mask, size)
+            let (op, ty) = if is_double { (Op::Fabs64, Ty::U64) } else { (Op::Fabs32, Ty::U32) };
+            em.push(Armlet::new(op, ty).with_args(&[src]))
         }
         Kind::Sqrt => {
             let (op, ty) = if is_double { (Op::Fsqrt64, Ty::U64) } else { (Op::Fsqrt32, Ty::U32) };

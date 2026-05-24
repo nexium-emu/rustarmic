@@ -7,7 +7,6 @@
 
 use disarm64::decoder::FLOATDP3;
 
-use crate::arch::RegSize;
 use crate::error::{Error, Result};
 use crate::frontend::translator::InstStatus;
 use crate::ir::{Armlet, IrEmitter, Op, Ty, ValueRef};
@@ -75,10 +74,6 @@ fn fsub(em: &mut IrEmitter<'_>, a: ValueRef, b: ValueRef, is_double: bool) -> Va
 }
 
 fn fneg(em: &mut IrEmitter<'_>, v: ValueRef, is_double: bool) -> ValueRef {
-    let (sign, size) = if is_double {
-        (em.const_u64(0x8000_0000_0000_0000), RegSize::X)
-    } else {
-        (em.const_u32(0x8000_0000), RegSize::W)
-    };
-    em.eor(v, sign, size)
+    let (op, ty) = if is_double { (Op::Fneg64, Ty::U64) } else { (Op::Fneg32, Ty::U32) };
+    em.push(Armlet::new(op, ty).with_args(&[v]))
 }

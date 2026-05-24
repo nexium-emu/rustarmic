@@ -181,6 +181,8 @@ pub fn emit_armlet(
         Op::Fmin32 | Op::Fmin64 => emit_fbinop(asm, alloc, a, dst_vr, FpBinKind::Min, a.op.size_bits())?,
         Op::Fcmp32 | Op::Fcmp64 => emit_fcmp(asm, alloc, a, a.op.size_bits())?,
         Op::Fsqrt32 | Op::Fsqrt64 => emit_fsqrt(asm, alloc, a, dst_vr, a.op.size_bits())?,
+        Op::Fneg32 | Op::Fneg64 => emit_fneg(asm, alloc, a, dst_vr, a.op.size_bits())?,
+        Op::Fabs32 | Op::Fabs64 => emit_fabs(asm, alloc, a, dst_vr, a.op.size_bits())?,
 
         Op::FcvtZsSW => emit_fcvt_zs(asm, alloc, a, dst_vr, false, false)?,
         Op::FcvtZsSX => emit_fcvt_zs(asm, alloc, a, dst_vr, false, true)?,
@@ -915,6 +917,57 @@ fn emit_scvtf(
     if let Some(d) = dst {
         if dst_is_double { store_xmm_d(asm, alloc, d, xmm0)?; }
         else             { store_xmm_s(asm, alloc, d, xmm0)?; }
+    }
+    Ok(())
+}
+
+/// FNEG via sign-bit flip — `pcmpeqd; pslld/psllq; xorps/xorpd`. Three XMM
+/// ops, no GPR scratch, no memory constant. Matches ARM FNEG spec (just
+/// toggles bit 31/63, NaN payload preserved).
+fn emit_fneg(
+    asm: &mut CodeAssembler,
+    alloc: &Allocation,
+    a: Armlet,
+    dst: Option<ValueRef>,
+    bits: u32,
+) -> Result<()> {
+    if bits == 64 {
+        load_xmm_d(asm, alloc, a.args[0], xmm0)?;
+        asm.pcmpeqd(xmm1, xmm1)?;
+        asm.psllq(xmm1, 63i32)?;
+        asm.xorpd(xmm0, xmm1)?;
+        if let Some(d) = dst { store_xmm_d(asm, alloc, d, xmm0)?; }
+    } else {
+        load_xmm_s(asm, alloc, a.args[0], xmm0)?;
+        asm.pcmpeqd(xmm1, xmm1)?;
+        asm.pslld(xmm1, 31i32)?;
+        asm.xorps(xmm0, xmm1)?;
+        if let Some(d) = dst { store_xmm_s(asm, alloc, d, xmm0)?; }
+    }
+    Ok(())
+}
+
+/// FABS via sign-bit clear — same `pcmpeqd` trick but `psrlq/psrld` to make
+/// the mask 0x7FFF…FFFF, then `andpd/andps`.
+fn emit_fabs(
+    asm: &mut CodeAssembler,
+    alloc: &Allocation,
+    a: Armlet,
+    dst: Option<ValueRef>,
+    bits: u32,
+) -> Result<()> {
+    if bits == 64 {
+        load_xmm_d(asm, alloc, a.args[0], xmm0)?;
+        asm.pcmpeqd(xmm1, xmm1)?;
+        asm.psrlq(xmm1, 1i32)?;
+        asm.andpd(xmm0, xmm1)?;
+        if let Some(d) = dst { store_xmm_d(asm, alloc, d, xmm0)?; }
+    } else {
+        load_xmm_s(asm, alloc, a.args[0], xmm0)?;
+        asm.pcmpeqd(xmm1, xmm1)?;
+        asm.psrld(xmm1, 1i32)?;
+        asm.andps(xmm0, xmm1)?;
+        if let Some(d) = dst { store_xmm_s(asm, alloc, d, xmm0)?; }
     }
     Ok(())
 }
