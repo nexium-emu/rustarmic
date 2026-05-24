@@ -6,7 +6,7 @@ use crate::backend::abi::CTX_REG;
 use crate::backend::isel::{emit_armlet, emit_cond_check_byte};
 use crate::backend::operand::load64;
 use crate::backend::prologue::{emit_epilogue, emit_prologue};
-use crate::backend::regalloc::{compute_live_ranges, linear_scan, Allocation, ALLOCATABLE_GPRS};
+use crate::backend::regalloc::{compute_live_ranges, linear_scan, ALLOCATABLE_GPRS};
 use crate::error::{Error, Result};
 use crate::ir::block::ExceptionKind;
 use crate::ir::{Block, Terminal};

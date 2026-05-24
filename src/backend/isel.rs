@@ -171,6 +171,9 @@ pub fn emit_armlet(
             asm.mov(byte_ptr(CTX_REG + cpu_offsets::exclusive_size() as i32), 0i32)?;
         }
 
+        Op::Mrs => emit_mrs(asm, alloc, a, dst_vr)?,
+        Op::Msr => emit_msr(asm, alloc, a)?,
+
         other => return Err(Error::Unsupported {
             pc: block.start_pc,
             opcode: other as u32,
@@ -773,4 +776,88 @@ fn scratch3_id() -> u8 {
     { 8 }
     #[cfg(not(target_os = "windows"))]
     { 2 }
+}
+
+fn emit_mrs(
+    asm: &mut CodeAssembler,
+    alloc: &Allocation,
+    a: Armlet,
+    dst: Option<ValueRef>,
+) -> Result<()> {
+    use crate::arch::sysreg;
+    let d = match dst { Some(d) => d, None => return Ok(()) };
+    let id = a.imm as u16;
+    match id {
+        sysreg::TPIDR_EL0 => {
+            asm.mov(SCRATCH0, qword_ptr(CTX_REG + cpu_offsets::tpidr_el0() as i32))?;
+        }
+        sysreg::TPIDRRO_EL0 => {
+            asm.mov(SCRATCH0, qword_ptr(CTX_REG + cpu_offsets::tpidrro_el0() as i32))?;
+        }
+        sysreg::NZCV => {
+            asm.movzx(eax, byte_ptr(CTX_REG + cpu_offsets::nzcv() as i32))?;
+            asm.shl(rax, 28i32)?;
+        }
+        sysreg::FPCR => {
+            asm.mov(eax, dword_ptr(CTX_REG + cpu_offsets::fpcr() as i32))?;
+        }
+        sysreg::FPSR => {
+            asm.mov(eax, dword_ptr(CTX_REG + cpu_offsets::fpsr() as i32))?;
+        }
+        sysreg::CTR_EL0 => {
+            asm.mov(SCRATCH0, 0x8444_8004u64 as i64)?;
+        }
+        sysreg::DCZID_EL0 => {
+            asm.mov(SCRATCH0, 0x4i64)?;
+        }
+        sysreg::MIDR_EL1 => {
+            asm.mov(SCRATCH0, 0x412F_D050u64 as i64)?;
+        }
+        sysreg::MPIDR_EL1 => {
+            asm.mov(SCRATCH0, 0x8000_0000u64 as i64)?;
+        }
+        sysreg::CNTFRQ_EL0 => {
+            asm.mov(SCRATCH0, 1_000_000_000i64)?;
+        }
+        sysreg::CNTVCT_EL0 => {
+            asm.xor(rax, rax)?;
+        }
+        _ => return Err(Error::Unsupported {
+            pc: 0,
+            opcode: ((Op::Mrs as u32) << 16) | id as u32,
+        }),
+    }
+    store64(asm, alloc, d, SCRATCH0)?;
+    Ok(())
+}
+
+fn emit_msr(
+    asm: &mut CodeAssembler,
+    alloc: &Allocation,
+    a: Armlet,
+) -> Result<()> {
+    use crate::arch::sysreg;
+    let id = a.imm as u16;
+    load64(asm, alloc, a.args[0], SCRATCH0)?;
+    match id {
+        sysreg::TPIDR_EL0 => {
+            asm.mov(qword_ptr(CTX_REG + cpu_offsets::tpidr_el0() as i32), SCRATCH0)?;
+        }
+        sysreg::TPIDRRO_EL0 => {
+            asm.mov(qword_ptr(CTX_REG + cpu_offsets::tpidrro_el0() as i32), SCRATCH0)?;
+        }
+        sysreg::NZCV => {
+            asm.shr(rax, 28i32)?;
+            asm.and(eax, 0xFi32)?;
+            asm.mov(byte_ptr(CTX_REG + cpu_offsets::nzcv() as i32), al)?;
+        }
+        sysreg::FPCR => {
+            asm.mov(dword_ptr(CTX_REG + cpu_offsets::fpcr() as i32), eax)?;
+        }
+        sysreg::FPSR => {
+            asm.mov(dword_ptr(CTX_REG + cpu_offsets::fpsr() as i32), eax)?;
+        }
+        _ => {}
+    }
+    Ok(())
 }
