@@ -248,3 +248,54 @@ fn cas_failure_leaves_memory_unchanged() {
     assert_eq!(ctx.x[1], 0x100, "Rs always receives old memory");
     assert_eq!(mem_read(DATA_BASE + 0x700, 8), 0x100, "non-matching CAS must NOT store");
 }
+
+#[test]
+fn ldr_dt_loads_double_from_memory() {
+    mem_init(0x10000);
+    mem_write(DATA_BASE + 0x800, (3.14_f64).to_bits(), 8);
+
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.x[1] = DATA_BASE + 0x800;
+    let code = build_code(&[
+        0xFD40_0020, // ldr d0, [x1]
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    assert_eq!(f64::from_bits(ctx.v[0][0]), 3.14, "LDR D0 must load 3.14 from memory");
+    assert_eq!(ctx.v[0][1], 0, "high lane zeroed");
+}
+
+#[test]
+fn str_dt_stores_double_to_memory() {
+    mem_init(0x10000);
+    mem_write(DATA_BASE + 0x900, 0xAAAA_AAAA_AAAA_AAAA, 8);
+
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.x[1] = DATA_BASE + 0x900;
+    ctx.v[0] = [(2.5_f64).to_bits(), 0];
+    let code = build_code(&[
+        0xFD00_0020, // str d0, [x1]
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    assert_eq!(f64::from_bits(mem_read(DATA_BASE + 0x900, 8)), 2.5, "STR D0 must write 2.5");
+}
+
+#[test]
+fn ldr_st_loads_float_from_memory() {
+    mem_init(0x10000);
+    mem_write(DATA_BASE + 0xA00, (1.5_f32).to_bits() as u64, 4);
+
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.x[1] = DATA_BASE + 0xA00;
+    let code = build_code(&[
+        0xBD40_0020, // ldr s0, [x1]
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    assert_eq!(f32::from_bits(ctx.v[0][0] as u32), 1.5);
+    assert_eq!(ctx.v[0][0] >> 32, 0, "upper 32 of lane 0 zeroed");
+}

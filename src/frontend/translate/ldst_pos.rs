@@ -10,6 +10,8 @@ enum Kind {
     LoadU,
     LoadS,
     Store,
+    FpLoad,
+    FpStore,
 }
 
 pub fn translate(em: &mut IrEmitter<'_>, insn: LDST_POS) -> Result<InstStatus> {
@@ -24,6 +26,8 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: LDST_POS) -> Result<InstStatus> {
         STR_Rt_ADDR_UIMM12(i)   => (i.0, Kind::Store, true),
         STRB_Rt_ADDR_UIMM12(i)  => (i.0, Kind::Store, false),
         STRH_Rt_ADDR_UIMM12(i)  => (i.0, Kind::Store, false),
+        LDR_Ft_ADDR_UIMM12(i)   => (i.0, Kind::FpLoad, false),
+        STR_Ft_ADDR_UIMM12(i)   => (i.0, Kind::FpStore, false),
         _ => return Err(Error::Unsupported { pc: em.current_pc, opcode: 0 }),
     };
 
@@ -67,6 +71,22 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: LDST_POS) -> Result<InstStatus> {
             } else {
                 em.set_w(rt, sx);
             }
+        }
+        Kind::FpLoad => {
+            let v = em.load(addr, bytes);
+            if bytes == 8 { em.set_v_d(rt, v); }
+            else if bytes == 4 { em.set_v_s(rt, v); }
+            else {
+                return Err(Error::Unsupported { pc: em.current_pc, opcode: raw });
+            }
+        }
+        Kind::FpStore => {
+            let v = if bytes == 8 { em.get_v_d(rt) }
+                    else if bytes == 4 { em.get_v_s(rt) }
+                    else {
+                        return Err(Error::Unsupported { pc: em.current_pc, opcode: raw });
+                    };
+            em.store(addr, v, bytes);
         }
     }
     Ok(InstStatus::Continue)
