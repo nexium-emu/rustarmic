@@ -12,6 +12,7 @@ pub mod ldst_unscaled;
 pub mod ldst_regoff;
 pub mod ldstexcl;
 pub mod ic_system;
+pub mod lse_atomic;
 pub mod ldstpair_off;
 pub mod ldstpair_indexed;
 pub mod branch_imm;
