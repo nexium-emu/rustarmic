@@ -206,6 +206,48 @@ pub fn store_xmm_d(
     Ok(())
 }
 
+/// Load a full 128-bit value from any Loc into `dst`. Reg is not a legal
+/// source — 128-bit values never live in a GPR.
+pub fn load_xmm_q(
+    asm: &mut CodeAssembler,
+    alloc: &Allocation,
+    vr: ValueRef,
+    dst: AsmRegisterXmm,
+) -> Result<()> {
+    match alloc.loc(vr) {
+        Loc::Xmm(x) => {
+            let src = xmm(x);
+            if src != dst { asm.movdqa(dst, src).map_err(into_err)?; }
+        }
+        // Stack spills for U128 are 16-byte aligned (see regalloc), so movdqa
+        // would be legal, but movdqu is no slower on modern CPUs when the
+        // address happens to be aligned and saves us from caring.
+        Loc::Spill(off) => asm.movdqu(dst, xmmword_ptr(rbp - off)).map_err(into_err)?,
+        Loc::Reg(_) | Loc::None =>
+            return Err(Error::Backend(format!("load_xmm_q from invalid loc ({:?})", vr))),
+    }
+    Ok(())
+}
+
+pub fn store_xmm_q(
+    asm: &mut CodeAssembler,
+    alloc: &Allocation,
+    vr: ValueRef,
+    src: AsmRegisterXmm,
+) -> Result<()> {
+    match alloc.loc(vr) {
+        Loc::Xmm(x) => {
+            let dst = xmm(x);
+            if dst != src { asm.movdqa(dst, src).map_err(into_err)?; }
+        }
+        Loc::Spill(off) => asm.movdqu(xmmword_ptr(rbp - off), src).map_err(into_err)?,
+        Loc::Reg(_) =>
+            return Err(Error::Backend(format!("store_xmm_q to GPR loc ({:?})", vr))),
+        Loc::None => {}
+    }
+    Ok(())
+}
+
 fn into_err(e: iced_x86::IcedError) -> Error {
     Error::Backend(e.to_string())
 }

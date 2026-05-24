@@ -189,6 +189,10 @@ pub fn linear_scan(block: &Block, ranges: &[LiveRange], pool: &[u8]) -> Allocati
     let mut xmm_free: Vec<u8> = SPILL_XMMS.iter().copied().rev().collect();
     let mut used_xmms: u16 = 0;
     let mut active: Vec<(u32, u8, usize)> = Vec::new();
+    // 128-bit values that own an XMM. Recycled on end-of-life back to xmm_free.
+    // Scalar values that were spilled to an XMM are NOT tracked here — they
+    // remain there for the rest of the block (simpler, slightly wasteful).
+    let mut xmm_active: Vec<(u32, u8, usize)> = Vec::new();
 
     // Lambda that allocates a spill slot, preferring an XMM register.
     let take_spill = |spill_cursor: &mut i32, xmm_free: &mut Vec<u8>, used_xmms: &mut u16| -> Loc {
@@ -231,6 +235,28 @@ pub fn linear_scan(block: &Block, ranges: &[LiveRange], pool: &[u8]) -> Allocati
                 true
             }
         });
+
+        xmm_active.retain(|&(active_end, xmm_idx, _)| {
+            if active_end < start {
+                xmm_free.push(xmm_idx);
+                false
+            } else {
+                true
+            }
+        });
+
+        // 128-bit values must live in an XMM (or a 16-byte aligned stack slot).
+        // Route them through a dedicated XMM allocation that recycles on death.
+        if block.code[vr_idx].ty == Ty::U128 {
+            if let Some(x) = xmm_free.pop() {
+                used_xmms |= 1 << x;
+                locs[vr_idx] = Loc::Xmm(x);
+                xmm_active.push((end, x, vr_idx));
+            } else {
+                locs[vr_idx] = Loc::Spill(alloc_spill_slot_16(&mut spill_cursor));
+            }
+            continue;
+        }
 
         let op = block.code[vr_idx].op;
         if op == Op::Identity || op_prefers_two_address(op) {
@@ -323,6 +349,12 @@ fn interior_clobber_mask(clobber_masks: &[GprMask], range: LiveRange) -> GprMask
 fn alloc_spill_slot(cursor: &mut i32) -> i32 {
     let aligned = (*cursor + 7) & !7;
     *cursor = aligned + 8;
+    *cursor
+}
+
+fn alloc_spill_slot_16(cursor: &mut i32) -> i32 {
+    let aligned = (*cursor + 15) & !15;
+    *cursor = aligned + 16;
     *cursor
 }
 
@@ -485,6 +517,44 @@ mod tests {
 
         assert_eq!(alloc.locs[src.as_usize()], alloc.locs[id.as_usize()]);
         assert!(matches!(alloc.locs[id.as_usize()], Loc::Reg(_)));
+    }
+
+    #[test]
+    fn u128_values_get_xmm_and_recycle_on_death() {
+        let mut b = fresh_block();
+        let mut em = IrEmitter::new(&mut b, 0x1000);
+        // Two non-overlapping 128-bit lifetimes — both should land in the SAME
+        // XMM if the allocator recycles on death.
+        let q0 = em.get_v_q(0);
+        em.set_v_q(1, q0);
+        let q2 = em.get_v_q(2);
+        em.set_v_q(3, q2);
+
+        let ranges = compute_live_ranges(&b);
+        let alloc = linear_scan(&b, &ranges, ALLOCATABLE_GPRS);
+
+        let loc_a = alloc.loc(q0);
+        let loc_b = alloc.loc(q2);
+        assert!(matches!(loc_a, Loc::Xmm(_)), "first u128 should be Xmm, got {:?}", loc_a);
+        assert!(matches!(loc_b, Loc::Xmm(_)), "second u128 should be Xmm, got {:?}", loc_b);
+        if !SPILL_XMMS.is_empty() {
+            assert_eq!(loc_a, loc_b, "non-overlapping u128 ranges should reuse the same XMM");
+        }
+    }
+
+    #[test]
+    fn overlapping_u128_values_take_different_xmms() {
+        if SPILL_XMMS.len() < 2 { return; } // platform without XMM pool
+        let mut b = fresh_block();
+        let mut em = IrEmitter::new(&mut b, 0x1000);
+        let a = em.get_v_q(0);
+        let c = em.get_v_q(1);
+        em.set_v_q(2, a);
+        em.set_v_q(3, c);
+
+        let ranges = compute_live_ranges(&b);
+        let alloc = linear_scan(&b, &ranges, ALLOCATABLE_GPRS);
+        assert_ne!(alloc.loc(a), alloc.loc(c));
     }
 
     #[test]

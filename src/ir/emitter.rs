@@ -146,6 +146,20 @@ impl<'b> IrEmitter<'b> {
             .with_imm(reg as u64));
     }
 
+    /// Read the full 128 bits of V[reg] (Q-precision vector view).
+    pub fn get_v_q(&mut self, reg: u8) -> ValueRef {
+        debug_assert!((reg as usize) < crate::arch::NUM_VREGS);
+        self.push(Armlet::new(Op::GetV, Ty::U128).with_imm(reg as u64))
+    }
+
+    /// Write all 128 bits of V[reg]. `value` must be a Ty::U128 value.
+    pub fn set_v_q(&mut self, reg: u8, value: ValueRef) {
+        debug_assert!((reg as usize) < crate::arch::NUM_VREGS);
+        self.push(Armlet::new(Op::SetV, Ty::Void)
+            .with_args(&[value])
+            .with_imm(reg as u64));
+    }
+
     // ─── NZCV ───────────────────────────────────────────────────────────────
     pub fn get_nzcv(&mut self) -> ValueRef {
         self.push(Armlet::new(Op::GetNzcv, Ty::Nzcv))

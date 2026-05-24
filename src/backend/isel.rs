@@ -5,8 +5,8 @@ use crate::backend::abi::{
     ARG3_REG, CALL_PRECALL_SUB, CTX_REG, SCRATCH0, SCRATCH1, SCRATCH2, SCRATCH3,
 };
 use crate::backend::operand::{
-    gpr32, gpr64, load32, load64, load_xmm_d, load_xmm_s, store32, store64,
-    store_xmm_d, store_xmm_s,
+    gpr32, gpr64, load32, load64, load_xmm_d, load_xmm_q, load_xmm_s, store32, store64,
+    store_xmm_d, store_xmm_q, store_xmm_s,
 };
 use crate::backend::regalloc::{Allocation, Loc};
 use crate::error::{Error, Result};
@@ -107,26 +107,46 @@ pub fn emit_armlet(
             let d = dst_vr.unwrap();
             let reg = a.imm as usize;
             let off = cpu_offsets::vreg(reg) as i32;
-            if a.ty.bits() <= 32 {
-                asm.mov(eax, dword_ptr(CTX_REG + off))?;
-                store32(asm, alloc, d, eax)?;
-            } else {
-                asm.mov(SCRATCH0, qword_ptr(CTX_REG + off))?;
-                store64(asm, alloc, d, SCRATCH0)?;
+            match a.ty {
+                Ty::U32 => {
+                    asm.mov(eax, dword_ptr(CTX_REG + off))?;
+                    store32(asm, alloc, d, eax)?;
+                }
+                Ty::U64 => {
+                    asm.mov(SCRATCH0, qword_ptr(CTX_REG + off))?;
+                    store64(asm, alloc, d, SCRATCH0)?;
+                }
+                Ty::U128 => {
+                    asm.movdqu(xmm0, xmmword_ptr(CTX_REG + off))?;
+                    store_xmm_q(asm, alloc, d, xmm0)?;
+                }
+                other => return Err(Error::Backend(
+                    format!("GetV with unsupported ty {:?}", other))),
             }
         }
         Op::SetV => {
             let reg = a.imm as usize;
             let off = cpu_offsets::vreg(reg) as i32;
-            if a.flags.contains(crate::ir::ArmletFlags::W_SIZED) {
-                load32(asm, alloc, a.args[0], eax)?;
-                asm.mov(dword_ptr(CTX_REG + off), eax)?;
-                asm.mov(dword_ptr(CTX_REG + off + 4), 0i32)?;
-            } else {
-                load64(asm, alloc, a.args[0], SCRATCH0)?;
-                asm.mov(qword_ptr(CTX_REG + off), SCRATCH0)?;
+            let src_ty = block.code[a.args[0].as_usize()].ty;
+            match src_ty {
+                Ty::U32 => {
+                    load32(asm, alloc, a.args[0], eax)?;
+                    asm.mov(dword_ptr(CTX_REG + off), eax)?;
+                    asm.mov(dword_ptr(CTX_REG + off + 4), 0i32)?;
+                    asm.mov(qword_ptr(CTX_REG + off + 8), 0i32)?;
+                }
+                Ty::U64 => {
+                    load64(asm, alloc, a.args[0], SCRATCH0)?;
+                    asm.mov(qword_ptr(CTX_REG + off), SCRATCH0)?;
+                    asm.mov(qword_ptr(CTX_REG + off + 8), 0i32)?;
+                }
+                Ty::U128 => {
+                    load_xmm_q(asm, alloc, a.args[0], xmm0)?;
+                    asm.movdqu(xmmword_ptr(CTX_REG + off), xmm0)?;
+                }
+                other => return Err(Error::Backend(
+                    format!("SetV with unsupported src ty {:?}", other))),
             }
-            asm.mov(qword_ptr(CTX_REG + off + 8), 0i32)?;
         }
 
         Op::Add32 | Op::Add64 => emit_binop(asm, alloc, a, dst_vr, BinKind::Add,  a.op.size_bits())?,
