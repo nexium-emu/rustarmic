@@ -170,3 +170,81 @@ fn str_then_ldr_round_trip() {
     let stored = mem_read(DATA_BASE + 0x100, 8);
     assert_eq!(stored, 0x1234, "memory at DATA_BASE+0x100 should be 0x1234");
 }
+
+#[test]
+fn ldadd_atomic_add_returns_old_and_writes_sum() {
+    mem_init(0x10000);
+    mem_write(DATA_BASE + 0x400, 100, 8);
+
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.x[0] = DATA_BASE + 0x400;
+    ctx.x[1] = 7;
+    let code = build_code(&[
+        0xF821_0002, // ldadd x1, x2, [x0]
+        0xD4200000,
+    ]);
+    let exit = run(code, &mut ctx);
+    assert!(matches!(exit, ExitReason::Brk(_)), "expected BRK, got {:?}", exit);
+    assert_eq!(ctx.x[2], 100, "X2 must receive old memory value");
+    assert_eq!(mem_read(DATA_BASE + 0x400, 8), 107, "memory must equal old + Rs");
+}
+
+#[test]
+fn swp_atomic_exchanges_value() {
+    mem_init(0x10000);
+    mem_write(DATA_BASE + 0x500, 0xAAAA, 8);
+
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.x[0] = DATA_BASE + 0x500;
+    ctx.x[1] = 0xBBBB;
+    let code = build_code(&[
+        0xF821_8002, // swp x1, x2, [x0]
+        0xD4200000,
+    ]);
+    let exit = run(code, &mut ctx);
+    assert!(matches!(exit, ExitReason::Brk(_)), "expected BRK, got {:?}", exit);
+    assert_eq!(ctx.x[2], 0xAAAA, "X2 must receive old memory");
+    assert_eq!(mem_read(DATA_BASE + 0x500, 8), 0xBBBB, "memory must hold Rs");
+}
+
+#[test]
+fn cas_success_writes_rt_and_returns_old_in_rs() {
+    mem_init(0x10000);
+    mem_write(DATA_BASE + 0x600, 0x100, 8);
+
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.x[0] = DATA_BASE + 0x600;
+    ctx.x[1] = 0x100;   // compare value (matches memory)
+    ctx.x[2] = 0x999;   // new value
+    let code = build_code(&[
+        0xC8A1_7C02, // cas x1, x2, [x0]
+        0xD4200000,
+    ]);
+    let exit = run(code, &mut ctx);
+    assert!(matches!(exit, ExitReason::Brk(_)), "expected BRK, got {:?}", exit);
+    assert_eq!(ctx.x[1], 0x100, "Rs must always receive old memory");
+    assert_eq!(mem_read(DATA_BASE + 0x600, 8), 0x999, "matching CAS must write Rt");
+}
+
+#[test]
+fn cas_failure_leaves_memory_unchanged() {
+    mem_init(0x10000);
+    mem_write(DATA_BASE + 0x700, 0x100, 8);
+
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.x[0] = DATA_BASE + 0x700;
+    ctx.x[1] = 0x200;   // wrong compare value
+    ctx.x[2] = 0x999;
+    let code = build_code(&[
+        0xC8A1_7C02, // cas x1, x2, [x0]
+        0xD4200000,
+    ]);
+    let exit = run(code, &mut ctx);
+    assert!(matches!(exit, ExitReason::Brk(_)), "expected BRK, got {:?}", exit);
+    assert_eq!(ctx.x[1], 0x100, "Rs always receives old memory");
+    assert_eq!(mem_read(DATA_BASE + 0x700, 8), 0x100, "non-matching CAS must NOT store");
+}
