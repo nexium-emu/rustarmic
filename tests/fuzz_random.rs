@@ -142,7 +142,7 @@ fn gen_neon_inst(rng: &mut ChaCha8Rng) -> u32 {
     // Default to the full op set; tests narrow this via env var when
     // bisecting a mismatch.
     let max_pick: u32 = std::env::var("FUZZ_NEON_MAX")
-        .ok().and_then(|s| s.parse().ok()).unwrap_or(24);
+        .ok().and_then(|s| s.parse().ok()).unwrap_or(27);
     let pick: u32 = rng.r#gen_range(0..max_pick);
     let vd: u32 = rng.r#gen_range(0..16);
     let vn: u32 = rng.r#gen_range(0..16);
@@ -216,6 +216,12 @@ fn gen_neon_inst(rng: &mut ChaCha8Rng) -> u32 {
                 | (0 << 15) | (opcode_high << 12) | (1 << 11) | (0 << 10)
                 | (vn << 5) | vd
         }
+        // REV16 / REV32 / REV64 (ASIMDMISC). Each container has its own valid
+        // size range. opcode (bits 16:12): REV16=0b00001, REV32=0b00000 (U=1),
+        // REV64=0b00000 (U=0).
+        24 => enc_misc(rng.r#gen_range(0..2), 0, 0b00, 0b00001, vn, vd),                  // REV16: only size=00
+        25 => { let s = rng.r#gen_range(0..2); enc_misc(rng.r#gen_range(0..2), 1, s, 0b00000, vn, vd) } // REV32: size 00/01
+        26 => { let s = rng.r#gen_range(0..3); enc_misc(rng.r#gen_range(0..2), 0, s, 0b00000, vn, vd) } // REV64: size 00/01/10
         _ => unreachable!(),
     }
 }

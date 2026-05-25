@@ -192,6 +192,9 @@ fn dispatch_op(op: Op) -> Option<EmitFn> {
         VecUaddl => emit_op_vec_addl_unsigned,
         VecXtn   => emit_op_vec_xtn,
         VecTbl   => emit_op_vec_tbl,
+        VecRev16 => emit_op_vec_rev16,
+        VecRev32 => emit_op_vec_rev32,
+        VecRev64 => emit_op_vec_rev64,
 
         Hint | MemoryBarrier => emit_nop,
         Clrex => emit_op_clrex,
@@ -1147,6 +1150,82 @@ fn emit_op_vec_addl_unsigned(asm: &mut CodeAssembler, block: &Block, alloc: &All
     let a = block.code[idx];
     let d = dst_of(&a, idx).unwrap();
     emit_widening_addl(asm, alloc, a, d, false)
+}
+
+// ── REV16/32/64 (byte-reverse within element) ────────────────────────────
+//
+// Each variant reverses smaller elements inside a larger container.
+// Implemented via PSHUFB with a per-shape constant mask built inline from
+// two u64 halves (movq + pinsrq).
+fn emit_rev_with_mask(
+    asm: &mut CodeAssembler,
+    alloc: &Allocation,
+    a: Armlet,
+    d: ValueRef,
+    mask_lo: u64,
+    mask_hi: u64,
+) -> Result<()> {
+    let q_form = (a.imm & 1) != 0;
+    let working = working_xmm_for(alloc, d, xmm0);
+    into_xmm_q(asm, alloc, a.args[0], working)?;
+
+    // Build the pshufb mask in xmm1.
+    asm.mov(rax, mask_lo as i64)?;
+    asm.movq(xmm1, rax)?;
+    asm.mov(rax, mask_hi as i64)?;
+    asm.pinsrq(xmm1, rax, 1)?;
+    asm.pshufb(working, xmm1)?;
+
+    if !q_form { asm.movq(working, working)?; }
+    store_xmm_q(asm, alloc, d, working)
+}
+
+fn emit_op_vec_rev16(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let d = dst_of(&a, idx).unwrap();
+    // Only B-lane source is valid for REV16 (swap each pair of bytes inside
+    // every 16-bit container).
+    let src_lane = ((a.imm >> 2) & 0x3) as u32;
+    if src_lane != 0 {
+        return Err(Error::Backend(format!("REV16 only valid for B lanes (got log2={})", src_lane)));
+    }
+    // Bytes [1,0, 3,2, 5,4, 7,6, 9,8, 11,10, 13,12, 15,14].
+    emit_rev_with_mask(asm, alloc, a, d, 0x0607_0405_0203_0001, 0x0E0F_0C0D_0A0B_0809)
+}
+
+fn emit_op_vec_rev32(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let d = dst_of(&a, idx).unwrap();
+    let src_lane = ((a.imm >> 2) & 0x3) as u32;
+    let (lo, hi) = match src_lane {
+        // B granularity: reverse 4 bytes inside each 32-bit lane.
+        // [3,2,1,0, 7,6,5,4, 11,10,9,8, 15,14,13,12]
+        0 => (0x0405_0607_0001_0203, 0x0C0D_0E0F_0809_0A0B),
+        // H granularity: reverse 2 halfwords inside each 32-bit lane.
+        // [2,3,0,1, 6,7,4,5, 10,11,8,9, 14,15,12,13]
+        1 => (0x0504_0706_0100_0302, 0x0D0C_0F0E_0908_0B0A),
+        _ => return Err(Error::Backend(format!("REV32 invalid src_lane {}", src_lane))),
+    };
+    emit_rev_with_mask(asm, alloc, a, d, lo, hi)
+}
+
+fn emit_op_vec_rev64(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let d = dst_of(&a, idx).unwrap();
+    let src_lane = ((a.imm >> 2) & 0x3) as u32;
+    let (lo, hi) = match src_lane {
+        // B: reverse 8 bytes inside each 64-bit lane.
+        // [7,6,5,4,3,2,1,0, 15,14,13,12,11,10,9,8]
+        0 => (0x0001_0203_0405_0607, 0x0809_0A0B_0C0D_0E0F),
+        // H: reverse 4 halfwords inside each 64-bit lane.
+        // [6,7,4,5,2,3,0,1, 14,15,12,13,10,11,8,9]
+        1 => (0x0100_0302_0504_0706, 0x0908_0B0A_0D0C_0F0E),
+        // S: reverse 2 words inside each 64-bit lane.
+        // [4,5,6,7,0,1,2,3, 12,13,14,15,8,9,10,11]
+        2 => (0x0302_0100_0706_0504, 0x0B0A_0908_0F0E_0D0C),
+        _ => return Err(Error::Backend(format!("REV64 invalid src_lane {}", src_lane))),
+    };
+    emit_rev_with_mask(asm, alloc, a, d, lo, hi)
 }
 
 // ── TBL (single-register table permute) ──────────────────────────────────

@@ -254,6 +254,14 @@ pub enum Op {
     /// values >= 16 produce zero in the result lane.
     VecTbl = 0x6C0,
 
+    /// REV16/32/64 family: byte-reverse within larger elements. `imm` holds
+    /// `(src_lane_log2 << 2) | q_form`, where src_lane_log2 is the BYTE-level
+    /// granularity being reversed (0=B, 1=H, 2=S) and the outer container
+    /// is implied by the op (Rev16 → H, Rev32 → S, Rev64 → D).
+    VecRev16 = 0x6C4,
+    VecRev32 = 0x6C8,
+    VecRev64 = 0x6CC,
+
     Mrs            = 0x700,
     Msr            = 0x704,
     Hint           = 0x708,

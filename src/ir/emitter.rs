@@ -473,6 +473,20 @@ impl<'b> IrEmitter<'b> {
         self.push(Armlet::new(Op::VecTbl, Ty::U128).with_args(&[table, indices]).with_imm(q as u64))
     }
 
+    /// REV16/32/64 family. `src_lane_log2` is the byte-level reversal
+    /// granularity (0=B, 1=H, 2=S); `container_log2` selects which Rev op
+    /// to use (1=H container/Rev16, 2=S/Rev32, 3=D/Rev64).
+    pub fn vec_rev(&mut self, vn: ValueRef, src_lane_log2: u32, container_log2: u32, q: bool) -> ValueRef {
+        let op = match container_log2 {
+            1 => Op::VecRev16,
+            2 => Op::VecRev32,
+            3 => Op::VecRev64,
+            _ => unreachable!(),
+        };
+        let imm = (q as u64) | ((src_lane_log2 as u64) << 2);
+        self.push(Armlet::new(op, Ty::U128).with_args(&[vn]).with_imm(imm))
+    }
+
     // ─── NZCV ───────────────────────────────────────────────────────────────
     pub fn get_nzcv(&mut self) -> ValueRef {
         self.push(Armlet::new(Op::GetNzcv, Ty::Nzcv))

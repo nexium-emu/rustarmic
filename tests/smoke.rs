@@ -2049,3 +2049,93 @@ fn vec_tbl_8b_zeros_upper_half() {
     assert_eq!(ctx.v[0][0], 0x0E_0C_0A_08_06_04_02_00);
     assert_eq!(ctx.v[0][1], 0, "8B form zeros upper 64");
 }
+
+#[test]
+fn vec_rev16_16b_swaps_byte_pairs() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    // 16 bytes 0x00..0x0F in little-endian byte order within u64.
+    ctx.v[1] = [0x0706_0504_0302_0100, 0x0F0E_0D0C_0B0A_0908];
+    let code = build_code(&[
+        0x4E20_1820, // rev16 v0.16b, v1.16b
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // Swap each pair: [1,0,3,2,5,4,7,6,9,8,11,10,13,12,15,14]
+    assert_eq!(ctx.v[0][0], 0x0607_0405_0203_0001);
+    assert_eq!(ctx.v[0][1], 0x0E0F_0C0D_0A0B_0809);
+}
+
+#[test]
+fn vec_rev32_4s_byte_reverse_within_word() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [0x0706_0504_0302_0100, 0x0F0E_0D0C_0B0A_0908];
+    let code = build_code(&[
+        0x6E20_0820, // rev32 v0.16b, v1.16b
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // Reverse 4 bytes inside each S lane: [3,2,1,0, 7,6,5,4, 11,10,9,8, 15,14,13,12]
+    assert_eq!(ctx.v[0][0], 0x0405_0607_0001_0203);
+    assert_eq!(ctx.v[0][1], 0x0C0D_0E0F_0809_0A0B);
+}
+
+#[test]
+fn vec_rev32_8h_swap_halfwords_within_word() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [0x0706_0504_0302_0100, 0x0F0E_0D0C_0B0A_0908];
+    let code = build_code(&[
+        0x6E60_0820, // rev32 v0.8h, v1.8h
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // Swap H pairs inside each S: [2,3,0,1, 6,7,4,5, 10,11,8,9, 14,15,12,13]
+    assert_eq!(ctx.v[0][0], 0x0504_0706_0100_0302);
+    assert_eq!(ctx.v[0][1], 0x0D0C_0F0E_0908_0B0A);
+}
+
+#[test]
+fn vec_rev64_16b_full_qword_byte_reverse() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [0x0706_0504_0302_0100, 0x0F0E_0D0C_0B0A_0908];
+    let code = build_code(&[
+        0x4E20_0820, // rev64 v0.16b, v1.16b
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // Reverse 8 bytes inside each D lane.
+    assert_eq!(ctx.v[0][0], 0x0001_0203_0405_0607);
+    assert_eq!(ctx.v[0][1], 0x0809_0A0B_0C0D_0E0F);
+}
+
+#[test]
+fn vec_rev64_4s_swap_words_within_qword() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [0x0706_0504_0302_0100, 0x0F0E_0D0C_0B0A_0908];
+    let code = build_code(&[
+        0x4EA0_0820, // rev64 v0.4s, v1.4s
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // Swap S pairs inside each D: [4,5,6,7, 0,1,2,3, 12,13,14,15, 8,9,10,11]
+    assert_eq!(ctx.v[0][0], 0x0302_0100_0706_0504);
+    assert_eq!(ctx.v[0][1], 0x0B0A_0908_0F0E_0D0C);
+}
+
+#[test]
+fn vec_rev16_8b_zeros_upper_half() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [0x0706_0504_0302_0100, 0xDEAD_BEEF_CAFE_BABE];
+    let code = build_code(&[
+        0x0E20_1820, // rev16 v0.8b, v1.8b
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    assert_eq!(ctx.v[0][0], 0x0607_0405_0203_0001);
+    assert_eq!(ctx.v[0][1], 0, "8B form zeros upper 64");
+}

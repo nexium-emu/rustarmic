@@ -14,7 +14,7 @@ use crate::ir::IrEmitter;
 use crate::util::bits::{bit, bits};
 
 #[derive(Clone, Copy)]
-enum Kind { Neg, Abs, Not, FNeg, FAbs, FSqrt, Xtn }
+enum Kind { Neg, Abs, Not, FNeg, FAbs, FSqrt, Xtn, Rev16, Rev32, Rev64 }
 
 pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDMISC) -> Result<InstStatus> {
     use ASIMDMISC::*;
@@ -26,6 +26,9 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDMISC) -> Result<InstStatus> 
         FABS_Vd_Vn(i)  => (i.0, Kind::FAbs),
         FSQRT_Vd_Vn(i) => (i.0, Kind::FSqrt),
         XTN_Vd_Vn(i)   => (i.0, Kind::Xtn),
+        REV16_Vd_Vn(i) => (i.0, Kind::Rev16),
+        REV32_Vd_Vn(i) => (i.0, Kind::Rev32),
+        REV64_Vd_Vn(i) => (i.0, Kind::Rev64),
         _ => return Err(Error::Unsupported { pc: em.current_pc, opcode: 0 }),
     };
 
@@ -69,6 +72,28 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDMISC) -> Result<InstStatus> 
                 return Err(Error::Unsupported { pc: em.current_pc, opcode: raw });
             }
             em.vec_xtn(vn, size + 1)
+        }
+        Kind::Rev16 | Kind::Rev32 | Kind::Rev64 => {
+            // ARM encodes the byte-level reversal granularity in `size`. The
+            // outer container is implied by the mnemonic. Reject invalid
+            // (mnemonic, size) combinations: REV16 only takes B, REV32 takes
+            // B or H, REV64 takes B/H/S.
+            let max_src = match kind {
+                Kind::Rev16 => 1,
+                Kind::Rev32 => 2,
+                Kind::Rev64 => 3,
+                _ => unreachable!(),
+            };
+            if size >= max_src {
+                return Err(Error::Decode { pc: em.current_pc, opcode: raw });
+            }
+            let container_log2 = match kind {
+                Kind::Rev16 => 1,
+                Kind::Rev32 => 2,
+                Kind::Rev64 => 3,
+                _ => unreachable!(),
+            };
+            em.vec_rev(vn, size, container_log2, q)
         }
     };
     em.set_v_q(rd, result);
