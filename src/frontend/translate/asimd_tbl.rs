@@ -17,19 +17,30 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDTBL) -> Result<InstStatus> {
     };
 
     let q     = bit(raw, 30) == 1;
-    let len   = bits(raw, 13, 2); // 00 = single-register form
+    let len   = bits(raw, 13, 2); // 00=1 reg, 01=2, 10=3, 11=4
     let rm    = bits(raw, 16, 5) as u8;
     let rn    = bits(raw, 5, 5) as u8;
     let rd    = bits(raw, 0, 5) as u8;
 
-    if len != 0 {
-        // Multi-register forms not yet supported.
-        return Err(Error::Unsupported { pc: em.current_pc, opcode: raw });
-    }
-
-    let table   = em.get_v_q(rn);
+    // The table reg(s) are Vn, V(n+1), V(n+2), V(n+3) — wrapping at V31.
+    let t0 = em.get_v_q(rn);
     let indices = em.get_v_q(rm);
-    let result = em.vec_tbl(table, indices, q);
+    let result = match len {
+        0 => em.vec_tbl(t0, indices, q),
+        1 => {
+            let t1 = em.get_v_q((rn + 1) & 31);
+            em.vec_tbl2(t0, t1, indices, q)
+        }
+        2 => {
+            let t1 = em.get_v_q((rn + 1) & 31);
+            let t2 = em.get_v_q((rn + 2) & 31);
+            em.vec_tbl3(t0, t1, t2, indices, q)
+        }
+        // TBL4 needs 5 SSA args (4 tables + indices) which our 4-arg Armlet
+        // can't hold; deferred until we either split-emit at IR level or
+        // grow Armlet's arg count.
+        _ => return Err(Error::Unsupported { pc: em.current_pc, opcode: raw }),
+    };
     em.set_v_q(rd, result);
     Ok(InstStatus::Continue)
 }

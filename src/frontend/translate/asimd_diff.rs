@@ -41,10 +41,6 @@ fn translate_with(em: &mut IrEmitter<'_>, raw: u32, kind: Kind) -> Result<InstSt
     if size > 2 {
         return Err(Error::Decode { pc: em.current_pc, opcode: raw });
     }
-    // 2D widening multiply isn't wired (needs PMULLQ); fail clean.
-    if matches!(kind, Kind::Smull | Kind::Umull) && size == 2 {
-        return Err(Error::Unsupported { pc: em.current_pc, opcode: raw });
-    }
     let vn = em.get_v_q(rn);
     let vm = em.get_v_q(rm);
     let result = match kind {

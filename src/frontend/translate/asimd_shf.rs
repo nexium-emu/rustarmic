@@ -48,10 +48,6 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDSHF) -> Result<InstStatus> {
         Kind::Shl  => immhb.wrapping_sub(lane_bits),
         Kind::Ushr | Kind::Sshr => (2 * lane_bits).wrapping_sub(immhb),
     };
-    // 64-bit arithmetic shift needs PSRAQ (AVX-512) and isn't decomposed yet.
-    if matches!(kind, Kind::Sshr) && lane_log2 == 3 {
-        return Err(Error::Unsupported { pc: em.current_pc, opcode: raw });
-    }
 
     let vn = em.get_v_q(rn);
     let result = match kind {

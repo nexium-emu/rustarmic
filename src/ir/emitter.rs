@@ -513,6 +513,20 @@ impl<'b> IrEmitter<'b> {
     pub fn vec_tbl(&mut self, table: ValueRef, indices: ValueRef, q: bool) -> ValueRef {
         self.push(Armlet::new(Op::VecTbl, Ty::U128).with_args(&[table, indices]).with_imm(q as u64))
     }
+    /// TBL with a 2-register table. Each index in 0..32 selects from
+    /// table0||table1; values >= 32 produce zero.
+    pub fn vec_tbl2(&mut self, table0: ValueRef, table1: ValueRef, indices: ValueRef, q: bool) -> ValueRef {
+        self.push(Armlet::new(Op::VecTbl2, Ty::U128)
+            .with_args(&[table0, table1, indices])
+            .with_imm(q as u64))
+    }
+    /// TBL with a 3-register table. Each index in 0..48 selects from
+    /// table0||table1||table2; values >= 48 produce zero.
+    pub fn vec_tbl3(&mut self, table0: ValueRef, table1: ValueRef, table2: ValueRef, indices: ValueRef, q: bool) -> ValueRef {
+        self.push(Armlet::new(Op::VecTbl3, Ty::U128)
+            .with_args(&[table0, table1, table2, indices])
+            .with_imm(q as u64))
+    }
 
     /// REV16/32/64 family. `src_lane_log2` is the byte-level reversal
     /// granularity (0=B, 1=H, 2=S); `container_log2` selects which Rev op

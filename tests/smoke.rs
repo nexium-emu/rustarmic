@@ -2560,3 +2560,186 @@ fn vec_sshr_imm_16b_sign_extends() {
     assert_eq!(ctx.v[0][0], 0xE0_10_08_04_02_01_00_00);
     assert_eq!(ctx.v[0][1], 0xFF_1F_0F_07_03_01_00_00);
 }
+
+#[test]
+fn vec_mul_2d_via_decomposition() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    // Mix of edge cases:
+    //   lane 0:  3 * 7              = 21
+    //   lane 1:  0x1_0000_0001 * 5  = 0x5_0000_0005 (cross dword carry)
+    //   plus another pair via second instruction (not used here)
+    ctx.v[1] = [3, 0x0000_0001_0000_0001];
+    ctx.v[2] = [7, 5];
+    let code = build_code(&[
+        0x4EE2_9C20, // mul v0.2d, v1.2d, v2.2d
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    assert_eq!(ctx.v[0][0], 21);
+    assert_eq!(ctx.v[0][1], 0x0000_0005_0000_0005);
+}
+
+#[test]
+fn vec_mul_2d_wraps_at_64() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    // 2^63 * 2 = 2^64 → wraps to 0 (low 64 of product).
+    ctx.v[1] = [0x8000_0000_0000_0000, 0xFFFF_FFFF_FFFF_FFFF];
+    ctx.v[2] = [2, 0xFFFF_FFFF_FFFF_FFFF];
+    let code = build_code(&[
+        0x4EE2_9C20, // mul v0.2d, v1.2d, v2.2d
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // (2^63)*2 mod 2^64 = 0
+    assert_eq!(ctx.v[0][0], 0);
+    // (-1)*(-1) = 1 in 64-bit arithmetic
+    assert_eq!(ctx.v[0][1], 1);
+}
+
+#[test]
+fn vec_smull_2d_via_pmovsxdq() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    // Two S lanes per source: low 64 of each vector.
+    //   S0: -3 * 7      = -21          = 0xFFFFFFFFFFFFFFEB
+    //   S1: 1000000 * 5 = 5_000_000
+    let pack_s = |a: i32, b: i32| -> u64 {
+        (a as u32 as u64) | ((b as u32 as u64) << 32)
+    };
+    ctx.v[1] = [pack_s(-3, 1_000_000), 0];
+    ctx.v[2] = [pack_s(7, 5), 0];
+    let code = build_code(&[
+        0x0EA2_C020, // smull v0.2d, v1.2s, v2.2s
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    assert_eq!(ctx.v[0][0] as i64, -21);
+    assert_eq!(ctx.v[0][1], 5_000_000);
+}
+
+#[test]
+fn vec_umull_2d_via_pmovzxdq() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    let pack_s = |a: u32, b: u32| -> u64 {
+        (a as u64) | ((b as u64) << 32)
+    };
+    ctx.v[1] = [pack_s(0xFFFF_FFFF, 0x1234_5678), 0];
+    ctx.v[2] = [pack_s(2, 0xCAFE_BABE), 0];
+    let code = build_code(&[
+        0x2EA2_C020, // umull v0.2d, v1.2s, v2.2s
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // S0: 0xFFFFFFFF * 2 = 0x1_FFFFFFFE
+    // S1: 0x12345678 * 0xCAFEBABE = ?
+    assert_eq!(ctx.v[0][0], 0xFFFFFFFFu64 * 2);
+    assert_eq!(ctx.v[0][1], 0x1234_5678u64 * 0xCAFE_BABEu64);
+}
+
+#[test]
+fn vec_sshr_imm_2d_arithmetic_shift() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    // lane 0 = positive; lane 1 = negative.
+    ctx.v[1] = [0x0000_0000_0000_0080, 0x8000_0000_0000_0000];
+    let code = build_code(&[
+        0x4F7C_0420, // sshr v0.2d, v1.2d, #4
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // 0x80 >> 4 = 0x8 (positive); 0x8000... >> 4 (arithmetic) = 0xF800_0000_0000_0000
+    assert_eq!(ctx.v[0][0], 0x0000_0000_0000_0008);
+    assert_eq!(ctx.v[0][1], 0xF800_0000_0000_0000);
+}
+
+#[test]
+fn vec_sshr_imm_2d_by_one() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [0xFFFF_FFFF_FFFF_FFFF, 0x4000_0000_0000_0000];
+    let code = build_code(&[
+        0x4F7F_0420, // sshr v0.2d, v1.2d, #1
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // -1 arith >> 1 = -1; positive 0x4000... >> 1 = 0x2000...
+    assert_eq!(ctx.v[0][0], 0xFFFF_FFFF_FFFF_FFFF);
+    assert_eq!(ctx.v[0][1], 0x2000_0000_0000_0000);
+}
+
+#[test]
+fn vec_tbl2_16b_two_register_table() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    // Table = V1||V2; V1 bytes 0xA0..0xAF, V2 bytes 0xB0..0xBF.
+    ctx.v[1] = [0xA7A6_A5A4_A3A2_A1A0, 0xAFAE_ADAC_ABAA_A9A8];
+    ctx.v[2] = [0xB7B6_B5B4_B3B2_B1B0, 0xBFBE_BDBC_BBBA_B9B8];
+    // Indices: mix of low (V1), high (V2), and out-of-range.
+    let mut idx = [0u8; 16];
+    let want = [0u8, 5, 16, 31, 32, 200, 17, 15,  3, 18, 50, 7,  29, 1, 100, 14];
+    for (i, &v) in want.iter().enumerate() { idx[i] = v; }
+    let mut lo = [0u8; 8]; lo.copy_from_slice(&idx[..8]);
+    let mut hi = [0u8; 8]; hi.copy_from_slice(&idx[8..]);
+    ctx.v[3] = [u64::from_le_bytes(lo), u64::from_le_bytes(hi)];
+
+    let code = build_code(&[
+        0x4E03_2020, // tbl v0.16b, {v1.16b, v2.16b}, v3.16b
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // Expected per index:
+    //   0   → V1[0]  = 0xA0
+    //   5   → V1[5]  = 0xA5
+    //   16  → V2[0]  = 0xB0
+    //   31  → V2[15] = 0xBF
+    //   32  → 0
+    //   200 → 0
+    //   17  → V2[1]  = 0xB1
+    //   15  → V1[15] = 0xAF
+    //   3   → V1[3]  = 0xA3
+    //   18  → V2[2]  = 0xB2
+    //   50  → 0
+    //   7   → V1[7]  = 0xA7
+    //   29  → V2[13] = 0xBD
+    //   1   → V1[1]  = 0xA1
+    //   100 → 0
+    //   14  → V1[14] = 0xAE
+    let want = [0xA0u8, 0xA5, 0xB0, 0xBF, 0x00, 0x00, 0xB1, 0xAF,
+                0xA3,    0xB2, 0x00, 0xA7, 0xBD, 0xA1, 0x00, 0xAE];
+    let mut lo = [0u8; 8]; lo.copy_from_slice(&want[..8]);
+    let mut hi = [0u8; 8]; hi.copy_from_slice(&want[8..]);
+    assert_eq!(ctx.v[0][0], u64::from_le_bytes(lo));
+    assert_eq!(ctx.v[0][1], u64::from_le_bytes(hi));
+}
+
+#[test]
+fn vec_tbl3_16b_three_register_table() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    // Table = V1||V2||V3 (48 bytes, 0xA0..0xCF).
+    ctx.v[1] = [0xA7A6_A5A4_A3A2_A1A0, 0xAFAE_ADAC_ABAA_A9A8];
+    ctx.v[2] = [0xB7B6_B5B4_B3B2_B1B0, 0xBFBE_BDBC_BBBA_B9B8];
+    ctx.v[3] = [0xC7C6_C5C4_C3C2_C1C0, 0xCFCE_CDCC_CBCA_C9C8];
+    // Indices spanning all three chunks plus out-of-range.
+    let want_idx = [0u8, 16, 32, 47, 48, 200, 33, 15,  3, 18, 35, 7,  31, 1, 100, 46];
+    let mut idx = [0u8; 16];
+    for (i, &v) in want_idx.iter().enumerate() { idx[i] = v; }
+    let mut lo = [0u8; 8]; lo.copy_from_slice(&idx[..8]);
+    let mut hi = [0u8; 8]; hi.copy_from_slice(&idx[8..]);
+    ctx.v[4] = [u64::from_le_bytes(lo), u64::from_le_bytes(hi)];
+
+    let code = build_code(&[
+        0x4E04_4020, // tbl v0.16b, {v1.16b, v2.16b, v3.16b}, v4.16b
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    let want = [0xA0u8, 0xB0, 0xC0, 0xCF, 0x00, 0x00, 0xC1, 0xAF,
+                0xA3,    0xB2, 0xC3, 0xA7, 0xBF, 0xA1, 0x00, 0xCE];
+    let mut lo = [0u8; 8]; lo.copy_from_slice(&want[..8]);
+    let mut hi = [0u8; 8]; hi.copy_from_slice(&want[8..]);
+    assert_eq!(ctx.v[0][0], u64::from_le_bytes(lo));
+    assert_eq!(ctx.v[0][1], u64::from_le_bytes(hi));
+}

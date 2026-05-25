@@ -88,9 +88,10 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDSAME) -> Result<InstStatus> 
         Kind::Add => em.vec_add(vn, vm, size, q),
         Kind::Sub => em.vec_sub(vn, vm, size, q),
         Kind::Mul => {
-            // Only 16/32-bit lanes are wired through SSE today; surface a clear
-            // error for 8/64-bit lane MUL until we add the decomposition.
-            if size != 1 && size != 2 {
+            // 8-bit lane MUL still needs unpack/widen/pack decomposition;
+            // 16/32/64-bit lanes are all wired up (64-bit via PMULUDQ
+            // partial products — see backend emit).
+            if size == 0 {
                 return Err(Error::Unsupported { pc: em.current_pc, opcode: raw });
             }
             em.vec_mul(vn, vm, size, q)
@@ -116,10 +117,8 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDSAME) -> Result<InstStatus> 
             }
         }
         Kind::Smin | Kind::Smax | Kind::Umin | Kind::Umax => {
-            // 64-bit lane min/max is unsupported (no PMINSQ/PMAXSQ pre-AVX-512).
-            if size == 3 {
-                return Err(Error::Unsupported { pc: em.current_pc, opcode: raw });
-            }
+            // 64-bit lanes are synthesised via pcmpgtq + XOR-blend in the
+            // backend; all sizes valid.
             match kind {
                 Kind::Smin => em.vec_smin(vn, vm, size, q),
                 Kind::Smax => em.vec_smax(vn, vm, size, q),

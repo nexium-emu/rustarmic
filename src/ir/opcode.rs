@@ -292,6 +292,13 @@ pub enum Op {
     /// FMLS Vd, Vn, Vm: Vd = Vd - Vn*Vm (composed).
     VecFmls_S = 0x724, VecFmls_D = 0x725,
 
+    /// TBL with a 2-register table (32 bytes). Args (table0, table1, indices);
+    /// indices in 0..32 select bytes, otherwise zero. Q-flag in `imm` bit 0.
+    VecTbl2 = 0x728,
+    /// TBL with a 3-register table (48 bytes). Args (table0, table1, table2,
+    /// indices); indices in 0..48 select bytes, otherwise zero.
+    VecTbl3 = 0x72C,
+
     Mrs            = 0x700,
     Msr            = 0x704,
     Hint           = 0x708,

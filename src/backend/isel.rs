@@ -148,11 +148,11 @@ fn dispatch_op(op: Op) -> Option<EmitFn> {
         VecAbs8 | VecAbs16 | VecAbs32           => emit_op_vec_abs,
         VecNot => emit_op_vec_not,
 
-        VecMul16 | VecMul32 => emit_op_vec_mul,
+        VecMul16 | VecMul32 | VecMul64 => emit_op_vec_mul,
 
         VecShlImm8  | VecShlImm16  | VecShlImm32  | VecShlImm64  => emit_op_vec_shl_imm,
         VecUshrImm8 | VecUshrImm16 | VecUshrImm32 | VecUshrImm64 => emit_op_vec_ushr_imm,
-        VecSshrImm8 | VecSshrImm16 | VecSshrImm32                => emit_op_vec_sshr_imm,
+        VecSshrImm8 | VecSshrImm16 | VecSshrImm32 | VecSshrImm64 => emit_op_vec_sshr_imm,
 
         VecCmEq8 | VecCmEq16 | VecCmEq32 | VecCmEq64 => emit_op_vec_cmeq,
         VecCmGt8 | VecCmGt16 | VecCmGt32 | VecCmGt64 => emit_op_vec_cmgt,
@@ -202,6 +202,8 @@ fn dispatch_op(op: Op) -> Option<EmitFn> {
         VecXtn   => emit_op_vec_xtn,
         VecXtn2  => emit_op_vec_xtn2,
         VecTbl   => emit_op_vec_tbl,
+        VecTbl2  => emit_op_vec_tbl2,
+        VecTbl3  => emit_op_vec_tbl3,
         VecRev16 => emit_op_vec_rev16,
         VecRev32 => emit_op_vec_rev32,
         VecRev64 => emit_op_vec_rev64,
@@ -672,6 +674,7 @@ fn emit_op_vec_mul(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, i
     match a.op.size_log2() {
         1 => asm.pmullw(working, other)?,
         2 => asm.pmulld(working, other)?,
+        3 => emit_mul64_into(asm, working, other)?,
         _ => return Err(Error::Backend(format!("VecMul lane {} not supported", a.op.size_log2()))),
     }
     if !q_form { asm.movq(working, working)?; }
@@ -751,11 +754,6 @@ fn emit_op_vec_sshr_imm(asm: &mut CodeAssembler, block: &Block, alloc: &Allocati
             // (pmovsxbw), arithmetic-shift each H by N, pack back to bytes
             // with signed saturation (won't saturate since values stay in
             // -128..127).
-            //
-            // For Q=1 we have to process both 8-byte halves. Strategy:
-            //   xmm1 = low 8 widened to 8 H lanes, shifted
-            //   xmm2 = high 8 widened to 8 H lanes, shifted
-            //   packsswb xmm1, xmm2 → 16 bytes
             asm.pmovsxbw(xmm1, working)?;
             asm.psraw(xmm1, shift as i32)?;
             if q_form {
@@ -766,12 +764,24 @@ fn emit_op_vec_sshr_imm(asm: &mut CodeAssembler, block: &Block, alloc: &Allocati
             } else {
                 asm.packsswb(xmm1, xmm1)?;
             }
-            // Move result back into `working`.
             if working != xmm1 { asm.movdqa(working, xmm1)?; }
         }
         1 => asm.psraw(working, shift as i32)?,
         2 => asm.psrad(working, shift as i32)?,
-        _ => return Err(Error::Backend(format!("VecSshrImm lane {} not supported (no PSRAQ pre-AVX-512)", a.op.size_log2()))),
+        3 => {
+            // SSHR.2D: no PSRAQ pre-AVX-512. Build it from a logical shift
+            // plus an OR-in of the replicated sign bit at the top:
+            //   logical = psrlq(value, N)
+            //   sign    = pcmpgtq(zero, value)     ; all-ones lane if neg
+            //   topmask = psllq(sign, 64-N)        ; top N bits set if neg
+            //   result  = logical OR topmask
+            asm.pxor(xmm1, xmm1)?;
+            asm.pcmpgtq(xmm1, working)?;
+            asm.psllq(xmm1, (64 - shift) as i32)?;
+            asm.psrlq(working, shift as i32)?;
+            asm.por(working, xmm1)?;
+        }
+        _ => unreachable!(),
     }
     if !q_form { asm.movq(working, working)?; }
     store_xmm_q(asm, alloc, d, working)
@@ -1090,7 +1100,7 @@ fn emit_op_vec_zip2(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, 
 
 // ── SMIN/SMAX/UMIN/UMAX ──────────────────────────────────────────────────
 macro_rules! emit_vec_minmax {
-    ($fn_name:ident, $b:ident, $w:ident, $d:ident) => {
+    ($fn_name:ident, $b:ident, $w:ident, $d:ident, $kind:ident) => {
         fn $fn_name(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
             let a = block.code[idx];
             let d = dst_of(&a, idx).unwrap();
@@ -1102,17 +1112,67 @@ macro_rules! emit_vec_minmax {
                 0 => asm.$b(working, other)?,
                 1 => asm.$w(working, other)?,
                 2 => asm.$d(working, other)?,
-                _ => return Err(Error::Backend(format!("{} lane {} unsupported", stringify!($fn_name), a.op.size_log2()))),
+                3 => emit_minmax64(asm, working, other, MinMaxKind::$kind)?,
+                _ => unreachable!(),
             }
             if !q_form { asm.movq(working, working)?; }
             store_xmm_q(asm, alloc, d, working)
         }
     };
 }
-emit_vec_minmax!(emit_op_vec_smin, pminsb, pminsw, pminsd);
-emit_vec_minmax!(emit_op_vec_smax, pmaxsb, pmaxsw, pmaxsd);
-emit_vec_minmax!(emit_op_vec_umin, pminub, pminuw, pminud);
-emit_vec_minmax!(emit_op_vec_umax, pmaxub, pmaxuw, pmaxud);
+emit_vec_minmax!(emit_op_vec_smin, pminsb, pminsw, pminsd, Smin);
+emit_vec_minmax!(emit_op_vec_smax, pmaxsb, pmaxsw, pmaxsd, Smax);
+emit_vec_minmax!(emit_op_vec_umin, pminub, pminuw, pminud, Umin);
+emit_vec_minmax!(emit_op_vec_umax, pmaxub, pmaxuw, pmaxud, Umax);
+
+#[derive(Clone, Copy)]
+enum MinMaxKind { Smin, Smax, Umin, Umax }
+
+/// 64-bit per-lane MIN/MAX. SSE has no PMINSQ/PMAXSQ/PMINUQ/PMAXUQ pre-
+/// AVX-512, so we synthesise them with PCMPGTQ + XOR-blend. For unsigned
+/// compares we flip the sign bit of both operands first so the signed
+/// PCMPGTQ produces unsigned ordering. Clobbers xmm2, xmm3 (plus xmm1 if
+/// `other` wasn't already there).
+fn emit_minmax64(asm: &mut CodeAssembler, working: AsmRegisterXmm, other: AsmRegisterXmm, kind: MinMaxKind) -> Result<()> {
+    let unsigned = matches!(kind, MinMaxKind::Umin | MinMaxKind::Umax);
+    let is_max   = matches!(kind, MinMaxKind::Smax | MinMaxKind::Umax);
+
+    // Get `other` into xmm1 (mutable copy).
+    if other != xmm1 { asm.movdqa(xmm1, other)?; }
+
+    // Optional unsigned-ordering preprocessing: flip the sign bit of both
+    // operands so signed PCMPGTQ gives the unsigned ordering.
+    if unsigned {
+        asm.pcmpeqd(xmm3, xmm3)?;
+        asm.psllq(xmm3, 63)?;
+        asm.pxor(working, xmm3)?;
+        asm.pxor(xmm1, xmm3)?;
+    }
+
+    // mask = "other should win in dst", i.e. select `other` when mask set.
+    //   MIN  → mask = (working > other)   → xmm2 = pcmpgtq(working_copy, other)
+    //   MAX  → mask = (other  > working)  → xmm2 = pcmpgtq(other_copy,  working)
+    asm.movdqa(xmm2, if is_max { xmm1 } else { working })?;
+    if is_max {
+        asm.pcmpgtq(xmm2, working)?;
+    } else {
+        asm.pcmpgtq(xmm2, xmm1)?;
+    }
+
+    // Blend: working = working XOR ((working XOR other) AND mask).
+    asm.movdqa(xmm3, working)?;
+    asm.pxor(xmm3, xmm1)?;
+    asm.pand(xmm3, xmm2)?;
+    asm.pxor(working, xmm3)?;
+
+    // Un-flip the sign bit on the result.
+    if unsigned {
+        asm.pcmpeqd(xmm3, xmm3)?;
+        asm.psllq(xmm3, 63)?;
+        asm.pxor(working, xmm3)?;
+    }
+    Ok(())
+}
 
 // ── Per-lane FP ──────────────────────────────────────────────────────────
 #[inline]
@@ -1226,9 +1286,13 @@ fn emit_op_vec_fcmge(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation,
     store_xmm_q(asm, alloc, d, working)
 }
 
-/// FMLA Vd, Vn, Vm → Vd = Vd + Vn*Vm. Composed (mul then add); not a true
-/// fused multiply-add — there are two roundings, matching our existing
-/// scalar FMA approximation. Args: (vd_prev, vn, vm).
+/// FMLA Vd, Vn, Vm → Vd = Vd + Vn*Vm.
+/// FMLS Vd, Vn, Vm → Vd = Vd - Vn*Vm.
+///
+/// Emits FMA3 instructions (VFMADD231PS/PD and VFNMADD231PS/PD), which do
+/// the multiply-add with a SINGLE rounding — matching ARM's FMLA semantics
+/// exactly, unlike the two-rounding composed form. Requires Haswell+ /
+/// Bulldozer+ CPUs.
 fn emit_fma_inner(
     asm: &mut CodeAssembler,
     alloc: &Allocation,
@@ -1240,17 +1304,18 @@ fn emit_fma_inner(
     let double = vec_fp_is_double(a.op);
     let working = working_xmm_for(alloc, d, xmm0);
     into_xmm_q(asm, alloc, a.args[0], working)?;     // working = Vd_prev
-
-    // xmm1 = Vn (we mutate it into Vn*Vm).
-    into_xmm_q(asm, alloc, a.args[1], xmm1)?;
+    // Both source operands are read-only for VEX-encoded FMA, so we can
+    // consume them in their allocator-chosen XMMs without copying.
+    let vn = get_xmm_q(asm, alloc, a.args[1], xmm1)?;
     let vm = get_xmm_q(asm, alloc, a.args[2], xmm2)?;
-    if double { asm.mulpd(xmm1, vm)?; } else { asm.mulps(xmm1, vm)?; }
 
-    // working += or -= xmm1
-    if subtract {
-        if double { asm.subpd(working, xmm1)?; } else { asm.subps(working, xmm1)?; }
-    } else {
-        if double { asm.addpd(working, xmm1)?; } else { asm.addps(working, xmm1)?; }
+    // VFMADD231PS dst, src1, src2 → dst = src1 * src2 + dst (one rounding).
+    // VFNMADD231PS dst, src1, src2 → dst = -(src1 * src2) + dst.
+    match (subtract, double) {
+        (false, false) => asm.vfmadd231ps (working, vn, vm)?,
+        (false, true)  => asm.vfmadd231pd (working, vn, vm)?,
+        (true,  false) => asm.vfnmadd231ps(working, vn, vm)?,
+        (true,  true)  => asm.vfnmadd231pd(working, vn, vm)?,
     }
     if !q_form { asm.movq(working, working)?; }
     store_xmm_q(asm, alloc, d, working)
@@ -1263,6 +1328,23 @@ fn emit_op_vec_fmla(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, 
 fn emit_op_vec_fmls(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
     let a = block.code[idx]; let d = dst_of(&a, idx).unwrap();
     emit_fma_inner(asm, alloc, a, d, true)
+}
+
+/// 64-bit lane multiply: low 64 bits of (working * other) per qword lane.
+/// Synthesised from three 32×32→64 PMULUDQ since x86 has no PMULLQ until
+/// AVX-512. Clobbers xmm1, xmm2, xmm3.
+fn emit_mul64_into(asm: &mut CodeAssembler, working: AsmRegisterXmm, other: AsmRegisterXmm) -> Result<()> {
+    // a * b (mod 2^64) = a_lo*b_lo + ((a_hi*b_lo + a_lo*b_hi) << 32)
+    if other != xmm1 { asm.movdqa(xmm1, other)?; }
+    asm.pshufd(xmm2, working, 0xB1)?;
+    asm.pmuludq(xmm2, xmm1)?;     // a_hi * b_lo
+    asm.pshufd(xmm3, xmm1, 0xB1)?;
+    asm.pmuludq(xmm3, working)?;  // b_hi * a_lo
+    asm.paddq(xmm2, xmm3)?;
+    asm.psllq(xmm2, 32)?;
+    asm.pmuludq(working, xmm1)?;  // a_lo * b_lo
+    asm.paddq(working, xmm2)?;
+    Ok(())
 }
 
 // ── Widening add / sub / mul ─────────────────────────────────────────────
@@ -1337,8 +1419,11 @@ fn emit_widening_op(
             // signed N-bit operand product when we've already widened.
             0 => asm.pmullw(working, xmm1)?,
             1 => asm.pmulld(working, xmm1)?,
-            // 64-bit lane mul needs PMULLQ (AVX-512); decomposition deferred.
-            2 => return Err(Error::Backend("widening 2D mul unsupported (needs PMULLQ)".into())),
+            // S→D widening: after pmovsx/zxdq the operands are 2 D lanes
+            // each containing the (sign|zero) extended S value. Their
+            // product fits in 63 bits (no overflow at low-64), so the
+            // generic 64-bit decomposition gives the right answer.
+            2 => emit_mul64_into(asm, working, xmm1)?,
             _ => unreachable!(),
         },
     }
@@ -1577,6 +1662,124 @@ fn emit_op_vec_tbl(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, i
     // Table in working; shuffle.
     into_xmm_q(asm, alloc, a.args[0], working)?;
     asm.pshufb(working, xmm1)?;
+
+    if !q_form { asm.movq(working, working)?; }
+    store_xmm_q(asm, alloc, d, working)
+}
+
+/// Materialise a per-byte broadcast constant in `dst_xmm`.
+fn emit_broadcast_byte(asm: &mut CodeAssembler, dst: AsmRegisterXmm, byte: u8) -> Result<()> {
+    let pat = u64::from_le_bytes([byte; 8]) as i64;
+    asm.mov(rax, pat)?;
+    asm.movq(dst, rax)?;
+    asm.punpcklqdq(dst, dst)?;
+    Ok(())
+}
+
+/// Multi-register TBL helper: ORs a single "chunk lookup" into `working`.
+///
+/// Reads bytes [chunk_offset .. chunk_offset+16) of the conceptual 16N-byte
+/// table — when an `indices` byte falls inside that range, the corresponding
+/// `table_xmm` byte is OR'd in; otherwise the contribution is zero.
+///
+/// Uses: xmm3 = 0x70 broadcast (caller provides), xmm4 = adjusted indices,
+///       xmm5 = OUT contribution to OR into `working`.
+fn emit_tbl_chunk_or(
+    asm: &mut CodeAssembler,
+    working: AsmRegisterXmm,
+    table_xmm: AsmRegisterXmm,
+    indices_xmm: AsmRegisterXmm,
+    chunk_offset: u8,
+    pad_70: AsmRegisterXmm,
+    scratch_idx: AsmRegisterXmm,
+    scratch_res: AsmRegisterXmm,
+) -> Result<()> {
+    // adjusted = (indices saturating-sub chunk_offset) saturating-add 0x70
+    asm.movdqa(scratch_idx, indices_xmm)?;
+    if chunk_offset > 0 {
+        emit_broadcast_byte(asm, scratch_res, chunk_offset)?;
+        asm.psubusb(scratch_idx, scratch_res)?;
+    }
+    asm.paddusb(scratch_idx, pad_70)?;
+
+    // Look up in this chunk.
+    asm.movdqa(scratch_res, table_xmm)?;
+    asm.pshufb(scratch_res, scratch_idx)?;
+
+    if chunk_offset == 0 {
+        // First chunk: no false positives possible (pshufb correctly zeros
+        // bytes whose adjusted value had bit 7 set, i.e. original >= 16).
+        asm.por(working, scratch_res)?;
+    } else {
+        // Higher chunks: indices originally below `chunk_offset` got
+        // saturated to 0 by psubusb, then +0x70 keeps bit 7 clear, so
+        // pshufb wrongly selects table[0]. Mask those lanes out using
+        // a "did the original index reach this chunk?" check: bit 7 of
+        // `scratch_idx` is set iff (indices >= chunk_offset + 16), i.e.
+        // the lookup MUST come from a higher chunk; bit 7 clear means
+        // EITHER inside-this-chunk (good) OR below-this-chunk (need to
+        // zero). To distinguish, recompute the mask: we want 0xFF only
+        // where original index was in [chunk_offset, chunk_offset+16).
+        //
+        // Easier and equivalent: mask = (indices >= chunk_offset). Build
+        // it via psubusb(chunk_offset, indices) → 0 iff indices >= offset.
+        asm.movdqa(scratch_idx, pad_70)?;       // borrow scratch_idx briefly for offset broadcast
+        emit_broadcast_byte(asm, scratch_idx, chunk_offset)?;
+        asm.psubusb(scratch_idx, indices_xmm)?; // 0 where indices >= chunk_offset, else (offset - idx)
+        asm.pxor(pad_70, pad_70)?;              // pad_70 temporarily reused as zero
+        asm.pcmpeqb(scratch_idx, pad_70)?;      // 0xFF where indices >= chunk_offset
+        // Restore pad_70 = 0x70 broadcast.
+        emit_broadcast_byte(asm, pad_70, 0x70)?;
+        asm.pand(scratch_res, scratch_idx)?;
+        asm.por(working, scratch_res)?;
+    }
+    Ok(())
+}
+
+fn emit_op_vec_tbl2(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let d = dst_of(&a, idx).unwrap();
+    let q_form = (a.imm & 1) != 0;
+    let working = working_xmm_for(alloc, d, xmm0);
+
+    // Indices must survive both chunk lookups, so keep them in xmm1 (the
+    // allocator never assigns these scratch slots) and don't mutate.
+    into_xmm_q(asm, alloc, a.args[2], xmm1)?;
+
+    // pad_70 lives in xmm2 across both chunks; the helper restores it.
+    emit_broadcast_byte(asm, xmm2, 0x70)?;
+
+    asm.pxor(working, working)?; // start at all-zero, OR contributions in
+
+    // Chunk 0 from table0 (covers indices 0..15).
+    let t0 = get_xmm_q(asm, alloc, a.args[0], xmm3)?;
+    if t0 != xmm3 { asm.movdqa(xmm3, t0)?; }
+    emit_tbl_chunk_or(asm, working, xmm3, xmm1, 0,  xmm2, xmm4, xmm5)?;
+    // Chunk 1 from table1 (covers indices 16..31).
+    let t1 = get_xmm_q(asm, alloc, a.args[1], xmm3)?;
+    if t1 != xmm3 { asm.movdqa(xmm3, t1)?; }
+    emit_tbl_chunk_or(asm, working, xmm3, xmm1, 16, xmm2, xmm4, xmm5)?;
+
+    if !q_form { asm.movq(working, working)?; }
+    store_xmm_q(asm, alloc, d, working)
+}
+
+fn emit_op_vec_tbl3(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let d = dst_of(&a, idx).unwrap();
+    let q_form = (a.imm & 1) != 0;
+    let working = working_xmm_for(alloc, d, xmm0);
+
+    into_xmm_q(asm, alloc, a.args[3], xmm1)?; // indices
+    emit_broadcast_byte(asm, xmm2, 0x70)?;
+    asm.pxor(working, working)?;
+
+    for (i, table_arg) in [a.args[0], a.args[1], a.args[2]].iter().enumerate() {
+        let off = (i * 16) as u8;
+        let t = get_xmm_q(asm, alloc, *table_arg, xmm3)?;
+        if t != xmm3 { asm.movdqa(xmm3, t)?; }
+        emit_tbl_chunk_or(asm, working, xmm3, xmm1, off, xmm2, xmm4, xmm5)?;
+    }
 
     if !q_form { asm.movq(working, working)?; }
     store_xmm_q(asm, alloc, d, working)
