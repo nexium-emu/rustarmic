@@ -195,6 +195,10 @@ fn dispatch_op(op: Op) -> Option<EmitFn> {
         VecRev16 => emit_op_vec_rev16,
         VecRev32 => emit_op_vec_rev32,
         VecRev64 => emit_op_vec_rev64,
+        VecUzp1  => emit_op_vec_uzp1,
+        VecUzp2  => emit_op_vec_uzp2,
+        VecTrn1  => emit_op_vec_trn1,
+        VecTrn2  => emit_op_vec_trn2,
 
         Hint | MemoryBarrier => emit_nop,
         Clrex => emit_op_clrex,
@@ -1207,6 +1211,120 @@ fn emit_op_vec_rev32(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation,
         _ => return Err(Error::Backend(format!("REV32 invalid src_lane {}", src_lane))),
     };
     emit_rev_with_mask(asm, alloc, a, d, lo, hi)
+}
+
+// ── UZP / TRN two-source permutes ────────────────────────────────────────
+//
+// Strategy: for B/H/S lane forms, build two pshufb masks (one for Vn, one
+// for Vm) where bytes that should be sourced from the OTHER vector are
+// 0x80 (causing pshufb to write zero), then PSHUFB each source separately
+// and POR the results. For D lanes (2D form) we use PUNPCKLQDQ / PUNPCKHQDQ
+// which directly do what UZP/TRN ask for.
+#[derive(Clone, Copy)]
+enum PermKind { Uzp1, Uzp2, Trn1, Trn2 }
+
+/// Build pshufb masks for the two source vectors of a UZP/TRN op. For Q=0
+/// forms, only `num_lanes_in_each_source = 8 / lane_bytes` lanes per side
+/// are real; the result occupies the LOW 64 bits with the upper zeroed.
+/// Lane bytes from the "other" source are filled with 0x80 so pshufb
+/// writes zero, allowing a final POR to merge the two halves.
+fn perm_masks(kind: PermKind, lane_log2: u32, q_form: bool) -> (u64, u64, u64, u64) {
+    let lane_bytes = 1usize << lane_log2;
+    let num_result_lanes = (if q_form { 16 } else { 8 }) / lane_bytes;
+    let half = num_result_lanes / 2;
+
+    let mut mask_n = [0x80u8; 16];
+    let mut mask_m = [0x80u8; 16];
+
+    for r in 0..num_result_lanes {
+        let (use_vm, src_lane) = match kind {
+            PermKind::Uzp1 => if r < half { (false, r * 2) }     else { (true, (r - half) * 2) },
+            PermKind::Uzp2 => if r < half { (false, r * 2 + 1) } else { (true, (r - half) * 2 + 1) },
+            PermKind::Trn1 => ((r & 1) == 1, r & !1),
+            PermKind::Trn2 => ((r & 1) == 1, (r & !1) + 1),
+        };
+        let mask = if use_vm { &mut mask_m } else { &mut mask_n };
+        for b in 0..lane_bytes {
+            mask[r * lane_bytes + b] = (src_lane * lane_bytes + b) as u8;
+        }
+    }
+
+    let to_u64 = |slice: &[u8]| -> u64 {
+        let mut buf = [0u8; 8];
+        buf.copy_from_slice(slice);
+        u64::from_le_bytes(buf)
+    };
+    (
+        to_u64(&mask_n[..8]), to_u64(&mask_n[8..]),
+        to_u64(&mask_m[..8]), to_u64(&mask_m[8..]),
+    )
+}
+
+fn emit_uzp_trn(
+    asm: &mut CodeAssembler,
+    alloc: &Allocation,
+    a: Armlet,
+    d: ValueRef,
+    kind: PermKind,
+) -> Result<()> {
+    let q_form = (a.imm & 1) != 0;
+    let lane_log2 = ((a.imm >> 2) & 0x3) as u32;
+
+    // 2D form: punpcklqdq (UZP1/TRN1) or punpckhqdq (UZP2/TRN2).
+    if lane_log2 == 3 {
+        let working = working_xmm_for(alloc, d, xmm0);
+        into_xmm_q(asm, alloc, a.args[0], working)?;
+        let other = get_xmm_q(asm, alloc, a.args[1], xmm1)?;
+        match kind {
+            PermKind::Uzp1 | PermKind::Trn1 => asm.punpcklqdq(working, other)?,
+            PermKind::Uzp2 | PermKind::Trn2 => asm.punpckhqdq(working, other)?,
+        }
+        if !q_form { asm.movq(working, working)?; }
+        return store_xmm_q(asm, alloc, d, working);
+    }
+
+    let (n_lo, n_hi, m_lo, m_hi) = perm_masks(kind, lane_log2, q_form);
+    let working = working_xmm_for(alloc, d, xmm0);
+
+    // working = pshufb(Vn, mask_n)
+    into_xmm_q(asm, alloc, a.args[0], working)?;
+    asm.mov(rax, n_lo as i64)?;
+    asm.movq(xmm1, rax)?;
+    asm.mov(rax, n_hi as i64)?;
+    asm.pinsrq(xmm1, rax, 1)?;
+    asm.pshufb(working, xmm1)?;
+
+    // xmm2 = pshufb(Vm, mask_m) — load Vm into xmm2 first.
+    let vm_src = get_xmm_q(asm, alloc, a.args[1], xmm2)?;
+    if vm_src != xmm2 { asm.movdqa(xmm2, vm_src)?; }
+    asm.mov(rax, m_lo as i64)?;
+    asm.movq(xmm1, rax)?;
+    asm.mov(rax, m_hi as i64)?;
+    asm.pinsrq(xmm1, rax, 1)?;
+    asm.pshufb(xmm2, xmm1)?;
+
+    // Merge.
+    asm.por(working, xmm2)?;
+
+    if !q_form { asm.movq(working, working)?; }
+    store_xmm_q(asm, alloc, d, working)
+}
+
+fn emit_op_vec_uzp1(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx]; let d = dst_of(&a, idx).unwrap();
+    emit_uzp_trn(asm, alloc, a, d, PermKind::Uzp1)
+}
+fn emit_op_vec_uzp2(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx]; let d = dst_of(&a, idx).unwrap();
+    emit_uzp_trn(asm, alloc, a, d, PermKind::Uzp2)
+}
+fn emit_op_vec_trn1(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx]; let d = dst_of(&a, idx).unwrap();
+    emit_uzp_trn(asm, alloc, a, d, PermKind::Trn1)
+}
+fn emit_op_vec_trn2(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx]; let d = dst_of(&a, idx).unwrap();
+    emit_uzp_trn(asm, alloc, a, d, PermKind::Trn2)
 }
 
 fn emit_op_vec_rev64(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {

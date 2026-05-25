@@ -262,6 +262,14 @@ pub enum Op {
     VecRev32 = 0x6C8,
     VecRev64 = 0x6CC,
 
+    /// UZP1/UZP2: deinterleave even/odd lanes from two sources.
+    /// TRN1/TRN2: transpose even/odd lanes (interleave) from two sources.
+    /// `imm` holds `(lane_log2 << 2) | q_form`.
+    VecUzp1 = 0x6D0,
+    VecUzp2 = 0x6D4,
+    VecTrn1 = 0x6D8,
+    VecTrn2 = 0x6DC,
+
     Mrs            = 0x700,
     Msr            = 0x704,
     Hint           = 0x708,

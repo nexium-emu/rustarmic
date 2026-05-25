@@ -2139,3 +2139,134 @@ fn vec_rev16_8b_zeros_upper_half() {
     assert_eq!(ctx.v[0][0], 0x0607_0405_0203_0001);
     assert_eq!(ctx.v[0][1], 0, "8B form zeros upper 64");
 }
+
+#[test]
+fn vec_uzp1_4s_picks_even_lanes() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    // V1.4S lanes [A0, A1, A2, A3]; V2.4S lanes [B0, B1, B2, B3]
+    // UZP1 result = [A0, A2, B0, B2]
+    ctx.v[1] = [0x0000_00A1_0000_00A0, 0x0000_00A3_0000_00A2];
+    ctx.v[2] = [0x0000_00B1_0000_00B0, 0x0000_00B3_0000_00B2];
+    let code = build_code(&[
+        0x4E82_1820, // uzp1 v0.4s, v1.4s, v2.4s
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    assert_eq!(ctx.v[0][0], 0x0000_00A2_0000_00A0);
+    assert_eq!(ctx.v[0][1], 0x0000_00B2_0000_00B0);
+}
+
+#[test]
+fn vec_uzp2_4s_picks_odd_lanes() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [0x0000_00A1_0000_00A0, 0x0000_00A3_0000_00A2];
+    ctx.v[2] = [0x0000_00B1_0000_00B0, 0x0000_00B3_0000_00B2];
+    let code = build_code(&[
+        0x4E82_5820, // uzp2 v0.4s, v1.4s, v2.4s
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // UZP2 = [A1, A3, B1, B3]
+    assert_eq!(ctx.v[0][0], 0x0000_00A3_0000_00A1);
+    assert_eq!(ctx.v[0][1], 0x0000_00B3_0000_00B1);
+}
+
+#[test]
+fn vec_trn1_4s_transposes_even_lanes() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [0x0000_00A1_0000_00A0, 0x0000_00A3_0000_00A2];
+    ctx.v[2] = [0x0000_00B1_0000_00B0, 0x0000_00B3_0000_00B2];
+    let code = build_code(&[
+        0x4E82_2820, // trn1 v0.4s, v1.4s, v2.4s
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // TRN1 = [A0, B0, A2, B2]
+    assert_eq!(ctx.v[0][0], 0x0000_00B0_0000_00A0);
+    assert_eq!(ctx.v[0][1], 0x0000_00B2_0000_00A2);
+}
+
+#[test]
+fn vec_trn2_4s_transposes_odd_lanes() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [0x0000_00A1_0000_00A0, 0x0000_00A3_0000_00A2];
+    ctx.v[2] = [0x0000_00B1_0000_00B0, 0x0000_00B3_0000_00B2];
+    let code = build_code(&[
+        0x4E82_6820, // trn2 v0.4s, v1.4s, v2.4s
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // TRN2 = [A1, B1, A3, B3]
+    assert_eq!(ctx.v[0][0], 0x0000_00B1_0000_00A1);
+    assert_eq!(ctx.v[0][1], 0x0000_00B3_0000_00A3);
+}
+
+#[test]
+fn vec_uzp1_16b_picks_even_bytes() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    // V1 bytes 0xA0..0xAF; V2 bytes 0xB0..0xBF
+    ctx.v[1] = [0xA7A6_A5A4_A3A2_A1A0, 0xAFAE_ADAC_ABAA_A9A8];
+    ctx.v[2] = [0xB7B6_B5B4_B3B2_B1B0, 0xBFBE_BDBC_BBBA_B9B8];
+    let code = build_code(&[
+        0x4E02_1820, // uzp1 v0.16b, v1.16b, v2.16b
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // Even bytes of Vn then even bytes of Vm:
+    // [A0, A2, A4, A6, A8, AA, AC, AE,  B0, B2, B4, B6, B8, BA, BC, BE]
+    assert_eq!(ctx.v[0][0], 0xAEAC_AAA8_A6A4_A2A0);
+    assert_eq!(ctx.v[0][1], 0xBEBC_BAB8_B6B4_B2B0);
+}
+
+#[test]
+fn vec_uzp1_2d_picks_low_halves() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [0x1111_1111_1111_1111, 0x2222_2222_2222_2222];
+    ctx.v[2] = [0x3333_3333_3333_3333, 0x4444_4444_4444_4444];
+    let code = build_code(&[
+        0x4EC2_1820, // uzp1 v0.2d, v1.2d, v2.2d
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // UZP1.2D = [Vn[0], Vm[0]]
+    assert_eq!(ctx.v[0][0], 0x1111_1111_1111_1111);
+    assert_eq!(ctx.v[0][1], 0x3333_3333_3333_3333);
+}
+
+#[test]
+fn vec_uzp2_2d_picks_high_halves() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [0x1111_1111_1111_1111, 0x2222_2222_2222_2222];
+    ctx.v[2] = [0x3333_3333_3333_3333, 0x4444_4444_4444_4444];
+    let code = build_code(&[
+        0x4EC2_5820, // uzp2 v0.2d, v1.2d, v2.2d
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // UZP2.2D = [Vn[1], Vm[1]]
+    assert_eq!(ctx.v[0][0], 0x2222_2222_2222_2222);
+    assert_eq!(ctx.v[0][1], 0x4444_4444_4444_4444);
+}
+
+#[test]
+fn vec_trn1_8h_transposes_even_h_lanes() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [0xA3A3_A2A2_A1A1_A0A0, 0xA7A7_A6A6_A5A5_A4A4];
+    ctx.v[2] = [0xB3B3_B2B2_B1B1_B0B0, 0xB7B7_B6B6_B5B5_B4B4];
+    let code = build_code(&[
+        0x4E42_2820, // trn1 v0.8h, v1.8h, v2.8h
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // TRN1.8H = [A0, B0, A2, B2, A4, B4, A6, B6]
+    assert_eq!(ctx.v[0][0], 0xB2B2_A2A2_B0B0_A0A0);
+    assert_eq!(ctx.v[0][1], 0xB6B6_A6A6_B4B4_A4A4);
+}

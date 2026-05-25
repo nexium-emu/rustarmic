@@ -487,6 +487,23 @@ impl<'b> IrEmitter<'b> {
         self.push(Armlet::new(op, Ty::U128).with_args(&[vn]).with_imm(imm))
     }
 
+    fn vec_perm(&mut self, op: Op, vn: ValueRef, vm: ValueRef, lane_log2: u32, q: bool) -> ValueRef {
+        let imm = (q as u64) | ((lane_log2 as u64) << 2);
+        self.push(Armlet::new(op, Ty::U128).with_args(&[vn, vm]).with_imm(imm))
+    }
+    pub fn vec_uzp1(&mut self, vn: ValueRef, vm: ValueRef, lane_log2: u32, q: bool) -> ValueRef {
+        self.vec_perm(Op::VecUzp1, vn, vm, lane_log2, q)
+    }
+    pub fn vec_uzp2(&mut self, vn: ValueRef, vm: ValueRef, lane_log2: u32, q: bool) -> ValueRef {
+        self.vec_perm(Op::VecUzp2, vn, vm, lane_log2, q)
+    }
+    pub fn vec_trn1(&mut self, vn: ValueRef, vm: ValueRef, lane_log2: u32, q: bool) -> ValueRef {
+        self.vec_perm(Op::VecTrn1, vn, vm, lane_log2, q)
+    }
+    pub fn vec_trn2(&mut self, vn: ValueRef, vm: ValueRef, lane_log2: u32, q: bool) -> ValueRef {
+        self.vec_perm(Op::VecTrn2, vn, vm, lane_log2, q)
+    }
+
     // ─── NZCV ───────────────────────────────────────────────────────────────
     pub fn get_nzcv(&mut self) -> ValueRef {
         self.push(Armlet::new(Op::GetNzcv, Ty::Nzcv))

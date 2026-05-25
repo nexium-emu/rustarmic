@@ -32,12 +32,18 @@ pub fn translate_ext(em: &mut IrEmitter<'_>, insn: ASIMDEXT) -> Result<InstStatu
     Ok(InstStatus::Continue)
 }
 
+#[derive(Clone, Copy)]
+enum PermKind { Zip1, Zip2, Uzp1, Uzp2, Trn1, Trn2 }
+
 pub fn translate_perm(em: &mut IrEmitter<'_>, insn: ASIMDPERM) -> Result<InstStatus> {
     use ASIMDPERM::*;
-    let (raw, zip2) = match insn {
-        ZIP1_Vd_Vn_Vm(i) => (i.0, false),
-        ZIP2_Vd_Vn_Vm(i) => (i.0, true),
-        _ => return Err(Error::Unsupported { pc: em.current_pc, opcode: 0 }),
+    let (raw, kind) = match insn {
+        ZIP1_Vd_Vn_Vm(i) => (i.0, PermKind::Zip1),
+        ZIP2_Vd_Vn_Vm(i) => (i.0, PermKind::Zip2),
+        UZP1_Vd_Vn_Vm(i) => (i.0, PermKind::Uzp1),
+        UZP2_Vd_Vn_Vm(i) => (i.0, PermKind::Uzp2),
+        TRN1_Vd_Vn_Vm(i) => (i.0, PermKind::Trn1),
+        TRN2_Vd_Vn_Vm(i) => (i.0, PermKind::Trn2),
     };
 
     let q    = bit(raw, 30) == 1;
@@ -48,7 +54,14 @@ pub fn translate_perm(em: &mut IrEmitter<'_>, insn: ASIMDPERM) -> Result<InstSta
 
     let vn = em.get_v_q(rn);
     let vm = em.get_v_q(rm);
-    let result = if zip2 { em.vec_zip2(vn, vm, size, q) } else { em.vec_zip1(vn, vm, size, q) };
+    let result = match kind {
+        PermKind::Zip1 => em.vec_zip1(vn, vm, size, q),
+        PermKind::Zip2 => em.vec_zip2(vn, vm, size, q),
+        PermKind::Uzp1 => em.vec_uzp1(vn, vm, size, q),
+        PermKind::Uzp2 => em.vec_uzp2(vn, vm, size, q),
+        PermKind::Trn1 => em.vec_trn1(vn, vm, size, q),
+        PermKind::Trn2 => em.vec_trn2(vn, vm, size, q),
+    };
     em.set_v_q(rd, result);
     Ok(InstStatus::Continue)
 }
