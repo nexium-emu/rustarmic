@@ -433,6 +433,25 @@ impl<'b> IrEmitter<'b> {
     pub fn vec_fmin(&mut self, vn: ValueRef, vm: ValueRef, double: bool, q: bool) -> ValueRef {
         self.vec_fbin(Op::VecFMin_S, Op::VecFMin_D, double, vn, vm, q)
     }
+    pub fn vec_fcmeq(&mut self, vn: ValueRef, vm: ValueRef, double: bool, q: bool) -> ValueRef {
+        self.vec_fbin(Op::VecFCmEq_S, Op::VecFCmEq_D, double, vn, vm, q)
+    }
+    pub fn vec_fcmgt(&mut self, vn: ValueRef, vm: ValueRef, double: bool, q: bool) -> ValueRef {
+        self.vec_fbin(Op::VecFCmGt_S, Op::VecFCmGt_D, double, vn, vm, q)
+    }
+    pub fn vec_fcmge(&mut self, vn: ValueRef, vm: ValueRef, double: bool, q: bool) -> ValueRef {
+        self.vec_fbin(Op::VecFCmGe_S, Op::VecFCmGe_D, double, vn, vm, q)
+    }
+
+    /// FMLA: vd_prev + vn * vm (composed mul-add, not fused).
+    pub fn vec_fmla(&mut self, vd_prev: ValueRef, vn: ValueRef, vm: ValueRef, double: bool, q: bool) -> ValueRef {
+        let op = if double { Op::VecFmla_D } else { Op::VecFmla_S };
+        self.push(Armlet::new(op, Ty::U128).with_args(&[vd_prev, vn, vm]).with_imm(q as u64))
+    }
+    pub fn vec_fmls(&mut self, vd_prev: ValueRef, vn: ValueRef, vm: ValueRef, double: bool, q: bool) -> ValueRef {
+        let op = if double { Op::VecFmls_D } else { Op::VecFmls_S };
+        self.push(Armlet::new(op, Ty::U128).with_args(&[vd_prev, vn, vm]).with_imm(q as u64))
+    }
 
     fn vec_funop(&mut self, op_s: Op, op_d: Op, double: bool, vn: ValueRef, q: bool) -> ValueRef {
         let op = if double { op_d } else { op_s };
@@ -458,6 +477,22 @@ impl<'b> IrEmitter<'b> {
         let imm = ((high_half as u64) << 1) | ((src_lane_log2 as u64) << 2);
         self.push(Armlet::new(Op::VecUaddl, Ty::U128).with_args(&[vn, vm]).with_imm(imm))
     }
+    pub fn vec_ssubl(&mut self, vn: ValueRef, vm: ValueRef, src_lane_log2: u32, high_half: bool) -> ValueRef {
+        let imm = ((high_half as u64) << 1) | ((src_lane_log2 as u64) << 2);
+        self.push(Armlet::new(Op::VecSsubl, Ty::U128).with_args(&[vn, vm]).with_imm(imm))
+    }
+    pub fn vec_usubl(&mut self, vn: ValueRef, vm: ValueRef, src_lane_log2: u32, high_half: bool) -> ValueRef {
+        let imm = ((high_half as u64) << 1) | ((src_lane_log2 as u64) << 2);
+        self.push(Armlet::new(Op::VecUsubl, Ty::U128).with_args(&[vn, vm]).with_imm(imm))
+    }
+    pub fn vec_smull(&mut self, vn: ValueRef, vm: ValueRef, src_lane_log2: u32, high_half: bool) -> ValueRef {
+        let imm = ((high_half as u64) << 1) | ((src_lane_log2 as u64) << 2);
+        self.push(Armlet::new(Op::VecSmull, Ty::U128).with_args(&[vn, vm]).with_imm(imm))
+    }
+    pub fn vec_umull(&mut self, vn: ValueRef, vm: ValueRef, src_lane_log2: u32, high_half: bool) -> ValueRef {
+        let imm = ((high_half as u64) << 1) | ((src_lane_log2 as u64) << 2);
+        self.push(Armlet::new(Op::VecUmull, Ty::U128).with_args(&[vn, vm]).with_imm(imm))
+    }
 
     /// Narrowing truncate. `src_lane_log2` is 1..=3 (H/S/D); result lane is
     /// one narrower (B/H/S). Result is packed in the low 64 bits; upper 64
@@ -465,6 +500,12 @@ impl<'b> IrEmitter<'b> {
     pub fn vec_xtn(&mut self, vn: ValueRef, src_lane_log2: u32) -> ValueRef {
         let imm = (src_lane_log2 as u64) << 2;
         self.push(Armlet::new(Op::VecXtn, Ty::U128).with_args(&[vn]).with_imm(imm))
+    }
+    /// XTN2: same narrowing as XTN but writes result to the UPPER 64 bits
+    /// and preserves the LOW 64 from `vd_prev`.
+    pub fn vec_xtn2(&mut self, vd_prev: ValueRef, vn: ValueRef, src_lane_log2: u32) -> ValueRef {
+        let imm = (src_lane_log2 as u64) << 2;
+        self.push(Armlet::new(Op::VecXtn2, Ty::U128).with_args(&[vd_prev, vn]).with_imm(imm))
     }
 
     /// TBL with a single-register table. Each byte of `indices` selects a

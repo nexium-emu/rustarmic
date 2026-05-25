@@ -26,6 +26,7 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDMISC) -> Result<InstStatus> 
         FABS_Vd_Vn(i)  => (i.0, Kind::FAbs),
         FSQRT_Vd_Vn(i) => (i.0, Kind::FSqrt),
         XTN_Vd_Vn(i)   => (i.0, Kind::Xtn),
+        XTN2_Vd_Vn(i)  => (i.0, Kind::Xtn),
         REV16_Vd_Vn(i) => (i.0, Kind::Rev16),
         REV32_Vd_Vn(i) => (i.0, Kind::Rev32),
         REV64_Vd_Vn(i) => (i.0, Kind::Rev64),
@@ -58,20 +59,18 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDMISC) -> Result<InstStatus> 
             }
         }
         Kind::Xtn => {
-            // XTN narrows by one: B->… wait XTN takes the wider lane source
-            // (size bits indicate the DESTINATION lane width). For
-            // XTN.<Td>, Vn.<Ts>, source lane Ts = Td * 2 in bits.
-            // `size` field at 22 says dst lane: 00=B, 01=H, 10=S; we pass
-            // src_lane_log2 = size + 1 to the IR helper.
+            // `size` (bits 23:22) indicates the DESTINATION lane width;
+            // source lane is one wider. Q=0 → XTN (zero upper); Q=1 → XTN2
+            // (preserve low half of Vd, write narrowed result to upper).
             if size > 2 {
                 return Err(Error::Decode { pc: em.current_pc, opcode: raw });
             }
-            // Q=1 (XTN2) preserves the low half of Vd — we don't support
-            // that yet; only the XTN (Q=0) form, which zeroes the upper 64.
             if q {
-                return Err(Error::Unsupported { pc: em.current_pc, opcode: raw });
+                let vd_prev = em.get_v_q(rd);
+                em.vec_xtn2(vd_prev, vn, size + 1)
+            } else {
+                em.vec_xtn(vn, size + 1)
             }
-            em.vec_xtn(vn, size + 1)
         }
         Kind::Rev16 | Kind::Rev32 | Kind::Rev64 => {
             // ARM encodes the byte-level reversal granularity in `size`. The

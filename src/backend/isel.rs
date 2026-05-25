@@ -150,15 +150,15 @@ fn dispatch_op(op: Op) -> Option<EmitFn> {
 
         VecMul16 | VecMul32 => emit_op_vec_mul,
 
-        VecShlImm16 | VecShlImm32 | VecShlImm64   => emit_op_vec_shl_imm,
-        VecUshrImm16 | VecUshrImm32 | VecUshrImm64 => emit_op_vec_ushr_imm,
-        VecSshrImm16 | VecSshrImm32                => emit_op_vec_sshr_imm,
+        VecShlImm8  | VecShlImm16  | VecShlImm32  | VecShlImm64  => emit_op_vec_shl_imm,
+        VecUshrImm8 | VecUshrImm16 | VecUshrImm32 | VecUshrImm64 => emit_op_vec_ushr_imm,
+        VecSshrImm8 | VecSshrImm16 | VecSshrImm32                => emit_op_vec_sshr_imm,
 
         VecCmEq8 | VecCmEq16 | VecCmEq32 | VecCmEq64 => emit_op_vec_cmeq,
         VecCmGt8 | VecCmGt16 | VecCmGt32 | VecCmGt64 => emit_op_vec_cmgt,
         VecCmGe8 | VecCmGe16 | VecCmGe32 | VecCmGe64 => emit_op_vec_cmge,
-        VecCmHi16 | VecCmHi32 | VecCmHi64            => emit_op_vec_cmhi,
-        VecCmHs16 | VecCmHs32 | VecCmHs64            => emit_op_vec_cmhs,
+        VecCmHi8 | VecCmHi16 | VecCmHi32 | VecCmHi64 => emit_op_vec_cmhi,
+        VecCmHs8 | VecCmHs16 | VecCmHs32 | VecCmHs64 => emit_op_vec_cmhs,
 
         VecBit => emit_op_vec_bit,
         VecBif => emit_op_vec_bif,
@@ -187,10 +187,20 @@ fn dispatch_op(op: Op) -> Option<EmitFn> {
         VecFNeg_S  | VecFNeg_D  => emit_op_vec_fneg,
         VecFAbs_S  | VecFAbs_D  => emit_op_vec_fabs,
         VecFSqrt_S | VecFSqrt_D => emit_op_vec_fsqrt,
+        VecFCmEq_S | VecFCmEq_D => emit_op_vec_fcmeq,
+        VecFCmGt_S | VecFCmGt_D => emit_op_vec_fcmgt,
+        VecFCmGe_S | VecFCmGe_D => emit_op_vec_fcmge,
+        VecFmla_S  | VecFmla_D  => emit_op_vec_fmla,
+        VecFmls_S  | VecFmls_D  => emit_op_vec_fmls,
 
         VecSaddl => emit_op_vec_addl_signed,
         VecUaddl => emit_op_vec_addl_unsigned,
+        VecSsubl => emit_op_vec_subl_signed,
+        VecUsubl => emit_op_vec_subl_unsigned,
+        VecSmull => emit_op_vec_mull_signed,
+        VecUmull => emit_op_vec_mull_unsigned,
         VecXtn   => emit_op_vec_xtn,
+        VecXtn2  => emit_op_vec_xtn2,
         VecTbl   => emit_op_vec_tbl,
         VecRev16 => emit_op_vec_rev16,
         VecRev32 => emit_op_vec_rev32,
@@ -668,6 +678,15 @@ fn emit_op_vec_mul(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, i
     store_xmm_q(asm, alloc, d, working)
 }
 
+/// Broadcast a per-byte mask into xmm1 via mov+movq+punpcklqdq.
+fn broadcast_byte_mask(asm: &mut CodeAssembler, byte: u8) -> Result<()> {
+    let pat = u64::from_le_bytes([byte; 8]) as i64;
+    asm.mov(rax, pat)?;
+    asm.movq(xmm1, rax)?;
+    asm.punpcklqdq(xmm1, xmm1)?;
+    Ok(())
+}
+
 fn emit_op_vec_shl_imm(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
     let a = block.code[idx];
     let d = dst_of(&a, idx).unwrap();
@@ -676,6 +695,15 @@ fn emit_op_vec_shl_imm(asm: &mut CodeAssembler, block: &Block, alloc: &Allocatio
     let working = working_xmm_for(alloc, d, xmm0);
     into_xmm_q(asm, alloc, a.args[0], working)?;
     match a.op.size_log2() {
+        0 => {
+            // SHL.<8B/16B>: no PSLLB. psllw shifts H lanes, leaking bits
+            // across byte boundaries; mask each byte to clear the leaked low
+            // bits that came from the previous byte's overflow.
+            asm.psllw(working, shift as i32)?;
+            let mask_byte = ((0xFFu32 << shift) & 0xFF) as u8;
+            broadcast_byte_mask(asm, mask_byte)?;
+            asm.pand(working, xmm1)?;
+        }
         1 => asm.psllw(working, shift as i32)?,
         2 => asm.pslld(working, shift as i32)?,
         3 => asm.psllq(working, shift as i32)?,
@@ -693,6 +721,14 @@ fn emit_op_vec_ushr_imm(asm: &mut CodeAssembler, block: &Block, alloc: &Allocati
     let working = working_xmm_for(alloc, d, xmm0);
     into_xmm_q(asm, alloc, a.args[0], working)?;
     match a.op.size_log2() {
+        0 => {
+            // USHR.<8B/16B>: psrlw leaks high-byte bits into the low byte's
+            // top; mask to keep only the (8-shift) low bits per byte.
+            asm.psrlw(working, shift as i32)?;
+            let mask_byte = (0xFFu32 >> shift) as u8;
+            broadcast_byte_mask(asm, mask_byte)?;
+            asm.pand(working, xmm1)?;
+        }
         1 => asm.psrlw(working, shift as i32)?,
         2 => asm.psrld(working, shift as i32)?,
         3 => asm.psrlq(working, shift as i32)?,
@@ -710,6 +746,29 @@ fn emit_op_vec_sshr_imm(asm: &mut CodeAssembler, block: &Block, alloc: &Allocati
     let working = working_xmm_for(alloc, d, xmm0);
     into_xmm_q(asm, alloc, a.args[0], working)?;
     match a.op.size_log2() {
+        0 => {
+            // SSHR.<8B/16B>: no PSRAB. Widen each byte to a signed H lane
+            // (pmovsxbw), arithmetic-shift each H by N, pack back to bytes
+            // with signed saturation (won't saturate since values stay in
+            // -128..127).
+            //
+            // For Q=1 we have to process both 8-byte halves. Strategy:
+            //   xmm1 = low 8 widened to 8 H lanes, shifted
+            //   xmm2 = high 8 widened to 8 H lanes, shifted
+            //   packsswb xmm1, xmm2 → 16 bytes
+            asm.pmovsxbw(xmm1, working)?;
+            asm.psraw(xmm1, shift as i32)?;
+            if q_form {
+                asm.psrldq(working, 8)?;
+                asm.pmovsxbw(xmm2, working)?;
+                asm.psraw(xmm2, shift as i32)?;
+                asm.packsswb(xmm1, xmm2)?;
+            } else {
+                asm.packsswb(xmm1, xmm1)?;
+            }
+            // Move result back into `working`.
+            if working != xmm1 { asm.movdqa(working, xmm1)?; }
+        }
         1 => asm.psraw(working, shift as i32)?,
         2 => asm.psrad(working, shift as i32)?,
         _ => return Err(Error::Backend(format!("VecSshrImm lane {} not supported (no PSRAQ pre-AVX-512)", a.op.size_log2()))),
@@ -780,7 +839,8 @@ fn emit_op_vec_cmge(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, 
 
 /// Unsigned a > b  ⇔  signed (a ^ sign) > (b ^ sign). We materialize the
 /// sign mask per lane via `pcmpeqd; psll<X>` and apply pxor before the
-/// signed compare.
+/// signed compare. 8-bit lanes can't use psllX (no PSLLB), so for B we use
+/// `psubusb`: a-b saturating; result is zero iff a <= b.
 fn emit_unsigned_cmp(
     asm: &mut CodeAssembler,
     alloc: &Allocation,
@@ -791,6 +851,26 @@ fn emit_unsigned_cmp(
     let q_form = (a.imm & 1) != 0;
     let lane = a.op.size_log2();
     let working = working_xmm_for(alloc, d, xmm0);
+
+    if lane == 0 {
+        // CMHI: want 0xFF where a > b. Use a psubusb b → nonzero iff a > b.
+        //   working = a psubusb b ; compare against zero → 0xFF where a <= b ;
+        //   xor with all-ones → 0xFF where a > b.
+        // CMHS: want 0xFF where a >= b. Symmetric: b psubusb a, then compare.
+        let (sub_lhs, sub_rhs) = if invert { (a.args[1], a.args[0]) } else { (a.args[0], a.args[1]) };
+        into_xmm_q(asm, alloc, sub_lhs, working)?;
+        let rhs = get_xmm_q(asm, alloc, sub_rhs, xmm1)?;
+        asm.psubusb(working, rhs)?;
+        asm.pxor(xmm2, xmm2)?;
+        asm.pcmpeqb(working, xmm2)?;
+        if !invert {
+            // CMHI: invert (we currently have a<=b mask, want a>b).
+            asm.pcmpeqd(xmm1, xmm1)?;
+            asm.pxor(working, xmm1)?;
+        }
+        if !q_form { asm.movq(working, working)?; }
+        return store_xmm_q(asm, alloc, d, working);
+    }
 
     // Build the per-lane sign-bit mask in xmm2.
     asm.pcmpeqd(xmm2, xmm2)?;
@@ -1103,20 +1183,113 @@ fn emit_op_vec_fsqrt(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation,
     store_xmm_q(asm, alloc, d, working)
 }
 
-// ── Widening add ──────────────────────────────────────────────────────────
-fn emit_widening_addl(
+// FCMEQ: cmpps(a, b, EQ_OQ=0). All-ones lanes on equality; zero for NaN.
+fn emit_op_vec_fcmeq(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let d = dst_of(&a, idx).unwrap();
+    let q_form = (a.imm & 1) != 0;
+    let double = vec_fp_is_double(a.op);
+    let working = working_xmm_for(alloc, d, xmm0);
+    into_xmm_q(asm, alloc, a.args[0], working)?;
+    let other = get_xmm_q(asm, alloc, a.args[1], xmm1)?;
+    if double { asm.cmppd(working, other, 0)?; } else { asm.cmpps(working, other, 0)?; }
+    if !q_form { asm.movq(working, working)?; }
+    store_xmm_q(asm, alloc, d, working)
+}
+
+// FCMGT a, b ⇔ a > b ⇔ (b < a). Use CMPLTPS(b, a) → predicate 1 (LT_OS).
+fn emit_op_vec_fcmgt(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let d = dst_of(&a, idx).unwrap();
+    let q_form = (a.imm & 1) != 0;
+    let double = vec_fp_is_double(a.op);
+    let working = working_xmm_for(alloc, d, xmm0);
+    // working = b, then compare against a → working < a → a > b.
+    into_xmm_q(asm, alloc, a.args[1], working)?;
+    let other = get_xmm_q(asm, alloc, a.args[0], xmm1)?;
+    if double { asm.cmppd(working, other, 1)?; } else { asm.cmpps(working, other, 1)?; }
+    if !q_form { asm.movq(working, working)?; }
+    store_xmm_q(asm, alloc, d, working)
+}
+
+// FCMGE a, b ⇔ a >= b ⇔ (b <= a). Use CMPLEPS(b, a) → predicate 2 (LE_OS).
+fn emit_op_vec_fcmge(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let d = dst_of(&a, idx).unwrap();
+    let q_form = (a.imm & 1) != 0;
+    let double = vec_fp_is_double(a.op);
+    let working = working_xmm_for(alloc, d, xmm0);
+    into_xmm_q(asm, alloc, a.args[1], working)?;
+    let other = get_xmm_q(asm, alloc, a.args[0], xmm1)?;
+    if double { asm.cmppd(working, other, 2)?; } else { asm.cmpps(working, other, 2)?; }
+    if !q_form { asm.movq(working, working)?; }
+    store_xmm_q(asm, alloc, d, working)
+}
+
+/// FMLA Vd, Vn, Vm → Vd = Vd + Vn*Vm. Composed (mul then add); not a true
+/// fused multiply-add — there are two roundings, matching our existing
+/// scalar FMA approximation. Args: (vd_prev, vn, vm).
+fn emit_fma_inner(
+    asm: &mut CodeAssembler,
+    alloc: &Allocation,
+    a: Armlet,
+    d: ValueRef,
+    subtract: bool,
+) -> Result<()> {
+    let q_form = (a.imm & 1) != 0;
+    let double = vec_fp_is_double(a.op);
+    let working = working_xmm_for(alloc, d, xmm0);
+    into_xmm_q(asm, alloc, a.args[0], working)?;     // working = Vd_prev
+
+    // xmm1 = Vn (we mutate it into Vn*Vm).
+    into_xmm_q(asm, alloc, a.args[1], xmm1)?;
+    let vm = get_xmm_q(asm, alloc, a.args[2], xmm2)?;
+    if double { asm.mulpd(xmm1, vm)?; } else { asm.mulps(xmm1, vm)?; }
+
+    // working += or -= xmm1
+    if subtract {
+        if double { asm.subpd(working, xmm1)?; } else { asm.subps(working, xmm1)?; }
+    } else {
+        if double { asm.addpd(working, xmm1)?; } else { asm.addps(working, xmm1)?; }
+    }
+    if !q_form { asm.movq(working, working)?; }
+    store_xmm_q(asm, alloc, d, working)
+}
+
+fn emit_op_vec_fmla(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx]; let d = dst_of(&a, idx).unwrap();
+    emit_fma_inner(asm, alloc, a, d, false)
+}
+fn emit_op_vec_fmls(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx]; let d = dst_of(&a, idx).unwrap();
+    emit_fma_inner(asm, alloc, a, d, true)
+}
+
+// ── Widening add / sub / mul ─────────────────────────────────────────────
+fn emit_op_vec_addl_signed(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx]; let d = dst_of(&a, idx).unwrap();
+    emit_widening_op(asm, alloc, a, d, true, WideningOp::Add)
+}
+fn emit_op_vec_addl_unsigned(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx]; let d = dst_of(&a, idx).unwrap();
+    emit_widening_op(asm, alloc, a, d, false, WideningOp::Add)
+}
+
+#[derive(Clone, Copy)]
+enum WideningOp { Add, Sub, Mul }
+
+fn emit_widening_op(
     asm: &mut CodeAssembler,
     alloc: &Allocation,
     a: Armlet,
     d: ValueRef,
     signed: bool,
+    op: WideningOp,
 ) -> Result<()> {
     let high_half = ((a.imm >> 1) & 1) != 0;
     let src_lane = ((a.imm >> 2) & 0x3) as u32;
     let working = working_xmm_for(alloc, d, xmm0);
 
-    // Get both sources into scratch XMMs; if high_half, shift each right by
-    // 8 bytes so the high half is now in the low half (ready for pmovsxXX).
     into_xmm_q(asm, alloc, a.args[0], working)?;
     let other_src = get_xmm_q(asm, alloc, a.args[1], xmm1)?;
     if other_src != xmm1 { asm.movdqa(xmm1, other_src)?; }
@@ -1126,34 +1299,67 @@ fn emit_widening_addl(
         asm.psrldq(xmm1, 8)?;
     }
 
-    // Widen each source to the result lane in place.
+    // Sign- or zero-extend each half-source to the result lane.
     if signed {
         match src_lane {
-            0 => { asm.pmovsxbw(working, working)?; asm.pmovsxbw(xmm1, xmm1)?; asm.paddw(working, xmm1)?; }
-            1 => { asm.pmovsxwd(working, working)?; asm.pmovsxwd(xmm1, xmm1)?; asm.paddd(working, xmm1)?; }
-            2 => { asm.pmovsxdq(working, working)?; asm.pmovsxdq(xmm1, xmm1)?; asm.paddq(working, xmm1)?; }
-            _ => return Err(Error::Backend(format!("VecSaddl lane {} not supported", src_lane))),
+            0 => { asm.pmovsxbw(working, working)?; asm.pmovsxbw(xmm1, xmm1)?; }
+            1 => { asm.pmovsxwd(working, working)?; asm.pmovsxwd(xmm1, xmm1)?; }
+            2 => { asm.pmovsxdq(working, working)?; asm.pmovsxdq(xmm1, xmm1)?; }
+            _ => return Err(Error::Backend(format!("widening signed lane {} unsupported", src_lane))),
         }
     } else {
         match src_lane {
-            0 => { asm.pmovzxbw(working, working)?; asm.pmovzxbw(xmm1, xmm1)?; asm.paddw(working, xmm1)?; }
-            1 => { asm.pmovzxwd(working, working)?; asm.pmovzxwd(xmm1, xmm1)?; asm.paddd(working, xmm1)?; }
-            2 => { asm.pmovzxdq(working, working)?; asm.pmovzxdq(xmm1, xmm1)?; asm.paddq(working, xmm1)?; }
-            _ => return Err(Error::Backend(format!("VecUaddl lane {} not supported", src_lane))),
+            0 => { asm.pmovzxbw(working, working)?; asm.pmovzxbw(xmm1, xmm1)?; }
+            1 => { asm.pmovzxwd(working, working)?; asm.pmovzxwd(xmm1, xmm1)?; }
+            2 => { asm.pmovzxdq(working, working)?; asm.pmovzxdq(xmm1, xmm1)?; }
+            _ => return Err(Error::Backend(format!("widening unsigned lane {} unsupported", src_lane))),
         }
+    }
+
+    match op {
+        WideningOp::Add => match src_lane {
+            0 => asm.paddw(working, xmm1)?,
+            1 => asm.paddd(working, xmm1)?,
+            2 => asm.paddq(working, xmm1)?,
+            _ => unreachable!(),
+        },
+        WideningOp::Sub => match src_lane {
+            0 => asm.psubw(working, xmm1)?,
+            1 => asm.psubd(working, xmm1)?,
+            2 => asm.psubq(working, xmm1)?,
+            _ => unreachable!(),
+        },
+        WideningOp::Mul => match src_lane {
+            // After pmovsx/zx, both operands have widened lanes; pmullw / pmulld
+            // give the low N bits of the product, which equals the full
+            // sign-extended product since (signed) N-bit * (signed) N-bit fits
+            // in (signed) 2N-bit and the low N of that 2N product matches the
+            // signed N-bit operand product when we've already widened.
+            0 => asm.pmullw(working, xmm1)?,
+            1 => asm.pmulld(working, xmm1)?,
+            // 64-bit lane mul needs PMULLQ (AVX-512); decomposition deferred.
+            2 => return Err(Error::Backend("widening 2D mul unsupported (needs PMULLQ)".into())),
+            _ => unreachable!(),
+        },
     }
     store_xmm_q(asm, alloc, d, working)
 }
 
-fn emit_op_vec_addl_signed(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
-    let a = block.code[idx];
-    let d = dst_of(&a, idx).unwrap();
-    emit_widening_addl(asm, alloc, a, d, true)
+fn emit_op_vec_subl_signed(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx]; let d = dst_of(&a, idx).unwrap();
+    emit_widening_op(asm, alloc, a, d, true, WideningOp::Sub)
 }
-fn emit_op_vec_addl_unsigned(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
-    let a = block.code[idx];
-    let d = dst_of(&a, idx).unwrap();
-    emit_widening_addl(asm, alloc, a, d, false)
+fn emit_op_vec_subl_unsigned(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx]; let d = dst_of(&a, idx).unwrap();
+    emit_widening_op(asm, alloc, a, d, false, WideningOp::Sub)
+}
+fn emit_op_vec_mull_signed(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx]; let d = dst_of(&a, idx).unwrap();
+    emit_widening_op(asm, alloc, a, d, true, WideningOp::Mul)
+}
+fn emit_op_vec_mull_unsigned(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx]; let d = dst_of(&a, idx).unwrap();
+    emit_widening_op(asm, alloc, a, d, false, WideningOp::Mul)
 }
 
 // ── REV16/32/64 (byte-reverse within element) ────────────────────────────
@@ -1376,38 +1582,60 @@ fn emit_op_vec_tbl(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, i
     store_xmm_q(asm, alloc, d, working)
 }
 
-// ── Narrowing truncate (XTN) ─────────────────────────────────────────────
+// ── Narrowing truncate (XTN / XTN2) ──────────────────────────────────────
+/// Truncate each lane of `src_xmm` to half-width and produce 8 packed bytes
+/// in the LOW 64 of `dst_xmm` (upper 64 left undefined — caller must mask
+/// or shift). Uses xmm1 as a scratch for the AND mask.
+fn emit_narrow_into(asm: &mut CodeAssembler, src_xmm: AsmRegisterXmm, dst_xmm: AsmRegisterXmm, src_lane: u32) -> Result<()> {
+    if src_xmm != dst_xmm { asm.movdqa(dst_xmm, src_xmm)?; }
+    match src_lane {
+        1 => {
+            asm.pcmpeqd(xmm1, xmm1)?;
+            asm.psrlw(xmm1, 8)?;
+            asm.pand(dst_xmm, xmm1)?;
+            asm.packuswb(dst_xmm, dst_xmm)?;
+        }
+        2 => {
+            asm.pcmpeqd(xmm1, xmm1)?;
+            asm.psrld(xmm1, 16)?;
+            asm.pand(dst_xmm, xmm1)?;
+            asm.packusdw(dst_xmm, dst_xmm)?;
+        }
+        3 => {
+            // D->S: pick low 32 of each D lane via pshufd.
+            asm.pshufd(dst_xmm, dst_xmm, 0x08)?;
+        }
+        _ => return Err(Error::Backend(format!("XTN src lane {} not supported", src_lane))),
+    }
+    Ok(())
+}
+
 fn emit_op_vec_xtn(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
     let a = block.code[idx];
     let d = dst_of(&a, idx).unwrap();
     let src_lane = ((a.imm >> 2) & 0x3) as u32;
     let working = working_xmm_for(alloc, d, xmm0);
     into_xmm_q(asm, alloc, a.args[0], working)?;
-
-    match src_lane {
-        1 => {
-            // H -> B: mask low byte of each H lane, then packuswb (no
-            // saturation since values are <= 0xFF).
-            asm.pcmpeqd(xmm1, xmm1)?;
-            asm.psrlw(xmm1, 8)?;           // each H lane = 0x00FF
-            asm.pand(working, xmm1)?;
-            asm.packuswb(working, working)?;
-        }
-        2 => {
-            // S -> H: mask low halfword, then packusdw (SSE4.1).
-            asm.pcmpeqd(xmm1, xmm1)?;
-            asm.psrld(xmm1, 16)?;
-            asm.pand(working, xmm1)?;
-            asm.packusdw(working, working)?;
-        }
-        3 => {
-            // D -> S: pshufd to pick low 32 of each D lane.
-            // imm 0b00_00_10_00 = 0x08 selects dwords [0, 2, 0, 0].
-            asm.pshufd(working, working, 0x08)?;
-        }
-        _ => return Err(Error::Backend(format!("VecXtn src lane {} not supported", src_lane))),
-    }
+    emit_narrow_into(asm, working, working, src_lane)?;
     asm.movq(working, working)?; // zero upper 64
+    store_xmm_q(asm, alloc, d, working)
+}
+
+fn emit_op_vec_xtn2(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    let d = dst_of(&a, idx).unwrap();
+    let src_lane = ((a.imm >> 2) & 0x3) as u32;
+    let working = working_xmm_for(alloc, d, xmm0);
+    // working = vd_prev with upper 64 zeroed.
+    into_xmm_q(asm, alloc, a.args[0], working)?;
+    asm.movq(working, working)?;
+    // Compute narrowed result in xmm2's low 64.
+    let vn_src = get_xmm_q(asm, alloc, a.args[1], xmm2)?;
+    if vn_src != xmm2 { asm.movdqa(xmm2, vn_src)?; }
+    emit_narrow_into(asm, xmm2, xmm2, src_lane)?;
+    asm.movq(xmm2, xmm2)?;        // zero upper 64 of xmm2 (clean low-64 result)
+    asm.pslldq(xmm2, 8)?;         // shift result into upper 64 position
+    asm.por(working, xmm2)?;      // combine preserved low + new high
     store_xmm_q(asm, alloc, d, working)
 }
 

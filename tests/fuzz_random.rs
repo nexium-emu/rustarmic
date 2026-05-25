@@ -142,7 +142,7 @@ fn gen_neon_inst(rng: &mut ChaCha8Rng) -> u32 {
     // Default to the full op set; tests narrow this via env var when
     // bisecting a mismatch.
     let max_pick: u32 = std::env::var("FUZZ_NEON_MAX")
-        .ok().and_then(|s| s.parse().ok()).unwrap_or(28);
+        .ok().and_then(|s| s.parse().ok()).unwrap_or(35);
     let pick: u32 = rng.r#gen_range(0..max_pick);
     let vd: u32 = rng.r#gen_range(0..16);
     let vn: u32 = rng.r#gen_range(0..16);
@@ -158,6 +158,12 @@ fn gen_neon_inst(rng: &mut ChaCha8Rng) -> u32 {
         (0 << 31) | (q << 30) | (u << 29) | (0b01110 << 24)
             | (size << 22) | (1 << 21) | (0 << 17) // bits 20:17 zero
             | (opcode << 12) | (0b10 << 10) | (rn << 5) | rd
+    }
+    fn enc_diff(q: u32, u: u32, size: u32, rm: u32, opcode4: u32, rn: u32, rd: u32) -> u32 {
+        // ASIMDDIFF: 0 Q U 0 1110 size 1 Rm:5 opcode:4 00 Rn:5 Rd:5
+        (0 << 31) | (q << 30) | (u << 29) | (0b01110 << 24)
+            | (size << 22) | (1 << 21) | (rm << 16)
+            | (opcode4 << 12) | (rn << 5) | rd
     }
     /// Pick (Q, size) where size in 0..max_size, but exclude (Q=0, size=3)
     /// which is reserved for most per-lane ops (the 1D form).
@@ -188,12 +194,13 @@ fn gen_neon_inst(rng: &mut ChaCha8Rng) -> u32 {
         9  => enc_same(rng.r#gen_range(0..2), 0, rng.r#gen_range(0..3), vm, 0b01101, vn, vd), // SMIN
         10 => enc_same(rng.r#gen_range(0..2), 1, rng.r#gen_range(0..3), vm, 0b01100, vn, vd), // UMAX
         11 => enc_same(rng.r#gen_range(0..2), 1, rng.r#gen_range(0..3), vm, 0b01101, vn, vd), // UMIN
-        // CMEQ all sizes (Q=0 excludes size=3); CMGT/CMGE same; CMHI/CMHS 16/32-bit.
+        // CMEQ/CMGT/CMGE all sizes (Q=0 excludes size=3); CMHI/CMHS now all
+        // sizes 0..3 (8-bit unsigned compare added via psubusb trick).
         12 => { let (q, s) = pick_q_size(rng, 4); enc_same(q, 1, s, vm, 0b10001, vn, vd) } // CMEQ
         13 => { let (q, s) = pick_q_size(rng, 4); enc_same(q, 0, s, vm, 0b00110, vn, vd) } // CMGT
         14 => { let (q, s) = pick_q_size(rng, 4); enc_same(q, 0, s, vm, 0b00111, vn, vd) } // CMGE
-        15 => { let q = rng.r#gen_range(0..2); let s = rng.r#gen_range(1..3); enc_same(q, 1, s, vm, 0b00110, vn, vd) } // CMHI
-        16 => { let q = rng.r#gen_range(0..2); let s = rng.r#gen_range(1..3); enc_same(q, 1, s, vm, 0b00111, vn, vd) } // CMHS
+        15 => { let (q, s) = pick_q_size(rng, 3); enc_same(q, 1, s, vm, 0b00110, vn, vd) } // CMHI (no 64-bit)
+        16 => { let (q, s) = pick_q_size(rng, 3); enc_same(q, 1, s, vm, 0b00111, vn, vd) } // CMHS (no 64-bit)
         // BIT / BIF / BSL.16B
         17 => enc_same(1, 1, 0b10, vm, 0b00011, vn, vd), // BIT
         18 => enc_same(1, 1, 0b11, vm, 0b00011, vn, vd), // BIF
@@ -222,6 +229,35 @@ fn gen_neon_inst(rng: &mut ChaCha8Rng) -> u32 {
         24 => enc_misc(rng.r#gen_range(0..2), 0, 0b00, 0b00001, vn, vd),                  // REV16: only size=00
         25 => { let s = rng.r#gen_range(0..2); enc_misc(rng.r#gen_range(0..2), 1, s, 0b00000, vn, vd) } // REV32: size 00/01
         26 => { let s = rng.r#gen_range(0..3); enc_misc(rng.r#gen_range(0..2), 0, s, 0b00000, vn, vd) } // REV64: size 00/01/10
+        // SSUBL/USUBL/SMULL/UMULL (ASIMDDIFF). Source lane B/H (size 00/01),
+        // S/2D not yet (PMULLQ missing). high_half = bit 30 = Q.
+        28 => enc_diff(rng.r#gen_range(0..2), 0, rng.r#gen_range(0..3), vm, 0b0010, vn, vd), // SSUBL (opcode 0010)
+        29 => enc_diff(rng.r#gen_range(0..2), 1, rng.r#gen_range(0..3), vm, 0b0010, vn, vd), // USUBL
+        30 => enc_diff(rng.r#gen_range(0..2), 0, rng.r#gen_range(0..2), vm, 0b1100, vn, vd), // SMULL (only B/H source; opcode 1100)
+        31 => enc_diff(rng.r#gen_range(0..2), 1, rng.r#gen_range(0..2), vm, 0b1100, vn, vd), // UMULL
+        // XTN/XTN2 — Q bit selects XTN vs XTN2.
+        32 => enc_misc(rng.r#gen_range(0..2), 0, rng.r#gen_range(0..3), 0b10010, vn, vd),
+        // FCMEQ/FCMGE/FCMGT (ASIMDSAME FP). 2D only when Q=1.
+        // FCMEQ U=0,bit23=0; FCMGE U=1,bit23=0; FCMGT U=1,bit23=1; all opcode=11100.
+        33 => {
+            let (q, sz) = if rng.r#gen_range(0..2) == 0 { (rng.r#gen_range(0..2), 0u32) } else { (1, 1u32) };
+            let (u, bit23) = match rng.r#gen_range(0..3) {
+                0 => (0u32, 0u32), // FCMEQ
+                1 => (1, 0),       // FCMGE
+                _ => (1, 1),       // FCMGT
+            };
+            (0 << 31) | (q << 30) | (u << 29) | (0b01110 << 24)
+                | (bit23 << 23) | (sz << 22) | (1 << 21) | (vm << 16)
+                | (0b11100 << 11) | (1 << 10) | (vn << 5) | vd
+        }
+        // FMLA / FMLS (ASIMDSAME FP). U=0, opcode 11001; FMLS sets bit23=1.
+        34 => {
+            let (q, sz) = if rng.r#gen_range(0..2) == 0 { (rng.r#gen_range(0..2), 0u32) } else { (1, 1u32) };
+            let bit23 = rng.r#gen_range(0..2); // 0=FMLA, 1=FMLS
+            (0 << 31) | (q << 30) | (0 << 29) | (0b01110 << 24)
+                | (bit23 << 23) | (sz << 22) | (1 << 21) | (vm << 16)
+                | (0b11001 << 11) | (1 << 10) | (vn << 5) | vd
+        }
         // UZP1 / UZP2 / TRN1 / TRN2 (ASIMDPERM). opcode bits 14:12:
         //   UZP1=001, TRN1=010, UZP2=101, TRN2=110
         // (Q=0, size=11) is reserved (1D), so we restrict size like ZIP.

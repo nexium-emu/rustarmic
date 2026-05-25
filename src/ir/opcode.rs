@@ -242,12 +242,28 @@ pub enum Op {
     // bit 1 = high-half flag (1 = SADDL2/UADDL2); bit 0 unused.
     VecSaddl = 0x6B4,
     VecUaddl = 0x6B8,
+    /// Widening subtract; same imm layout as VecSaddl.
+    VecSsubl = 0x6E0,
+    VecUsubl = 0x6E4,
+    /// Widening multiply; same imm layout. 8H←B and 4S←H supported via SSE4.1;
+    /// 2D←S requires 64-bit lane mul (deferred).
+    VecSmull = 0x6E8,
+    VecUmull = 0x6EC,
 
     // Narrowing truncate. Source lane log2 in imm bits 2..4 (1=H, 2=S, 3=D),
     // dst lane is one smaller. Result is written to the LOW 64 bits; upper
-    // 64 zeroed for XTN. (XTN2 — preserving the low half — would need a
-    // 3-op variant; deferred.)
+    // 64 zeroed.
     VecXtn = 0x6BC,
+    /// XTN2: writes the narrowed result to the UPPER 64 of Vd; lower 64 is
+    /// preserved from Vd_prev. Args (vd_prev, vn); imm layout same as VecXtn.
+    VecXtn2 = 0x6F0,
+
+    /// Per-lane FP compares. Result is all-ones per lane on true, zero on
+    /// false (matches ARM NEON semantics; NaN inputs → false).
+    /// `_S` = single precision (2S/4S), `_D` = double precision (2D).
+    VecFCmEq_S = 0x6F4, VecFCmEq_D = 0x6F5,
+    VecFCmGt_S = 0x6F8, VecFCmGt_D = 0x6F9,
+    VecFCmGe_S = 0x6FC, VecFCmGe_D = 0x6FD,
 
     /// TBL (single-register form): args (vn = table, vm = indices); Q-flag
     /// in `imm` bit 0. Each byte of vm is an index into vn's 16 bytes;
@@ -269,6 +285,12 @@ pub enum Op {
     VecUzp2 = 0x6D4,
     VecTrn1 = 0x6D8,
     VecTrn2 = 0x6DC,
+
+    /// FMLA Vd, Vn, Vm: Vd = Vd + Vn*Vm (composed mul + add — not bit-exact
+    /// fused yet). Args (vd_prev, vn, vm); `_S`/`_D` pick precision.
+    VecFmla_S = 0x720, VecFmla_D = 0x721,
+    /// FMLS Vd, Vn, Vm: Vd = Vd - Vn*Vm (composed).
+    VecFmls_S = 0x724, VecFmls_D = 0x725,
 
     Mrs            = 0x700,
     Msr            = 0x704,

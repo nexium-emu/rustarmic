@@ -23,6 +23,8 @@ enum Kind {
     // single `_V_2S_` enum variant, so we only need one `Kind` per op and
     // decode the (q, sz) bits at translate time.
     FAdd, FSub, FMul, FDiv, FMax, FMin,
+    FCmEq, FCmGt, FCmGe,
+    FMla, FMls,
 }
 
 pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDSAME) -> Result<InstStatus> {
@@ -60,6 +62,16 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDSAME) -> Result<InstStatus> 
         FMAX_Vd_Vn_Vm(i)                => (i.0, Kind::FMax),
         FMIN_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => (i.0, Kind::FMin),
         FMIN_Vd_Vn_Vm(i)                => (i.0, Kind::FMin),
+        FCMEQ_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => (i.0, Kind::FCmEq),
+        FCMEQ_Vd_Vn_Vm(i)                => (i.0, Kind::FCmEq),
+        FCMGT_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => (i.0, Kind::FCmGt),
+        FCMGT_Vd_Vn_Vm(i)                => (i.0, Kind::FCmGt),
+        FCMGE_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => (i.0, Kind::FCmGe),
+        FCMGE_Vd_Vn_Vm(i)                => (i.0, Kind::FCmGe),
+        FMLA_Vd_V_2S_Vn_V_2S_Vm_V_2S(i)  => (i.0, Kind::FMla),
+        FMLA_Vd_Vn_Vm(i)                 => (i.0, Kind::FMla),
+        FMLS_Vd_V_2S_Vn_V_2S_Vm_V_2S(i)  => (i.0, Kind::FMls),
+        FMLS_Vd_Vn_Vm(i)                 => (i.0, Kind::FMls),
         _ => return Err(Error::Unsupported { pc: em.current_pc, opcode: 0 }),
     };
 
@@ -91,18 +103,8 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDSAME) -> Result<InstStatus> 
         Kind::CmEq => em.vec_cmeq(vn, vm, size, q),
         Kind::CmGt => em.vec_cmgt(vn, vm, size, q),
         Kind::CmGe => em.vec_cmge(vn, vm, size, q),
-        Kind::CmHi => {
-            if size == 0 {
-                return Err(Error::Unsupported { pc: em.current_pc, opcode: raw });
-            }
-            em.vec_cmhi(vn, vm, size, q)
-        }
-        Kind::CmHs => {
-            if size == 0 {
-                return Err(Error::Unsupported { pc: em.current_pc, opcode: raw });
-            }
-            em.vec_cmhs(vn, vm, size, q)
-        }
+        Kind::CmHi => em.vec_cmhi(vn, vm, size, q),
+        Kind::CmHs => em.vec_cmhs(vn, vm, size, q),
         Kind::Bit | Kind::Bif | Kind::Bsl => {
             // These read Vd as their third source, so fetch it now.
             let vd_prev = em.get_v_q(rd);
@@ -126,19 +128,35 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDSAME) -> Result<InstStatus> 
                 _ => unreachable!(),
             }
         }
-        Kind::FAdd | Kind::FSub | Kind::FMul | Kind::FDiv | Kind::FMax | Kind::FMin => {
+        Kind::FAdd | Kind::FSub | Kind::FMul | Kind::FDiv | Kind::FMax | Kind::FMin
+        | Kind::FCmEq | Kind::FCmGt | Kind::FCmGe => {
             // sz bit at 22 selects single (0) vs double (1).
             let double = bit(raw, 22) == 1;
             if double && !q {
                 return Err(Error::Decode { pc: em.current_pc, opcode: raw });
             }
             match kind {
-                Kind::FAdd => em.vec_fadd(vn, vm, double, q),
-                Kind::FSub => em.vec_fsub(vn, vm, double, q),
-                Kind::FMul => em.vec_fmul(vn, vm, double, q),
-                Kind::FDiv => em.vec_fdiv(vn, vm, double, q),
-                Kind::FMax => em.vec_fmax(vn, vm, double, q),
-                Kind::FMin => em.vec_fmin(vn, vm, double, q),
+                Kind::FAdd  => em.vec_fadd (vn, vm, double, q),
+                Kind::FSub  => em.vec_fsub (vn, vm, double, q),
+                Kind::FMul  => em.vec_fmul (vn, vm, double, q),
+                Kind::FDiv  => em.vec_fdiv (vn, vm, double, q),
+                Kind::FMax  => em.vec_fmax (vn, vm, double, q),
+                Kind::FMin  => em.vec_fmin (vn, vm, double, q),
+                Kind::FCmEq => em.vec_fcmeq(vn, vm, double, q),
+                Kind::FCmGt => em.vec_fcmgt(vn, vm, double, q),
+                Kind::FCmGe => em.vec_fcmge(vn, vm, double, q),
+                _ => unreachable!(),
+            }
+        }
+        Kind::FMla | Kind::FMls => {
+            let double = bit(raw, 22) == 1;
+            if double && !q {
+                return Err(Error::Decode { pc: em.current_pc, opcode: raw });
+            }
+            let vd_prev = em.get_v_q(rd);
+            match kind {
+                Kind::FMla => em.vec_fmla(vd_prev, vn, vm, double, q),
+                Kind::FMls => em.vec_fmls(vd_prev, vn, vm, double, q),
                 _ => unreachable!(),
             }
         }

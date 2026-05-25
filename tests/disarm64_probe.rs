@@ -56,3 +56,10 @@ fn debug_rev16_correct() {
         }
     }
 }
+
+#[test]
+fn debug_xtn2() {
+    let raw = 0x4E21_2820u32;
+    let op = disarm64::decoder::decode(raw).expect("decode");
+    eprintln!("0x{:08x} -> {:?}", raw, op);
+}

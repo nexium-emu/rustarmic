@@ -48,11 +48,7 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDSHF) -> Result<InstStatus> {
         Kind::Shl  => immhb.wrapping_sub(lane_bits),
         Kind::Ushr | Kind::Sshr => (2 * lane_bits).wrapping_sub(immhb),
     };
-    // SSE has no PSLLB/PSRLB/PSRAB (8-bit lane shifts) and no PSRAQ (64-bit
-    // arithmetic shift) pre-AVX-512. Defer those until decomposition lands.
-    if lane_log2 == 0 {
-        return Err(Error::Unsupported { pc: em.current_pc, opcode: raw });
-    }
+    // 64-bit arithmetic shift needs PSRAQ (AVX-512) and isn't decomposed yet.
     if matches!(kind, Kind::Sshr) && lane_log2 == 3 {
         return Err(Error::Unsupported { pc: em.current_pc, opcode: raw });
     }

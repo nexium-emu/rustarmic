@@ -2270,3 +2270,293 @@ fn vec_trn1_8h_transposes_even_h_lanes() {
     assert_eq!(ctx.v[0][0], 0xB2B2_A2A2_B0B0_A0A0);
     assert_eq!(ctx.v[0][1], 0xB6B6_A6A6_B4B4_A4A4);
 }
+
+#[test]
+fn vec_ssubl_8h_signed_widening_sub() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    // 8 bytes per source — V1 - V2 lane by lane, sign-extended.
+    ctx.v[1] = [0x0403_0201_FF7F_1080, 0];
+    ctx.v[2] = [0xFCFD_FEFF_0101_F001, 0];
+    let code = build_code(&[
+        0x0E22_2020, // ssubl v0.8h, v1.8b, v2.8b
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    //   B0: 0x80 (-128) - 0x01 (1)   = -129 = 0xFF7F
+    //   B1: 0x10 (16)   - 0xF0 (-16) =   32 = 0x0020
+    //   B2: 0x7F (127)  - 0x01 (1)   =  126 = 0x007E
+    //   B3: 0xFF (-1)   - 0x01 (1)   =   -2 = 0xFFFE
+    //   B4..B7: 1- -1, 2- -2, 3- -3, 4- -4 → 2, 4, 6, 8
+    assert_eq!(ctx.v[0][0], 0xFFFE_007E_0020_FF7F);
+    assert_eq!(ctx.v[0][1], 0x0008_0006_0004_0002);
+}
+
+#[test]
+fn vec_smull_4s_widening_mul() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    // V1.4H = lanes [3, -2, 100, 0x7FFF]; V2.4H = [4, 5, -10, 2]
+    let pack_h = |a: i16, b: i16, c: i16, d: i16| -> u64 {
+        ((a as u16 as u64))
+            | ((b as u16 as u64) << 16)
+            | ((c as u16 as u64) << 32)
+            | ((d as u16 as u64) << 48)
+    };
+    ctx.v[1] = [pack_h(3, -2, 100, 0x7FFF), 0];
+    ctx.v[2] = [pack_h(4, 5, -10, 2), 0];
+    let code = build_code(&[
+        0x0E62_C020, // smull v0.4s, v1.4h, v2.4h
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // 4 S lanes: 3*4=12, -2*5=-10, 100*-10=-1000, 32767*2=65534
+    let pack_s = |a: i32, b: i32| -> u64 {
+        (a as u32 as u64) | ((b as u32 as u64) << 32)
+    };
+    assert_eq!(ctx.v[0][0], pack_s(12, -10));
+    assert_eq!(ctx.v[0][1], pack_s(-1000, 65534));
+}
+
+#[test]
+fn vec_umull_8h_widening_unsigned_mul() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [0x0807_0605_0403_0201, 0];
+    ctx.v[2] = [0x1010_1010_1010_1010, 0];
+    let code = build_code(&[
+        0x2E22_C020, // umull v0.8h, v1.8b, v2.8b
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // 8 H lanes: 1*0x10=0x10, 2*0x10=0x20, ..., 8*0x10=0x80
+    assert_eq!(ctx.v[0][0], 0x0040_0030_0020_0010);
+    assert_eq!(ctx.v[0][1], 0x0080_0070_0060_0050);
+}
+
+#[test]
+fn vec_cmhi_8b_unsigned() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [0x80_01_FF_7F_05_00_FE_03, 0];
+    ctx.v[2] = [0x01_02_03_7F_05_FF_FD_04, 0];
+    let code = build_code(&[
+        0x2E22_3420, // cmhi v0.8b, v1.8b, v2.8b
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // Per byte unsigned compare:
+    //   B0: 0x03 > 0x04 → false  = 0x00
+    //   B1: 0xFE > 0xFD → true   = 0xFF
+    //   B2: 0x00 > 0xFF → false  = 0x00
+    //   B3: 0x05 > 0x05 → false  = 0x00
+    //   B4: 0x7F > 0x7F → false  = 0x00
+    //   B5: 0xFF > 0x03 → true   = 0xFF
+    //   B6: 0x01 > 0x02 → false  = 0x00
+    //   B7: 0x80 > 0x01 → true   = 0xFF
+    assert_eq!(ctx.v[0][0], 0xFF_00_FF_00_00_00_FF_00);
+    assert_eq!(ctx.v[0][1], 0);
+}
+
+#[test]
+fn vec_cmhs_16b_unsigned() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [0x80_01_FF_7F_05_00_FE_03, 0x10_20_30_40_50_60_70_80];
+    ctx.v[2] = [0x01_02_03_7F_05_FF_FD_04, 0x11_20_2F_40_50_61_70_FF];
+    let code = build_code(&[
+        0x6E22_3C20, // cmhs v0.16b, v1.16b, v2.16b
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // Per byte unsigned >= (equal = true, true = 0xFF).
+    // Low half:
+    //   B0: 3 >= 4 → false
+    //   B1: 0xFE >= 0xFD → true
+    //   B2: 0 >= 0xFF → false
+    //   B3: 5 >= 5 → true
+    //   B4: 0x7F >= 0x7F → true
+    //   B5: 0xFF >= 3 → true
+    //   B6: 1 >= 2 → false
+    //   B7: 0x80 >= 1 → true
+    assert_eq!(ctx.v[0][0], 0xFF_00_FF_FF_FF_00_FF_00);
+    // High half:
+    //   B8 : 0x80 >= 0xFF → false
+    //   B9 : 0x70 >= 0x70 → true
+    //   B10: 0x60 >= 0x61 → false
+    //   B11: 0x50 >= 0x50 → true
+    //   B12: 0x40 >= 0x40 → true
+    //   B13: 0x30 >= 0x2F → true
+    //   B14: 0x20 >= 0x20 → true
+    //   B15: 0x10 >= 0x11 → false
+    assert_eq!(ctx.v[0][1], 0x00_FF_FF_FF_FF_00_FF_00);
+}
+
+#[test]
+fn vec_xtn2_16b_preserves_low_half() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    // Pre-set V0's low half to a sentinel that XTN2 must preserve.
+    ctx.v[0] = [0xAAAA_AAAA_AAAA_AAAA, 0xBBBB_BBBB_BBBB_BBBB];
+    // V1 = 8 H lanes; XTN2 takes low byte of each into V0's UPPER 64.
+    ctx.v[1] = [0x1234_5678_9ABC_DEF0, 0xCAFE_BABE_FACE_FEED];
+    let code = build_code(&[
+        0x4E21_2820, // xtn2 v0.16b, v1.8h
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // Low half preserved exactly.
+    assert_eq!(ctx.v[0][0], 0xAAAA_AAAA_AAAA_AAAA);
+    // Upper 64 = packed low bytes of each H lane (same pattern as XTN smoke).
+    assert_eq!(ctx.v[0][1], 0xFEBE_CEED_3478_BCF0);
+}
+
+#[test]
+fn vec_fcmeq_4s() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    // Lanes: 1.0, 2.0, 3.0, NaN
+    let v1_lo = ((2.0_f32).to_bits() as u64) << 32 | (1.0_f32).to_bits() as u64;
+    let v1_hi = ((f32::NAN).to_bits() as u64) << 32 | (3.0_f32).to_bits() as u64;
+    let v2_lo = ((2.0_f32).to_bits() as u64) << 32 | (5.0_f32).to_bits() as u64;
+    let v2_hi = ((1.0_f32).to_bits() as u64) << 32 | (3.0_f32).to_bits() as u64;
+    ctx.v[1] = [v1_lo, v1_hi];
+    ctx.v[2] = [v2_lo, v2_hi];
+    let code = build_code(&[
+        0x4E22_E420, // fcmeq v0.4s, v1.4s, v2.4s
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // 1==5? false, 2==2? true, 3==3? true, NaN==1? false (NaN comparison)
+    assert_eq!(ctx.v[0][0], 0xFFFFFFFF_00000000);
+    assert_eq!(ctx.v[0][1], 0x00000000_FFFFFFFF);
+}
+
+#[test]
+fn vec_fcmgt_4s() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    // V1: 5.0, 2.0, 3.0, NaN  vs  V2: 3.0, 7.0, 3.0, 1.0
+    let v1_lo = ((2.0_f32).to_bits() as u64) << 32 | (5.0_f32).to_bits() as u64;
+    let v1_hi = ((f32::NAN).to_bits() as u64) << 32 | (3.0_f32).to_bits() as u64;
+    let v2_lo = ((7.0_f32).to_bits() as u64) << 32 | (3.0_f32).to_bits() as u64;
+    let v2_hi = ((1.0_f32).to_bits() as u64) << 32 | (3.0_f32).to_bits() as u64;
+    ctx.v[1] = [v1_lo, v1_hi];
+    ctx.v[2] = [v2_lo, v2_hi];
+    let code = build_code(&[
+        0x6EA2_E420, // fcmgt v0.4s, v1.4s, v2.4s
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // 5>3? T, 2>7? F, 3>3? F, NaN>1? F
+    assert_eq!(ctx.v[0][0], 0x00000000_FFFFFFFF);
+    assert_eq!(ctx.v[0][1], 0x00000000_00000000);
+}
+
+#[test]
+fn vec_fcmge_2d() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    // Two D lanes per source.
+    ctx.v[1] = [(2.5_f64).to_bits(), (f64::NAN).to_bits()];
+    ctx.v[2] = [(2.5_f64).to_bits(), (1.0_f64).to_bits()];
+    let code = build_code(&[
+        0x6E62_E420, // fcmge v0.2d, v1.2d, v2.2d
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // 2.5 >= 2.5 → true; NaN >= 1.0 → false
+    assert_eq!(ctx.v[0][0], 0xFFFFFFFF_FFFFFFFF);
+    assert_eq!(ctx.v[0][1], 0);
+}
+
+#[test]
+fn vec_fmla_4s_accumulates_product() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    // Vd starts at [1.0, 2.0, 3.0, 4.0]; Vn = [10, 10, 10, 10]; Vm = [2, 3, 4, 5]
+    // After FMLA: Vd = Vd + Vn*Vm = [1+20, 2+30, 3+40, 4+50] = [21, 32, 43, 54]
+    let pack_s = |a: f32, b: f32| -> u64 {
+        (a.to_bits() as u64) | ((b.to_bits() as u64) << 32)
+    };
+    ctx.v[0] = [pack_s(1.0, 2.0), pack_s(3.0, 4.0)];
+    ctx.v[1] = [pack_s(10.0, 10.0), pack_s(10.0, 10.0)];
+    ctx.v[2] = [pack_s(2.0, 3.0), pack_s(4.0, 5.0)];
+    let code = build_code(&[
+        0x4E22_CC20, // fmla v0.4s, v1.4s, v2.4s
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    assert_eq!(ctx.v[0][0], pack_s(21.0, 32.0));
+    assert_eq!(ctx.v[0][1], pack_s(43.0, 54.0));
+}
+
+#[test]
+fn vec_fmls_2d_subtracts_product() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    // Vd = [100, 50]; Vn = [10, 5]; Vm = [3, 4]
+    // FMLS: Vd = Vd - Vn*Vm = [100 - 30, 50 - 20] = [70, 30]
+    ctx.v[0] = [(100.0_f64).to_bits(), (50.0_f64).to_bits()];
+    ctx.v[1] = [(10.0_f64).to_bits(), (5.0_f64).to_bits()];
+    ctx.v[2] = [(3.0_f64).to_bits(), (4.0_f64).to_bits()];
+    let code = build_code(&[
+        0x4EE2_CC20, // fmls v0.2d, v1.2d, v2.2d
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    assert_eq!(f64::from_bits(ctx.v[0][0]), 70.0);
+    assert_eq!(f64::from_bits(ctx.v[0][1]), 30.0);
+}
+
+#[test]
+fn vec_shl_imm_16b() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    // Each byte shifted left by 2. 0x80<<2 = 0x00 (overflow), 0x40<<2 = 0x00.
+    ctx.v[1] = [0x80_40_20_10_08_04_02_01, 0xFF_7F_3F_1F_0F_07_03_01];
+    let code = build_code(&[
+        0x4F0A_5420, // shl v0.16b, v1.16b, #2
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // Per byte << 2 (8-bit only):
+    //  Low: 1<<2=4, 2<<2=8, 4<<2=0x10, 8<<2=0x20, 0x10<<2=0x40, 0x20<<2=0x80, 0x40<<2=0, 0x80<<2=0
+    //  High: 1<<2=4, 3<<2=0xC, 7<<2=0x1C, 0xF<<2=0x3C, 0x1F<<2=0x7C, 0x3F<<2=0xFC, 0x7F<<2=0xFC, 0xFF<<2=0xFC
+    assert_eq!(ctx.v[0][0], 0x00_00_80_40_20_10_08_04);
+    assert_eq!(ctx.v[0][1], 0xFC_FC_FC_7C_3C_1C_0C_04);
+}
+
+#[test]
+fn vec_ushr_imm_16b() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [0x80_40_20_10_08_04_02_01, 0xFF_7F_3F_1F_0F_07_03_01];
+    let code = build_code(&[
+        0x6F0E_0420, // ushr v0.16b, v1.16b, #2
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // Per byte >> 2 unsigned.
+    //  Low: 1>>2=0, 2>>2=0, 4>>2=1, 8>>2=2, 0x10>>2=4, 0x20>>2=8, 0x40>>2=0x10, 0x80>>2=0x20
+    //  High: 1>>2=0, 3>>2=0, 7>>2=1, 0xF>>2=3, 0x1F>>2=7, 0x3F>>2=0xF, 0x7F>>2=0x1F, 0xFF>>2=0x3F
+    assert_eq!(ctx.v[0][0], 0x20_10_08_04_02_01_00_00);
+    assert_eq!(ctx.v[0][1], 0x3F_1F_0F_07_03_01_00_00);
+}
+
+#[test]
+fn vec_sshr_imm_16b_sign_extends() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1] = [0x80_40_20_10_08_04_02_01, 0xFF_7F_3F_1F_0F_07_03_01];
+    let code = build_code(&[
+        0x4F0E_0420, // sshr v0.16b, v1.16b, #2
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // Per byte arithmetic >> 2.
+    //  Low: 1>>2=0, 2>>2=0, 4>>2=1, 8>>2=2, 0x10>>2=4, 0x20>>2=8, 0x40>>2=0x10, 0x80=-128>>2=-32=0xE0
+    //  High: 1>>2=0, 3>>2=0, 7>>2=1, 0xF>>2=3, 0x1F>>2=7, 0x3F>>2=0xF, 0x7F>>2=0x1F, 0xFF=-1>>2=-1=0xFF
+    assert_eq!(ctx.v[0][0], 0xE0_10_08_04_02_01_00_00);
+    assert_eq!(ctx.v[0][1], 0xFF_1F_0F_07_03_01_00_00);
+}
