@@ -1,6 +1,6 @@
 //! Shared harness for differential tests.
 
-use rustarmic::{CpuContext, ExitReason, Jit, JitConfig, Memory};
+use rustarmic::{CpuContext, Jit, JitConfig, Memory};
 use std::sync::Mutex;
 use unicorn_engine::{Arch, Mode, Prot, RegisterARM64, Unicorn};
 
@@ -78,6 +78,9 @@ pub struct RegState {
     pub sp: u64,
     pub pc: u64,
     pub nzcv: u8,
+    /// V[0..31], each represented as `[low_u64, high_u64]` (little-endian
+    /// lane order — V[i][0] holds bytes 0..7, V[i][1] holds bytes 8..15).
+    pub v: [[u64; 2]; 32],
 }
 
 /// Execute `code` on Unicorn and rustarmic with the same initial state and
@@ -99,12 +102,25 @@ fn run_unicorn(code: &[u8], init: RegState) -> RegState {
     // Map data region (acts as stack + heap).
     emu.mem_map(DATA_BASE, DATA_SIZE, Prot::ALL).unwrap();
 
+    // Enable FP/SIMD via CPACR_EL1.FPEN = 0b11. Without this Unicorn traps
+    // every NEON instruction silently (emu_start returns an error we ignore)
+    // leaving the V regs untouched — making the diff look like our JIT is
+    // wrong when it's actually executing correctly.
+    let cpacr = emu.reg_read(RegisterARM64::CPACR_EL1).unwrap_or(0);
+    let _ = emu.reg_write(RegisterARM64::CPACR_EL1, cpacr | (0b11 << 20));
+
     // Seed registers.
     for i in 0..31 {
         emu.reg_write(arm_reg(i), init.x[i]).unwrap();
     }
     emu.reg_write(RegisterARM64::SP, init.sp).unwrap();
     emu.reg_write(RegisterARM64::NZCV, (init.nzcv as u64) << 28).unwrap();
+    for i in 0..32 {
+        let mut buf = [0u8; 16];
+        buf[..8].copy_from_slice(&init.v[i][0].to_le_bytes());
+        buf[8..].copy_from_slice(&init.v[i][1].to_le_bytes());
+        emu.reg_write_long(arm_qreg(i), &buf).unwrap();
+    }
 
     // Run until either BRK or end of code mapping. Unicorn stops on BRK
     // automatically via the exception handler; we set a sane instruction
@@ -120,6 +136,12 @@ fn run_unicorn(code: &[u8], init: RegState) -> RegState {
     out.pc = emu.reg_read(RegisterARM64::PC).unwrap();
     let nzcv_full = emu.reg_read(RegisterARM64::NZCV).unwrap();
     out.nzcv = ((nzcv_full >> 28) & 0xF) as u8;
+    for i in 0..32 {
+        let bytes = emu.reg_read_long(arm_qreg(i)).unwrap();
+        let mut lo = [0u8; 8]; lo.copy_from_slice(&bytes[..8]);
+        let mut hi = [0u8; 8]; hi.copy_from_slice(&bytes[8..]);
+        out.v[i] = [u64::from_le_bytes(lo), u64::from_le_bytes(hi)];
+    }
     out
 }
 
@@ -130,6 +152,17 @@ fn arm_reg(i: usize) -> RegisterARM64 {
         8 => X8, 9 => X9, 10 => X10, 11 => X11, 12 => X12, 13 => X13, 14 => X14, 15 => X15,
         16 => X16, 17 => X17, 18 => X18, 19 => X19, 20 => X20, 21 => X21, 22 => X22, 23 => X23,
         24 => X24, 25 => X25, 26 => X26, 27 => X27, 28 => X28, 29 => X29, 30 => X30,
+        _ => unreachable!(),
+    }
+}
+
+fn arm_qreg(i: usize) -> RegisterARM64 {
+    use RegisterARM64::*;
+    match i {
+        0 => Q0,  1 => Q1,  2 => Q2,  3 => Q3,  4 => Q4,  5 => Q5,  6 => Q6,  7 => Q7,
+        8 => Q8,  9 => Q9,  10 => Q10, 11 => Q11, 12 => Q12, 13 => Q13, 14 => Q14, 15 => Q15,
+        16 => Q16, 17 => Q17, 18 => Q18, 19 => Q19, 20 => Q20, 21 => Q21, 22 => Q22, 23 => Q23,
+        24 => Q24, 25 => Q25, 26 => Q26, 27 => Q27, 28 => Q28, 29 => Q29, 30 => Q30, 31 => Q31,
         _ => unreachable!(),
     }
 }
@@ -163,6 +196,9 @@ fn run_rustarmic(code: &[u8], init: RegState) -> RegState {
     for i in 0..31 {
         ctx.x[i] = init.x[i];
     }
+    for i in 0..32 {
+        ctx.v[i] = init.v[i];
+    }
 
     // Each `run` chains through linked blocks internally and only returns on
     // exception / unchainable exit; one call is enough for the harness.
@@ -173,5 +209,6 @@ fn run_rustarmic(code: &[u8], init: RegState) -> RegState {
     out.sp = ctx.sp;
     out.pc = ctx.pc;
     out.nzcv = ctx.nzcv;
+    for i in 0..32 { out.v[i] = ctx.v[i]; }
     out
 }

@@ -43,25 +43,3 @@ fn decode_smoke_test_instructions() {
     }
 }
 
-#[test]
-fn debug_fadd_encoding() {
-    let raw = 0x4E22D420u32;
-    let op = disarm64::decoder::decode(raw).expect("decode");
-    eprintln!("0x{:08x} -> {:?}", raw, op);
-}
-
-#[test]
-fn debug_fp_vec_encodings() {
-    for (label, raw) in &[
-        ("fadd.2s", 0x0E22D420u32),
-        ("fadd.4s", 0x4E22D420u32),
-        ("fadd.2d", 0x4E62D420u32),
-        ("fmul.2d", 0x6E62DC20u32),
-        ("fneg.4s", 0x6EA0F820u32),
-    ] {
-        match disarm64::decoder::decode(*raw) {
-            Some(op) => eprintln!("{label}: 0x{:08x} -> {:?}", raw, op.operation),
-            None => eprintln!("{label}: 0x{:08x} -> DECODE FAIL", raw),
-        }
-    }
-}
