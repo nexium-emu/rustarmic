@@ -43,23 +43,3 @@ fn decode_smoke_test_instructions() {
     }
 }
 
-
-#[test]
-fn debug_rev16_correct() {
-    for (label, raw) in &[
-        ("rev16.16b try1", 0x4E20_1820u32),
-        ("rev16.8b try1",  0x0E20_1820u32),
-    ] {
-        match disarm64::decoder::decode(*raw) {
-            Some(op) => eprintln!("{label}: 0x{:08x} -> {:?}", raw, op.operation),
-            None => eprintln!("{label}: 0x{:08x} -> DECODE FAIL", raw),
-        }
-    }
-}
-
-#[test]
-fn debug_xtn2() {
-    let raw = 0x4E21_2820u32;
-    let op = disarm64::decoder::decode(raw).expect("decode");
-    eprintln!("0x{:08x} -> {:?}", raw, op);
-}
