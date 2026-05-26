@@ -43,3 +43,20 @@ fn decode_smoke_test_instructions() {
     }
 }
 
+
+#[test]
+fn debug_inst_0e263cac() {
+    eprintln!("0x0e263cac -> {:?}", disarm64::decoder::decode(0x0e263cac).unwrap().operation);
+}
+
+#[test]
+fn debug_case12_v6_writers() {
+    for w in &[0x4ea9cd46u32, 0x6e228dc3, 0x0e0c4164, 0x2e21898d, 0x6e21e509] {
+        eprintln!("0x{:08x} -> {:?}", w, disarm64::decoder::decode(*w).unwrap().operation);
+    }
+}
+
+#[test]
+fn debug_stress_seed_001122() {
+    eprintln!("0x4eae9d60 -> {:?}", disarm64::decoder::decode(0x4eae9d60).unwrap().operation);
+}

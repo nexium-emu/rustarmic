@@ -2767,3 +2767,49 @@ fn vec_fmls_nan_input_clears_sign() {
     assert!(f32::from_bits(lane0).is_nan(), "result lane 0 should be NaN, got {:#010x}", lane0);
     assert_eq!(lane0 >> 31, 0, "NaN sign bit must be clear after FMLS, got {:#010x}", lane0);
 }
+
+/// Dynarmic-style FRINT test: input 0x4001e17c ≈ 2.0294 in each of 4 single-
+/// precision lanes. All round-modes converge on 2.0 except FRINTP which goes
+/// to 3.0. Verifies each rounding mode picks the right x86 ROUNDPS predicate.
+#[test]
+fn vec_frint_family_dynarmic_test() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[0] = [0x4001e17c4001e17c, 0x4001e17c4001e17c];
+    let code = build_code(&[
+        0x4E218801, // frintn v1.4s, v0.4s
+        0x4E219802, // frintm v2.4s, v0.4s
+        0x4EA18803, // frintp v3.4s, v0.4s
+        0x4EA19804, // frintz v4.4s, v0.4s
+        0x6E218805, // frinta v5.4s, v0.4s
+        0x6E219806, // frintx v6.4s, v0.4s
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    assert_eq!(ctx.v[0], [0x4001e17c4001e17c, 0x4001e17c4001e17c], "input preserved");
+    assert_eq!(ctx.v[1], [0x4000000040000000, 0x4000000040000000], "FRINTN");
+    assert_eq!(ctx.v[2], [0x4000000040000000, 0x4000000040000000], "FRINTM");
+    assert_eq!(ctx.v[3], [0x4040000040400000, 0x4040000040400000], "FRINTP");
+    assert_eq!(ctx.v[4], [0x4000000040000000, 0x4000000040000000], "FRINTZ");
+    assert_eq!(ctx.v[5], [0x4000000040000000, 0x4000000040000000], "FRINTA");
+    assert_eq!(ctx.v[6], [0x4000000040000000, 0x4000000040000000], "FRINTX");
+}
+
+/// FRINTA on half-integer values where ties-away-from-zero differs from
+/// ties-to-even — the case ROUNDPS imm=0 would get wrong for us.
+#[test]
+fn vec_frinta_ties_away_from_zero() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    // Lanes: 0.5, 1.5, 2.5, -0.5
+    let pack = |a: f32, b: f32| ((a.to_bits() as u64) | ((b.to_bits() as u64) << 32));
+    ctx.v[0] = [pack(0.5, 1.5), pack(2.5, -0.5)];
+    let code = build_code(&[
+        0x6E218801, // frinta v1.4s, v0.4s
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // FRINTA ties-away: 0.5→1.0, 1.5→2.0, 2.5→3.0, -0.5→-1.0
+    let want = [pack(1.0, 2.0), pack(3.0, -1.0)];
+    assert_eq!(ctx.v[1], want);
+}

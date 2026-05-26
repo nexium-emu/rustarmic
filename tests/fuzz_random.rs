@@ -147,9 +147,12 @@ fn gen_neon_block(rng: &mut ChaCha8Rng, n: usize) -> Vec<u8> {
 /// enough to exercise read-after-write paths.
 fn gen_neon_inst(rng: &mut ChaCha8Rng) -> u32 {
     // Default to the full op set; tests narrow this via env var when
-    // bisecting a mismatch.
+    // bisecting a mismatch. Picks 0..37 are all enabled by default; FRINT
+    // (pick 36) was originally gated behind FUZZ_NEON_MAX=37 because adding
+    // it shuffled the RNG and surfaced an FMLS NaN-sign-fixup bug — that
+    // bug is now fixed (see emit_fma_inner) and FRINT is back in.
     let max_pick: u32 = std::env::var("FUZZ_NEON_MAX")
-        .ok().and_then(|s| s.parse().ok()).unwrap_or(36);
+        .ok().and_then(|s| s.parse().ok()).unwrap_or(37);
     let pick: u32 = rng.r#gen_range(0..max_pick);
     let vd: u32 = rng.r#gen_range(0..16);
     let vn: u32 = rng.r#gen_range(0..16);
@@ -264,6 +267,26 @@ fn gen_neon_inst(rng: &mut ChaCha8Rng) -> u32 {
             (0 << 31) | (q << 30) | (0 << 29) | (0b01110 << 24)
                 | (0 << 21) | (vm << 16) | (0 << 15) | (len << 13)
                 | (0 << 12) | (vn << 5) | vd
+        }
+        // FRINT family (ASIMDMISC). Opcode bits 16:12:
+        //   FRINTN (U=0, bit23=0, op=11000), FRINTM (U=0, bit23=0, op=11001),
+        //   FRINTP (U=0, bit23=1, op=11000), FRINTZ (U=0, bit23=1, op=11001),
+        //   FRINTA (U=1, bit23=0, op=11000), FRINTX (U=1, bit23=0, op=11001).
+        // sz at bit 22 selects single vs double; 2D requires Q=1.
+        36 => {
+            let pick = rng.r#gen_range(0..6);
+            let (u, bit23, op_low) = match pick {
+                0 => (0u32, 0u32, 0b11000u32), // FRINTN
+                1 => (0,    0,    0b11001),    // FRINTM
+                2 => (0,    1,    0b11000),    // FRINTP
+                3 => (0,    1,    0b11001),    // FRINTZ
+                4 => (1,    0,    0b11000),    // FRINTA
+                _ => (1,    0,    0b11001),    // FRINTX
+            };
+            let (q, sz) = if rng.r#gen_range(0..2) == 0 { (rng.r#gen_range(0..2), 0u32) } else { (1, 1u32) };
+            (0 << 31) | (q << 30) | (u << 29) | (0b01110 << 24)
+                | (bit23 << 23) | (sz << 22) | (1 << 21) | (0 << 17)
+                | (op_low << 12) | (0b10 << 10) | (vn << 5) | vd
         }
         // FMLA / FMLS (ASIMDSAME FP). U=0, opcode 11001; FMLS sets bit23=1.
         // Placed last (excluded by default FUZZ_NEON_MAX=35) because ARM/x86
@@ -410,10 +433,40 @@ fn fuzz_neon_stress_multiseed() {
 }
 
 /// Bisection helper used to track down a long-running fuzz mismatch.
-/// Replays a hard-coded sequence (case 9 from `fuzz_neon_large` when
-/// `FUZZ_NEON_MAX=36`) and reports the first instruction whose execution
-/// makes V13 diverge between Unicorn and rustarmic. Kept around because
-/// the same machinery is useful any time the fuzz produces a regression.
+/// Replays a hard-coded sequence (case 12 from `fuzz_neon_large` back when
+/// FRINT was first enabled) and reports the first instruction whose
+/// execution makes V12 diverge. Was used to pinpoint the FMLS NaN-sign
+/// fixup bug now fixed in `emit_fma_inner`; kept as a snapshot regression
+/// guard.
+#[test]
+#[ignore = "investigation helper"]
+fn bisect_frint_large_case12() {
+    let seed: u64 = 0xBADC_AFE0;
+    let case_idx: u64 = 12;
+    let words: &[u32] = &[
+        0x0e41782b, 0x0e2128cf, 0x0ea53de0, 0x4e08406d, 0x6ea83ccc, 0x0e2019e1, 0x0e6365a4,
+        0x6e662026, 0x4ea9cd46, 0x6e228dc3, 0x0e0c4164, 0x2e21898d, 0x6e21e509, 0x6ea365e5,
+        0x2e26c0ea, 0x4e631dc1, 0x0e20b82c, 0x2ea92104, 0x6e6d1d27, 0x2eae3cec, 0x4e20188e,
+        0x0e6985aa, 0x0e86398e, 0x0ea885af, 0x6e6865e2, 0x0e004141, 0x2e62204c, 0x0e263cac,
+        0x0e699dcf, 0x0eaa1c2f, 0x4ee784cf, 0x4e201882, 0x6ee18dcd, 0x4eeb1c6e, 0x2e6c342d,
+    ];
+    let init = baseline_state(seed ^ case_idx);
+    for k in 1..=words.len() {
+        let mut code = Vec::with_capacity((k + 1) * 4);
+        for &w in &words[..k] { code.extend_from_slice(&w.to_le_bytes()); }
+        code.extend_from_slice(&0xD420_0000u32.to_le_bytes());
+        let (uni, jit) = run_pair(&code, init);
+        for vidx in &[12usize, 15] {
+            if uni.v[*vidx] != jit.v[*vidx] {
+                eprintln!("k={:3} V{} FAIL  last instr 0x{:08x}", k, vidx, words[k - 1]);
+                eprintln!("  uni V{} = [{:016x}, {:016x}]", vidx, uni.v[*vidx][1], uni.v[*vidx][0]);
+                eprintln!("  jit V{} = [{:016x}, {:016x}]", vidx, jit.v[*vidx][1], jit.v[*vidx][0]);
+                return;
+            }
+        }
+    }
+}
+
 #[test]
 #[ignore = "investigation helper; remaining stress edge case (FMLA + input-NaN-sign-1)"]
 fn bisect_stress_seed_001122() {
@@ -552,6 +605,64 @@ fn bisect_neon_large_case9_v1() {
             eprintln!("range [{:3}..{:3}] {}: uni V1=[{:016x},{:016x}] jit V1=[{:016x},{:016x}]",
                 start, k, if m { "OK  " } else { "FAIL" },
                 uni.v[1][1], uni.v[1][0], jit.v[1][1], jit.v[1][0]);
+        }
+    }
+}
+
+#[test]
+#[ignore = "investigation helper: dump V9, V10 just before FMLS at k=9"]
+fn dump_case12_fmls_inputs() {
+    let seed: u64 = 0xBADC_AFE0;
+    let case_idx: u64 = 12;
+    let words: &[u32] = &[
+        0x0e41782b, 0x0e2128cf, 0x0ea53de0, 0x4e08406d, 0x6ea83ccc, 0x0e2019e1, 0x0e6365a4,
+        0x6e662026,
+    ];
+    let init = baseline_state(seed ^ case_idx);
+    let mut code = Vec::with_capacity((words.len() + 1) * 4);
+    for &w in words { code.extend_from_slice(&w.to_le_bytes()); }
+    code.extend_from_slice(&0xD420_0000u32.to_le_bytes());
+    let (uni, jit) = run_pair(&code, init);
+    eprintln!("inputs to FMLS V6.4S, V10.4S, V9.4S (k=9, init xor):");
+    for i in &[9usize, 10, 6] {
+        eprintln!("  V{:<2} uni=[{:016x},{:016x}] jit=[{:016x},{:016x}]",
+            i, uni.v[*i][1], uni.v[*i][0], jit.v[*i][1], jit.v[*i][0]);
+    }
+}
+
+#[test]
+#[ignore = "investigation helper: trace V5/V6 divergence for FRINT case 12"]
+fn bisect_frint_case12_v5_v6() {
+    let seed: u64 = 0xBADC_AFE0;
+    let case_idx: u64 = 12;
+    let words: &[u32] = &[
+        0x0e41782b, 0x0e2128cf, 0x0ea53de0, 0x4e08406d, 0x6ea83ccc, 0x0e2019e1, 0x0e6365a4,
+        0x6e662026, 0x4ea9cd46, 0x6e228dc3, 0x0e0c4164, 0x2e21898d, 0x6e21e509, 0x6ea365e5,
+        0x2e26c0ea, 0x4e631dc1, 0x0e20b82c, 0x2ea92104, 0x6e6d1d27, 0x2eae3cec, 0x4e20188e,
+        0x0e6985aa, 0x0e86398e, 0x0ea885af, 0x6e6865e2, 0x0e004141, 0x2e62204c, 0x0e263cac,
+    ];
+    let init = baseline_state(seed ^ case_idx);
+    for k in 1..=words.len() {
+        let mut code = Vec::with_capacity((k + 1) * 4);
+        for &w in &words[..k] { code.extend_from_slice(&w.to_le_bytes()); }
+        code.extend_from_slice(&0xD420_0000u32.to_le_bytes());
+        let (uni, jit) = run_pair(&code, init);
+        let d5 = uni.v[5] != jit.v[5];
+        let d6 = uni.v[6] != jit.v[6];
+        let mark = match (d5, d6) {
+            (false, false) => "    ",
+            (true,  false) => "V5  ",
+            (false, true ) => " V6 ",
+            (true,  true ) => "V5V6",
+        };
+        eprintln!("k={:3} {} instr=0x{:08x}", k, mark, words[k-1]);
+        if d5 {
+            eprintln!("    uni V5 = [{:016x},{:016x}]", uni.v[5][1], uni.v[5][0]);
+            eprintln!("    jit V5 = [{:016x},{:016x}]", jit.v[5][1], jit.v[5][0]);
+        }
+        if d6 {
+            eprintln!("    uni V6 = [{:016x},{:016x}]", uni.v[6][1], uni.v[6][0]);
+            eprintln!("    jit V6 = [{:016x},{:016x}]", jit.v[6][1], jit.v[6][0]);
         }
     }
 }

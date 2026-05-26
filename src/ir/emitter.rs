@@ -453,6 +453,29 @@ impl<'b> IrEmitter<'b> {
         self.push(Armlet::new(op, Ty::U128).with_args(&[vd_prev, vn, vm]).with_imm(q as u64))
     }
 
+    fn vec_frint(&mut self, op_s: Op, op_d: Op, double: bool, vn: ValueRef, q: bool) -> ValueRef {
+        let op = if double { op_d } else { op_s };
+        self.push(Armlet::new(op, Ty::U128).with_args(&[vn]).with_imm(q as u64))
+    }
+    pub fn vec_frintn(&mut self, vn: ValueRef, double: bool, q: bool) -> ValueRef {
+        self.vec_frint(Op::VecFRintN_S, Op::VecFRintN_D, double, vn, q)
+    }
+    pub fn vec_frintm(&mut self, vn: ValueRef, double: bool, q: bool) -> ValueRef {
+        self.vec_frint(Op::VecFRintM_S, Op::VecFRintM_D, double, vn, q)
+    }
+    pub fn vec_frintp(&mut self, vn: ValueRef, double: bool, q: bool) -> ValueRef {
+        self.vec_frint(Op::VecFRintP_S, Op::VecFRintP_D, double, vn, q)
+    }
+    pub fn vec_frintz(&mut self, vn: ValueRef, double: bool, q: bool) -> ValueRef {
+        self.vec_frint(Op::VecFRintZ_S, Op::VecFRintZ_D, double, vn, q)
+    }
+    pub fn vec_frinta(&mut self, vn: ValueRef, double: bool, q: bool) -> ValueRef {
+        self.vec_frint(Op::VecFRintA_S, Op::VecFRintA_D, double, vn, q)
+    }
+    pub fn vec_frintx(&mut self, vn: ValueRef, double: bool, q: bool) -> ValueRef {
+        self.vec_frint(Op::VecFRintX_S, Op::VecFRintX_D, double, vn, q)
+    }
+
     fn vec_funop(&mut self, op_s: Op, op_d: Op, double: bool, vn: ValueRef, q: bool) -> ValueRef {
         let op = if double { op_d } else { op_s };
         self.push(Armlet::new(op, Ty::U128).with_args(&[vn]).with_imm(q as u64))

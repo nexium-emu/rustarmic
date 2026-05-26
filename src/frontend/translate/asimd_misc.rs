@@ -14,7 +14,10 @@ use crate::ir::IrEmitter;
 use crate::util::bits::{bit, bits};
 
 #[derive(Clone, Copy)]
-enum Kind { Neg, Abs, Not, FNeg, FAbs, FSqrt, Xtn, Rev16, Rev32, Rev64 }
+enum Kind {
+    Neg, Abs, Not, FNeg, FAbs, FSqrt, Xtn, Rev16, Rev32, Rev64,
+    FRintN, FRintM, FRintP, FRintZ, FRintA, FRintX,
+}
 
 pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDMISC) -> Result<InstStatus> {
     use ASIMDMISC::*;
@@ -30,6 +33,15 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDMISC) -> Result<InstStatus> 
         REV16_Vd_Vn(i) => (i.0, Kind::Rev16),
         REV32_Vd_Vn(i) => (i.0, Kind::Rev32),
         REV64_Vd_Vn(i) => (i.0, Kind::Rev64),
+        FRINTN_Vd_Vn(i) => (i.0, Kind::FRintN),
+        FRINTM_Vd_Vn(i) => (i.0, Kind::FRintM),
+        FRINTP_Vd_Vn(i) => (i.0, Kind::FRintP),
+        FRINTZ_Vd_Vn(i) => (i.0, Kind::FRintZ),
+        FRINTA_Vd_Vn(i) => (i.0, Kind::FRintA),
+        FRINTX_Vd_Vn(i) => (i.0, Kind::FRintX),
+        // FRINTI rounds per FPCR; we use ties-to-even (FPCR default) for both
+        // FRINTX and FRINTI, since we don't track guest FPCR rounding mode.
+        FRINTI_Vd_Vn(i) => (i.0, Kind::FRintX),
         _ => return Err(Error::Unsupported { pc: em.current_pc, opcode: 0 }),
     };
 
@@ -70,6 +82,23 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDMISC) -> Result<InstStatus> 
                 em.vec_xtn2(vd_prev, vn, size + 1)
             } else {
                 em.vec_xtn(vn, size + 1)
+            }
+        }
+        Kind::FRintN | Kind::FRintM | Kind::FRintP | Kind::FRintZ
+        | Kind::FRintA | Kind::FRintX => {
+            // FP misc op: bit 22 = sz (0=single, 1=double). 2D requires Q=1.
+            let double = bit(raw, 22) == 1;
+            if double && !q {
+                return Err(Error::Decode { pc: em.current_pc, opcode: raw });
+            }
+            match kind {
+                Kind::FRintN => em.vec_frintn(vn, double, q),
+                Kind::FRintM => em.vec_frintm(vn, double, q),
+                Kind::FRintP => em.vec_frintp(vn, double, q),
+                Kind::FRintZ => em.vec_frintz(vn, double, q),
+                Kind::FRintA => em.vec_frinta(vn, double, q),
+                Kind::FRintX => em.vec_frintx(vn, double, q),
+                _ => unreachable!(),
             }
         }
         Kind::Rev16 | Kind::Rev32 | Kind::Rev64 => {

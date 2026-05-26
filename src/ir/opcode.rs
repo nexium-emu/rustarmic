@@ -299,6 +299,22 @@ pub enum Op {
     /// indices); indices in 0..48 select bytes, otherwise zero.
     VecTbl3 = 0x72C,
 
+    /// FRINT family — per-lane FP round-to-integral with a fixed rounding
+    /// mode. `_S` = packed single (2S/4S), `_D` = packed double (2D);
+    /// `imm` bit 0 carries Q-flag for the S forms.
+    /// • FRINTN: ties-to-even (default IEEE mode)
+    /// • FRINTM: floor (toward −∞)
+    /// • FRINTP: ceil (toward +∞)
+    /// • FRINTZ: truncate (toward zero)
+    /// • FRINTA: ties-away-from-zero (no native x86 mode — emulated)
+    /// • FRINTX: current FPCR mode (we treat as FRINTN since FPCR isn't live)
+    VecFRintN_S = 0x730, VecFRintN_D = 0x731,
+    VecFRintM_S = 0x734, VecFRintM_D = 0x735,
+    VecFRintP_S = 0x738, VecFRintP_D = 0x739,
+    VecFRintZ_S = 0x73C, VecFRintZ_D = 0x73D,
+    VecFRintA_S = 0x740, VecFRintA_D = 0x741,
+    VecFRintX_S = 0x744, VecFRintX_D = 0x745,
+
     Mrs            = 0x700,
     Msr            = 0x704,
     Hint           = 0x708,

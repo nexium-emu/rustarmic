@@ -193,6 +193,13 @@ fn dispatch_op(op: Op) -> Option<EmitFn> {
         VecFmla_S  | VecFmla_D  => emit_op_vec_fmla,
         VecFmls_S  | VecFmls_D  => emit_op_vec_fmls,
 
+        VecFRintN_S | VecFRintN_D => emit_op_vec_frintn,
+        VecFRintM_S | VecFRintM_D => emit_op_vec_frintm,
+        VecFRintP_S | VecFRintP_D => emit_op_vec_frintp,
+        VecFRintZ_S | VecFRintZ_D => emit_op_vec_frintz,
+        VecFRintA_S | VecFRintA_D => emit_op_vec_frinta,
+        VecFRintX_S | VecFRintX_D => emit_op_vec_frintx,
+
         VecSaddl => emit_op_vec_addl_signed,
         VecUaddl => emit_op_vec_addl_unsigned,
         VecSsubl => emit_op_vec_subl_signed,
@@ -1243,6 +1250,101 @@ fn emit_op_vec_fsqrt(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation,
     store_xmm_q(asm, alloc, d, working)
 }
 
+/// FRINT family helper. `mode` follows the SSE4.1 ROUNDPS/ROUNDPD imm:
+///   0=nearest-even, 1=floor, 2=ceil, 3=truncate, 4=current MXCSR.
+/// The "suppress inexact" bit (imm[3]=1, +0x08) is also set so we don't
+/// raise spurious FP exceptions for instructions like FRINTN that ARM
+/// treats as exception-clean.
+fn emit_vec_frint_fixed(
+    asm: &mut CodeAssembler,
+    alloc: &Allocation,
+    a: Armlet,
+    d: ValueRef,
+    mode: i32,
+) -> Result<()> {
+    let q_form = (a.imm & 1) != 0;
+    let double = vec_fp_is_double(a.op);
+    let working = working_xmm_for(alloc, d, xmm0);
+    let src = get_xmm_q(asm, alloc, a.args[0], xmm1)?;
+    let imm = mode | 0x08; // bit 3 = suppress precision exception
+    if double { asm.roundpd(working, src, imm)?; }
+    else      { asm.roundps(working, src, imm)?; }
+    if !q_form { asm.movq(working, working)?; }
+    store_xmm_q(asm, alloc, d, working)
+}
+
+fn emit_op_vec_frintn(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx]; let d = dst_of(&a, idx).unwrap();
+    emit_vec_frint_fixed(asm, alloc, a, d, 0)
+}
+fn emit_op_vec_frintm(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx]; let d = dst_of(&a, idx).unwrap();
+    emit_vec_frint_fixed(asm, alloc, a, d, 1)
+}
+fn emit_op_vec_frintp(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx]; let d = dst_of(&a, idx).unwrap();
+    emit_vec_frint_fixed(asm, alloc, a, d, 2)
+}
+fn emit_op_vec_frintz(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx]; let d = dst_of(&a, idx).unwrap();
+    emit_vec_frint_fixed(asm, alloc, a, d, 3)
+}
+fn emit_op_vec_frintx(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    // ARM FRINTX rounds per the current FPCR rounding mode (defaults to
+    // ties-to-even). We don't track guest FPCR, so emit ties-to-even
+    // unconditionally — matches Unicorn's default and dynarmic's behavior.
+    let a = block.code[idx]; let d = dst_of(&a, idx).unwrap();
+    emit_vec_frint_fixed(asm, alloc, a, d, 0)
+}
+
+/// FRINTA — ties-away-from-zero rounding. x86 ROUNDPS has no native mode
+/// for this, so emulate as `trunc(x + copysign(0.5, x))`:
+///   1. Compute |x| via and-with-abs-mask (broadcast 0x7FFF_FFFF or
+///      0x7FFF_FFFF_FFFF_FFFF per lane).
+///   2. Add 0.5 to |x|.
+///   3. Re-attach the original sign via OR with the saved sign bits.
+///   4. Truncate via ROUNDPS imm=3.
+/// This gives ties-away because adding 0.5 to a half-integer pushes it
+/// past the next integer in the direction of the sign.
+fn emit_op_vec_frinta(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx]; let d = dst_of(&a, idx).unwrap();
+    let q_form = (a.imm & 1) != 0;
+    let double = vec_fp_is_double(a.op);
+    let working = working_xmm_for(alloc, d, xmm0);
+
+    // working = src
+    into_xmm_q(asm, alloc, a.args[0], working)?;
+
+    // xmm2 = sign bits of src.
+    asm.pcmpeqd(xmm2, xmm2)?;
+    if double { asm.psllq(xmm2, 63)?; } else { asm.pslld(xmm2, 31)?; }
+    asm.pand(xmm2, working)?;          // xmm2 = sign-bit-only per lane
+
+    // xmm1 = |src| via abs-mask.
+    asm.pcmpeqd(xmm1, xmm1)?;
+    if double { asm.psrlq(xmm1, 1)?; } else { asm.psrld(xmm1, 1)?; }
+    asm.pand(working, xmm1)?;          // working = |src|
+
+    // xmm3 = broadcast 0.5 (= 0x3F000000 / 0x3FE0000000000000).
+    if double {
+        asm.mov(rax, 0x3FE0_0000_0000_0000u64 as i64)?;
+    } else {
+        asm.mov(rax, 0x3F00_0000_3F00_0000u64 as i64)?;
+    }
+    asm.movq(xmm3, rax)?;
+    asm.punpcklqdq(xmm3, xmm3)?;
+    // working = |src| + 0.5
+    if double { asm.addpd(working, xmm3)?; } else { asm.addps(working, xmm3)?; }
+    // re-attach sign
+    asm.por(working, xmm2)?;
+    // truncate (round toward zero) with inexact suppressed
+    if double { asm.roundpd(working, working, 0x0B)?; }
+    else      { asm.roundps(working, working, 0x0B)?; }
+
+    if !q_form { asm.movq(working, working)?; }
+    store_xmm_q(asm, alloc, d, working)
+}
+
 // FCMEQ: cmpps(a, b, EQ_OQ=0). All-ones lanes on equality; zero for NaN.
 fn emit_op_vec_fcmeq(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
     let a = block.code[idx];
@@ -1296,11 +1398,13 @@ fn emit_op_vec_fcmge(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation,
 ///
 /// For FMLS we follow the FMA with a NaN-sign fixup: ARM evaluates FMLS as
 /// `FPMulAdd(Vd, FPNeg(Vn), Vm)`, where `FPNeg` flips the sign bit of any
-/// NaN-shaped value in Vn *before* the multiply, so the NaN that ultimately
-/// propagates has its sign bit flipped. x86 VFNMADD231 negates the product
-/// after the implicit multiply and doesn't touch NaN signs, so we'd end up
-/// with the opposite sign for NaN result lanes. Force the sign bit clear
-/// on any NaN lane to match ARM's typical post-FPNeg state.
+/// NaN-shaped value in Vn *before* the multiply. When that NaN later wins
+/// propagation, it carries the flipped sign through. x86 VFNMADD231 has no
+/// such FPNeg step — its negate applies to the finite product, not to a
+/// propagating NaN — so Vn-sourced NaNs come out with the original (un-
+/// flipped) sign. For Vm- or Vd-sourced NaNs, ARM and x86 agree: both
+/// preserve the source NaN's sign. So we XOR the sign bit only of the
+/// output lanes whose *Vn input* was NaN.
 fn emit_fma_inner(
     asm: &mut CodeAssembler,
     alloc: &Allocation,
@@ -1317,6 +1421,21 @@ fn emit_fma_inner(
     let vn = get_xmm_q(asm, alloc, a.args[1], xmm1)?;
     let vm = get_xmm_q(asm, alloc, a.args[2], xmm2)?;
 
+    // Capture Vn's per-lane NaN-sign mask into xmm3 *before* the FMA, so the
+    // mask survives even if the allocator picked the same register for Vn
+    // and the FMA destination. xmm3 is a scratch reg outside the allocator
+    // pool (SPILL_XMMS = XMM6..15), so it never aliases vn/vm/working.
+    if subtract {
+        asm.movdqa(xmm3, vn)?;
+        if double {
+            asm.cmpunordpd(xmm3, xmm3)?;
+            asm.psllq(xmm3, 63)?;
+        } else {
+            asm.cmpunordps(xmm3, xmm3)?;
+            asm.pslld(xmm3, 31)?;
+        }
+    }
+
     // VFMADD231PS dst, src1, src2 → dst = src1 * src2 + dst (one rounding).
     // VFNMADD231PS dst, src1, src2 → dst = -(src1 * src2) + dst.
     match (subtract, double) {
@@ -1327,35 +1446,7 @@ fn emit_fma_inner(
     }
 
     if subtract {
-        // FMLS-specific NaN sign-bit fixup. ARM evaluates FMLS as
-        // FPMulAdd(Vd, FPNeg(Vn), Vm); FPNeg flips the sign bit of any
-        // NaN-shaped value in Vn *before* propagation, so the resulting
-        // NaN has sign 0 whenever the propagating input NaN had sign 1.
-        // x86 VFNMADD231 negates the product after the implicit multiply
-        // and leaves NaN signs intact, so we'd end up with the opposite
-        // sign. Force sign-clear on every NaN-valued result lane.
-        //
-        // We don't apply the same fixup to FMLA: ARM's plain FMLA preserves
-        // the propagating NaN's sign, and so does x86 VFMADD231; clearing
-        // would actively introduce divergence in cases where the input NaN
-        // had sign 1 and was meant to be preserved.
-        //
-        // Note: this leaves *one* class of disagreement uncovered —
-        // arithmetic-induced NaN in FMLA (e.g., inf − inf in the FMA
-        // expression), where ARM picks the default-invalid NaN with sign 0
-        // and x86 picks 0xFFC0_0000 with sign 1. That's rare in random
-        // streams; the fuzz comparator's NaN-payload tolerance + the
-        // masked V-init keep the false-positive rate near zero.
-        asm.movdqa(xmm3, working)?;
-        if double {
-            asm.cmpunordpd(xmm3, xmm3)?;
-            asm.psllq(xmm3, 63)?;
-        } else {
-            asm.cmpunordps(xmm3, xmm3)?;
-            asm.pslld(xmm3, 31)?;
-        }
-        asm.pandn(xmm3, working)?;
-        asm.movdqa(working, xmm3)?;
+        asm.pxor(working, xmm3)?;
     }
 
     if !q_form { asm.movq(working, working)?; }
