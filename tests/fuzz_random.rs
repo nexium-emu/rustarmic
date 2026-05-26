@@ -148,13 +148,8 @@ fn gen_neon_block(rng: &mut ChaCha8Rng, n: usize) -> Vec<u8> {
 fn gen_neon_inst(rng: &mut ChaCha8Rng) -> u32 {
     // Default to the full op set; tests narrow this via env var when
     // bisecting a mismatch.
-    // Default range excludes pick 35 (FMLA/FMLS): ARM and x86 produce
-    // different NaN sign bits / payloads for fused multiply-add, and once a
-    // NaN with the "wrong" sign appears it flows into subsequent integer
-    // ops (SSUBL, ABS, …) and breaks unrelated lanes. Set `FUZZ_NEON_MAX=36`
-    // to opt in and accept the NaN-payload noise.
     let max_pick: u32 = std::env::var("FUZZ_NEON_MAX")
-        .ok().and_then(|s| s.parse().ok()).unwrap_or(35);
+        .ok().and_then(|s| s.parse().ok()).unwrap_or(36);
     let pick: u32 = rng.r#gen_range(0..max_pick);
     let vd: u32 = rng.r#gen_range(0..16);
     let vn: u32 = rng.r#gen_range(0..16);
@@ -403,11 +398,52 @@ fn fuzz_neon_large() {
     fuzz_neon_with_seed(0xBADC_AFE0, 16, 24, 64, "neon-large");
 }
 
+/// Stress test: run several extra seeds with FMA-heavy sequences. Off by
+/// default (CI runs the short suites only); flip with `FUZZ_STRESS=1`.
+#[test]
+fn fuzz_neon_stress_multiseed() {
+    if std::env::var("FUZZ_STRESS").is_err() { return; }
+    let seeds: &[u64] = &[0x0011_2233, 0xDEAD_BEEF, 0xCAFE_BABE_u64, 0x1357_9BDF, 0x2468_ACE0];
+    for &s in seeds {
+        fuzz_neon_with_seed(s, 32, 24, 64, "neon-stress");
+    }
+}
+
 /// Bisection helper used to track down a long-running fuzz mismatch.
 /// Replays a hard-coded sequence (case 9 from `fuzz_neon_large` when
 /// `FUZZ_NEON_MAX=36`) and reports the first instruction whose execution
 /// makes V13 diverge between Unicorn and rustarmic. Kept around because
 /// the same machinery is useful any time the fuzz produces a regression.
+#[test]
+#[ignore = "investigation helper; remaining stress edge case (FMLA + input-NaN-sign-1)"]
+fn bisect_stress_seed_001122() {
+    let seed: u64 = 0x0011_2233;
+    let case_idx: u64 = 23;
+    let words: &[u32] = &[
+        0x0e20196d, 0x4e09408b, 0x4eaf6584, 0x4e651dc5, 0x6ea41cc5, 0x2e6a3d8b, 0x6eee8d08,
+        0x0e831880, 0x0eaa3c84, 0x4e2420c6, 0x6e60b943, 0x2e20592d, 0x2e231da5, 0x2e296cc3,
+        0x4e231c42, 0x4ee81d20, 0x6ea51c21, 0x2e2008a7, 0x0e2f1ceb, 0x4e201804, 0x0e629ce6,
+        0x0eab1d04, 0x6e2b1c61, 0x6e276de8, 0x2e20b9a0, 0x0e600800, 0x4e60084e, 0x6e211d8f,
+        0x6ea83d23, 0x0e261c40, 0x6ea31c6c, 0x4eee1c0b, 0x2e25c169, 0x0eab3c41, 0x4e24cc6b,
+        0x6e25204a, 0x6ee41de4, 0x4e2018a5, 0x4ea41dcc, 0x0ea8cc4b, 0x4e200805, 0x2e6335a7,
+        0x2ea1e485, 0x4e266ce1, 0x6e663cc1, 0x4eae9d60, 0x0e69210d, 0x0e803909, 0x4ee03466,
+        0x0e2018c7, 0x4e60b8e2, 0x6ea921e7, 0x4e2e8563, 0x4e213d0b, 0x0e46296b, 0x0eaf658a,
+    ];
+    let init = baseline_state(seed ^ case_idx);
+    for k in 1..=words.len() {
+        let mut code = Vec::with_capacity((k + 1) * 4);
+        for &w in &words[..k] { code.extend_from_slice(&w.to_le_bytes()); }
+        code.extend_from_slice(&0xD420_0000u32.to_le_bytes());
+        let (uni, jit) = run_pair(&code, init);
+        if uni.v[0] != jit.v[0] {
+            eprintln!("k={:3} FAIL  last instr 0x{:08x}", k, words[k-1]);
+            eprintln!("  uni V0=[{:016x},{:016x}]", uni.v[0][1], uni.v[0][0]);
+            eprintln!("  jit V0=[{:016x},{:016x}]", jit.v[0][1], jit.v[0][0]);
+            return;
+        }
+    }
+}
+
 #[test]
 #[ignore = "investigation helper; runs only when explicitly requested"]
 fn bisect_neon_large_case9_v13() {

@@ -2743,3 +2743,27 @@ fn vec_tbl3_16b_three_register_table() {
     assert_eq!(ctx.v[0][0], u64::from_le_bytes(lo));
     assert_eq!(ctx.v[0][1], u64::from_le_bytes(hi));
 }
+
+#[test]
+fn vec_fmls_nan_input_clears_sign() {
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    // V1 (Vd) = arbitrary; V2 (Vn) = NaN with sign bit SET in lane 0;
+    // V3 (Vm) = arbitrary.
+    // ARM FMLS = Vd - Vn*Vm; with Vn = sign-set NaN, the FPNeg inside ARM's
+    // FMLS pseudocode flips the NaN's sign before propagation, so the output
+    // NaN should have sign 0.
+    ctx.v[1] = [(1.5_f32).to_bits() as u64, 0];
+    ctx.v[2] = [0xFFFFFFFFu64, 0];  // sign-set NaN in lane 0
+    ctx.v[3] = [(2.0_f32).to_bits() as u64, 0];
+    let code = build_code(&[
+        0x0EA3_CC41, // fmls v1.2s, v2.2s, v3.2s
+        0xD4200000,
+    ]);
+    run(code, &mut ctx);
+    // Result lane 0 should be NaN with sign bit clear (0x7FFFFFFF), not
+    // 0xFFFFFFFF.
+    let lane0 = ctx.v[1][0] as u32;
+    assert!(f32::from_bits(lane0).is_nan(), "result lane 0 should be NaN, got {:#010x}", lane0);
+    assert_eq!(lane0 >> 31, 0, "NaN sign bit must be clear after FMLS, got {:#010x}", lane0);
+}

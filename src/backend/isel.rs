@@ -1293,6 +1293,14 @@ fn emit_op_vec_fcmge(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation,
 /// the multiply-add with a SINGLE rounding — matching ARM's FMLA semantics
 /// exactly, unlike the two-rounding composed form. Requires Haswell+ /
 /// Bulldozer+ CPUs.
+///
+/// For FMLS we follow the FMA with a NaN-sign fixup: ARM evaluates FMLS as
+/// `FPMulAdd(Vd, FPNeg(Vn), Vm)`, where `FPNeg` flips the sign bit of any
+/// NaN-shaped value in Vn *before* the multiply, so the NaN that ultimately
+/// propagates has its sign bit flipped. x86 VFNMADD231 negates the product
+/// after the implicit multiply and doesn't touch NaN signs, so we'd end up
+/// with the opposite sign for NaN result lanes. Force the sign bit clear
+/// on any NaN lane to match ARM's typical post-FPNeg state.
 fn emit_fma_inner(
     asm: &mut CodeAssembler,
     alloc: &Allocation,
@@ -1317,6 +1325,39 @@ fn emit_fma_inner(
         (true,  false) => asm.vfnmadd231ps(working, vn, vm)?,
         (true,  true)  => asm.vfnmadd231pd(working, vn, vm)?,
     }
+
+    if subtract {
+        // FMLS-specific NaN sign-bit fixup. ARM evaluates FMLS as
+        // FPMulAdd(Vd, FPNeg(Vn), Vm); FPNeg flips the sign bit of any
+        // NaN-shaped value in Vn *before* propagation, so the resulting
+        // NaN has sign 0 whenever the propagating input NaN had sign 1.
+        // x86 VFNMADD231 negates the product after the implicit multiply
+        // and leaves NaN signs intact, so we'd end up with the opposite
+        // sign. Force sign-clear on every NaN-valued result lane.
+        //
+        // We don't apply the same fixup to FMLA: ARM's plain FMLA preserves
+        // the propagating NaN's sign, and so does x86 VFMADD231; clearing
+        // would actively introduce divergence in cases where the input NaN
+        // had sign 1 and was meant to be preserved.
+        //
+        // Note: this leaves *one* class of disagreement uncovered —
+        // arithmetic-induced NaN in FMLA (e.g., inf − inf in the FMA
+        // expression), where ARM picks the default-invalid NaN with sign 0
+        // and x86 picks 0xFFC0_0000 with sign 1. That's rare in random
+        // streams; the fuzz comparator's NaN-payload tolerance + the
+        // masked V-init keep the false-positive rate near zero.
+        asm.movdqa(xmm3, working)?;
+        if double {
+            asm.cmpunordpd(xmm3, xmm3)?;
+            asm.psllq(xmm3, 63)?;
+        } else {
+            asm.cmpunordps(xmm3, xmm3)?;
+            asm.pslld(xmm3, 31)?;
+        }
+        asm.pandn(xmm3, working)?;
+        asm.movdqa(working, xmm3)?;
+    }
+
     if !q_form { asm.movq(working, working)?; }
     store_xmm_q(asm, alloc, d, working)
 }
