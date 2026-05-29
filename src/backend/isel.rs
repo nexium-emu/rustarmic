@@ -2,7 +2,7 @@ use iced_x86::code_asm::*;
 
 use crate::arch::{Cond, NUM_GPRS, ZR_ENCODING};
 use crate::backend::abi::{
-    ARG0_REG, CALL_PRECALL_SUB, CTX_REG, SCRATCH0, SCRATCH1, SCRATCH2, SCRATCH3,
+    ARG0_REG, ARG3_REG, CALL_PRECALL_SUB, CTX_REG, SCRATCH0, SCRATCH1, SCRATCH2, SCRATCH3,
 };
 use crate::backend::operand::{
     get_xmm_q, gpr8, gpr16, gpr32, gpr64, into_xmm_q, load32, load64, load_xmm_d, load_xmm_s, store32,
@@ -2464,8 +2464,9 @@ fn emit_load(
     bytes: u32,
     use_fastmem: bool,
 ) -> Result<()> {
-    // ABI: arg0 = ctx, arg1 = addr (SCRATCH1 IS the arg1 register on both
-    // calling conventions). Result lands in rax/eax for either path.
+    // ABI for the slow path: arg0 = ctx, arg1 = addr (SCRATCH1), arg2 = size
+    // (SCRATCH3). Result u64 lands in rax/eax; the caller masks to width via
+    // store32/store64.
     load64(asm, alloc, a.args[0], SCRATCH1)?;
 
     if use_fastmem {
@@ -2507,11 +2508,15 @@ fn emit_store(
     bytes: u32,
     use_fastmem: bool,
 ) -> Result<()> {
-    // ABI: arg0 = ctx, arg1 = addr, arg2 = value (SCRATCH3 IS the arg2 reg).
+    // ABI for the slow path: arg0 = ctx, arg1 = addr (SCRATCH1), arg2 = size
+    // (SCRATCH3), arg3 = value (ARG3_REG). Value is staged in ARG3_REG so
+    // both the fast path (which uses its sub-register to write the backing
+    // store directly) and the slow path (which passes it to the fn-ptr) can
+    // consume it without an extra copy.
     if bytes == 8 {
-        load64(asm, alloc, a.args[1], SCRATCH3)?;
+        load64(asm, alloc, a.args[1], ARG3_REG)?;
     } else {
-        load32(asm, alloc, a.args[1], gpr32(scratch3_id()))?;
+        load32(asm, alloc, a.args[1], gpr32(arg3_reg_id()))?;
     }
     load64(asm, alloc, a.args[0], SCRATCH1)?;
 
@@ -2523,10 +2528,10 @@ fn emit_store(
         asm.mov(SCRATCH0, qword_ptr(CTX_REG + cpu_offsets::mem_base() as i32))?;
         asm.add(SCRATCH0, SCRATCH2)?;
         match bytes {
-            1 => asm.mov(byte_ptr (SCRATCH0), gpr8 (scratch3_id()))?,
-            2 => asm.mov(word_ptr (SCRATCH0), gpr16(scratch3_id()))?,
-            4 => asm.mov(dword_ptr(SCRATCH0), gpr32(scratch3_id()))?,
-            8 => asm.mov(qword_ptr(SCRATCH0), SCRATCH3)?,
+            1 => asm.mov(byte_ptr (SCRATCH0), gpr8 (arg3_reg_id()))?,
+            2 => asm.mov(word_ptr (SCRATCH0), gpr16(arg3_reg_id()))?,
+            4 => asm.mov(dword_ptr(SCRATCH0), gpr32(arg3_reg_id()))?,
+            8 => asm.mov(qword_ptr(SCRATCH0), ARG3_REG)?,
             _ => return Err(Error::Backend("unsupported store width".into())),
         }
         asm.jmp(lbl_done)?;
@@ -2559,47 +2564,38 @@ fn emit_fastmem_bounds_check(
 }
 
 fn emit_load_slow_path(asm: &mut CodeAssembler, bytes: u32) -> Result<()> {
-    asm.mov(ARG0_REG, CTX_REG)?;
-    let offset = match bytes {
-        1 => cpu_offsets::mem_read8(),
-        2 => cpu_offsets::mem_read16(),
-        4 => cpu_offsets::mem_read32(),
-        8 => cpu_offsets::mem_read64(),
-        _ => return Err(Error::Backend("unsupported load width".into())),
-    };
+    if !matches!(bytes, 1 | 2 | 4 | 8) {
+        return Err(Error::Backend("unsupported load width".into()));
+    }
+    asm.mov(SCRATCH3, bytes as i64)?;      // arg2 = size
+    asm.mov(ARG0_REG, CTX_REG)?;           // arg0 = ctx; addr already in SCRATCH1
     asm.sub(rsp, CALL_PRECALL_SUB)?;
-    asm.call(qword_ptr(CTX_REG + offset as i32))?;
+    asm.call(qword_ptr(CTX_REG + cpu_offsets::mem_read() as i32))?;
     asm.add(rsp, CALL_PRECALL_SUB)?;
     Ok(())
 }
 
 fn emit_store_slow_path(asm: &mut CodeAssembler, bytes: u32) -> Result<()> {
+    if !matches!(bytes, 1 | 2 | 4 | 8) {
+        return Err(Error::Backend("unsupported store width".into()));
+    }
+    asm.mov(SCRATCH3, bytes as i64)?;      // arg2 = size; addr already in SCRATCH1, value already in ARG3_REG
     asm.mov(ARG0_REG, CTX_REG)?;
-    let offset = match bytes {
-        1 => cpu_offsets::mem_write8(),
-        2 => cpu_offsets::mem_write16(),
-        4 => cpu_offsets::mem_write32(),
-        8 => cpu_offsets::mem_write64(),
-        _ => return Err(Error::Backend("unsupported store width".into())),
-    };
     asm.sub(rsp, CALL_PRECALL_SUB)?;
-    asm.call(qword_ptr(CTX_REG + offset as i32))?;
+    asm.call(qword_ptr(CTX_REG + cpu_offsets::mem_write() as i32))?;
     asm.add(rsp, CALL_PRECALL_SUB)?;
     Ok(())
 }
 
 fn emit_load_ex(asm: &mut CodeAssembler, alloc: &Allocation, a: Armlet, dst: Option<ValueRef>, bytes: u32) -> Result<()> {
+    if !matches!(bytes, 1 | 2 | 4 | 8) {
+        return Err(Error::Backend("unsupported ldex width".into()));
+    }
     load64(asm, alloc, a.args[0], SCRATCH1)?;
+    asm.mov(SCRATCH3, bytes as i64)?;      // arg2 = size
     asm.mov(ARG0_REG, CTX_REG)?;
-    let offset = match bytes {
-        1 => cpu_offsets::mem_read8(),
-        2 => cpu_offsets::mem_read16(),
-        4 => cpu_offsets::mem_read32(),
-        8 => cpu_offsets::mem_read64(),
-        _ => return Err(Error::Backend("unsupported ldex width".into())),
-    };
     asm.sub(rsp, CALL_PRECALL_SUB)?;
-    asm.call(qword_ptr(CTX_REG + offset as i32))?;
+    asm.call(qword_ptr(CTX_REG + cpu_offsets::mem_read() as i32))?;
     asm.add(rsp, CALL_PRECALL_SUB)?;
     if let Some(d) = dst {
         match bytes {
@@ -2630,22 +2626,19 @@ fn emit_store_ex(
     asm.cmp(byte_ptr(CTX_REG + cpu_offsets::exclusive_size() as i32), bytes as i32)?;
     asm.jne(lbl_fail)?;
 
+    if !matches!(bytes, 1 | 2 | 4 | 8) {
+        return Err(Error::Backend("unsupported stex width".into()));
+    }
     if bytes == 8 {
-        load64(asm, alloc, a.args[1], SCRATCH3)?;
+        load64(asm, alloc, a.args[1], ARG3_REG)?;
     } else {
-        load32(asm, alloc, a.args[1], gpr32(scratch3_id()))?;
+        load32(asm, alloc, a.args[1], gpr32(arg3_reg_id()))?;
     }
     // SCRATCH1 still holds `addr` from the exclusive-monitor compare above.
+    asm.mov(SCRATCH3, bytes as i64)?;      // arg2 = size
     asm.mov(ARG0_REG, CTX_REG)?;
-    let offset = match bytes {
-        1 => cpu_offsets::mem_write8(),
-        2 => cpu_offsets::mem_write16(),
-        4 => cpu_offsets::mem_write32(),
-        8 => cpu_offsets::mem_write64(),
-        _ => return Err(Error::Backend("unsupported stex width".into())),
-    };
     asm.sub(rsp, CALL_PRECALL_SUB)?;
-    asm.call(qword_ptr(CTX_REG + offset as i32))?;
+    asm.call(qword_ptr(CTX_REG + cpu_offsets::mem_write() as i32))?;
     asm.add(rsp, CALL_PRECALL_SUB)?;
     asm.xor(eax, eax)?;
     asm.jmp(lbl_done)?;
@@ -2702,6 +2695,17 @@ fn scratch3_id() -> u8 {
     { 8 }
     #[cfg(not(target_os = "windows"))]
     { 2 }
+}
+
+/// Encoding of the 4th ABI argument register (`r9` on Windows x64,
+/// `rcx` on SysV). Memory-store emitters route the store value through
+/// this register so it survives the call.
+#[inline]
+fn arg3_reg_id() -> u8 {
+    #[cfg(target_os = "windows")]
+    { 9 }
+    #[cfg(not(target_os = "windows"))]
+    { 1 }
 }
 
 #[derive(Clone, Copy)]

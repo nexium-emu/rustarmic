@@ -39,28 +39,24 @@ impl Memory for CodeMem {
 static FALLBACK_READS:  AtomicU64 = AtomicU64::new(0);
 static FALLBACK_WRITES: AtomicU64 = AtomicU64::new(0);
 
-// Slow-path handlers — they should be called ONLY when fastmem misses
-// (mem_size = 0, out-of-range VA, or fastmem disabled).
-unsafe extern "C" fn hk_read32(_: *mut CpuContext, _addr: u64) -> u32 {
+// Slow-path handlers — should be called ONLY when fastmem misses (mem_size
+// = 0, out-of-range VA, or fastmem disabled). Returns vary by size so the
+// tests can prove the slow path actually ran for each width.
+unsafe extern "C" fn hk_read(_: *mut CpuContext, _addr: u64, size: u8) -> u64 {
     FALLBACK_READS.fetch_add(1, Ordering::Relaxed);
-    0xFEEDFACE
+    match size {
+        4 => 0xFEEDFACE,
+        8 => 0xCAFE_BABE_DEAD_BEEF,
+        _ => 0,
+    }
 }
-unsafe extern "C" fn hk_read64(_: *mut CpuContext, _addr: u64) -> u64 {
-    FALLBACK_READS.fetch_add(1, Ordering::Relaxed);
-    0xCAFE_BABE_DEAD_BEEF
-}
-unsafe extern "C" fn hk_write32(_: *mut CpuContext, _addr: u64, _v: u32) {
-    FALLBACK_WRITES.fetch_add(1, Ordering::Relaxed);
-}
-unsafe extern "C" fn hk_write64(_: *mut CpuContext, _addr: u64, _v: u64) {
+unsafe extern "C" fn hk_write(_: *mut CpuContext, _addr: u64, _size: u8, _v: u64) {
     FALLBACK_WRITES.fetch_add(1, Ordering::Relaxed);
 }
 
 fn install_counting_hooks(ctx: &mut CpuContext) {
-    ctx.mem_read32  = hk_read32;
-    ctx.mem_read64  = hk_read64;
-    ctx.mem_write32 = hk_write32;
-    ctx.mem_write64 = hk_write64;
+    ctx.mem_read  = hk_read;
+    ctx.mem_write = hk_write;
 }
 
 const BRK_0: u32 = 0xD420_0000;
