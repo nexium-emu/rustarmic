@@ -117,7 +117,15 @@ pub fn clobbers_for_op(op: Op) -> ClobberSet {
             c.result_pinned_to_gpr = Some(gpr_id::RAX);
         }
 
-        Rbit32 | Rbit64 | Rev16 | Rev32 | Rev64 => {
+        Rbit32 | Rbit64 => {
+            // The PSHUFB / GFNI lowerings stage value, mask, and (up to two)
+            // lookup tables in xmm0..xmm3. The SWAR fallback also uses RCX/RDX.
+            c.gpr = GprMask::RAX | GprMask::RCX | GprMask::RDX;
+            c.xmm = XmmMask::XMM0 | XmmMask::XMM1 | XmmMask::XMM2 | XmmMask::XMM3;
+            c.result_pinned_to_gpr = Some(gpr_id::RAX);
+        }
+
+        Rev16 | Rev32 | Rev64 => {
             c.gpr = GprMask::RAX | GprMask::RCX | GprMask::RDX;
             c.result_pinned_to_gpr = Some(gpr_id::RAX);
         }

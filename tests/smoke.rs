@@ -318,8 +318,6 @@ fn cls_typical_and_all_same() {
 
 #[test]
 fn rbit_reverses_bits() {
-    // movz x0, #1
-    // rbit x1, x0   ; bit 0 set -> bit 63 set -> 0x8000_0000_0000_0000
     let code = build_code(&[
         0xD2800020, // movz x0, #1
         0xDAC00001, // rbit x1, x0
@@ -329,6 +327,55 @@ fn rbit_reverses_bits() {
     ctx.pc = CODE_BASE;
     run(code, &mut ctx);
     assert_eq!(ctx.x[1], 0x8000_0000_0000_0000, "RBIT(1) should be 0x8000_0000_0000_0000");
+}
+
+fn rbit64(input: u64) -> u64 {
+    let code = build_code(&[0xDAC00001, 0xD4200000]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.x[0] = input;
+    run(code, &mut ctx);
+    ctx.x[1]
+}
+
+fn rbit32(input: u32) -> u32 {
+    let code = build_code(&[0x5AC00001, 0xD4200000]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.x[0] = input as u64;
+    run(code, &mut ctx);
+    ctx.x[1] as u32
+}
+
+#[test]
+fn rbit64_full_coverage() {
+    for &v in &[
+        0u64,
+        1,
+        0xFFFF_FFFF_FFFF_FFFF,
+        0x5555_5555_5555_5555,
+        0xAAAA_AAAA_AAAA_AAAA,
+        0x0123_4567_89AB_CDEF,
+        0xF0F0_F0F0_F0F0_F0F0,
+        0x0F0F_0F0F_0F0F_0F0F,
+        0x8000_0000_0000_0000,
+        0x0000_0000_0000_0080,
+        0xDEAD_BEEF_CAFE_BABE,
+    ] {
+        assert_eq!(rbit64(v), v.reverse_bits(),
+            "RBIT64({v:#018x}) expected {:#018x}", v.reverse_bits());
+    }
+}
+
+#[test]
+fn rbit32_full_coverage() {
+    for &v in &[
+        0u32, 1, 0xFFFF_FFFF, 0x5555_5555, 0xAAAA_AAAA,
+        0x0123_4567, 0xDEAD_BEEF, 0x8000_0000, 0x0000_0080,
+    ] {
+        assert_eq!(rbit32(v), v.reverse_bits(),
+            "RBIT32({v:#010x}) expected {:#010x}", v.reverse_bits());
+    }
 }
 
 #[test]

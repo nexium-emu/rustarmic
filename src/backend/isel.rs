@@ -2355,63 +2355,88 @@ fn emit_cls(asm: &mut CodeAssembler, alloc: &Allocation, a: Armlet, dst: Option<
 }
 
 fn emit_rbit(asm: &mut CodeAssembler, alloc: &Allocation, a: Armlet, dst: Option<ValueRef>, bits: u32) -> Result<()> {
+    let has_gfni = crate::backend::cpu_features::cpu_features().has_gfni;
     if bits == 64 {
         load64(asm, alloc, a.args[0], rax)?;
-        rbit64_inplace(asm)?;
+        if has_gfni { rbit64_gfni(asm)?; } else { rbit64_pshufb(asm)?; }
         if let Some(d) = dst { store64(asm, alloc, d, rax)?; }
     } else {
         load32(asm, alloc, a.args[0], eax)?;
-        rbit32_inplace(asm)?;
+        if has_gfni { rbit32_gfni(asm)?; } else { rbit32_pshufb(asm)?; }
         if let Some(d) = dst { store32(asm, alloc, d, eax)?; }
     }
     Ok(())
 }
 
-fn rbit64_inplace(asm: &mut CodeAssembler) -> Result<()> {
-    asm.mov(rcx, rax)?;
-    asm.shr(rcx, 1i32)?;
-    asm.mov(rdx, 0x5555_5555_5555_5555i64)?;
-    asm.and(rcx, rdx)?;
-    asm.and(rax, rdx)?;
-    asm.shl(rax, 1i32)?;
-    asm.or(rax, rcx)?;
-    asm.mov(rcx, rax)?;
-    asm.shr(rcx, 2i32)?;
-    asm.mov(rdx, 0x3333_3333_3333_3333i64)?;
-    asm.and(rcx, rdx)?;
-    asm.and(rax, rdx)?;
-    asm.shl(rax, 2i32)?;
-    asm.or(rax, rcx)?;
-    asm.mov(rcx, rax)?;
-    asm.shr(rcx, 4i32)?;
-    asm.mov(rdx, 0x0F0F_0F0F_0F0F_0F0Fi64)?;
-    asm.and(rcx, rdx)?;
-    asm.and(rax, rdx)?;
-    asm.shl(rax, 4i32)?;
-    asm.or(rax, rcx)?;
+/// GFNI single-op bit-reverse-per-byte. The matrix `0x8040201008040201`
+/// stored in `xmm1.qword[0]` is the row-major bit-reverse permutation; per
+/// Intel SDM `gf2p8affineqb` computes `dst.byte[j].bit[i] = parity(src.byte[j]
+/// & matrix.byte[7-i]) XOR imm.bit[i]`. With matrix.byte[7-i] = 1<<i this
+/// yields dst.byte[j].bit[i] = src.byte[j].bit[7-i]. A final `bswap` reverses
+/// byte order to complete the full 64-bit RBIT.
+fn rbit64_gfni(asm: &mut CodeAssembler) -> Result<()> {
+    asm.movq(xmm0, rax)?;
+    asm.mov(rcx, 0x8040201008040201u64 as i64)?;
+    asm.movq(xmm1, rcx)?;
+    asm.gf2p8affineqb(xmm0, xmm1, 0u32)?;
+    asm.movq(rax, xmm0)?;
     asm.bswap(rax)?;
     Ok(())
 }
 
-fn rbit32_inplace(asm: &mut CodeAssembler) -> Result<()> {
-    asm.mov(ecx, eax)?;
-    asm.shr(ecx, 1i32)?;
-    asm.and(ecx, 0x5555_5555_u32 as i32)?;
-    asm.and(eax, 0x5555_5555_u32 as i32)?;
-    asm.shl(eax, 1i32)?;
-    asm.or(eax, ecx)?;
-    asm.mov(ecx, eax)?;
-    asm.shr(ecx, 2i32)?;
-    asm.and(ecx, 0x3333_3333_u32 as i32)?;
-    asm.and(eax, 0x3333_3333_u32 as i32)?;
-    asm.shl(eax, 2i32)?;
-    asm.or(eax, ecx)?;
-    asm.mov(ecx, eax)?;
-    asm.shr(ecx, 4i32)?;
-    asm.and(ecx, 0x0F0F_0F0F_u32 as i32)?;
-    asm.and(eax, 0x0F0F_0F0F_u32 as i32)?;
-    asm.shl(eax, 4i32)?;
-    asm.or(eax, ecx)?;
+fn rbit32_gfni(asm: &mut CodeAssembler) -> Result<()> {
+    asm.movd(xmm0, eax)?;
+    asm.mov(rcx, 0x8040201008040201u64 as i64)?;
+    asm.movq(xmm1, rcx)?;
+    asm.gf2p8affineqb(xmm0, xmm1, 0u32)?;
+    asm.movd(eax, xmm0)?;
+    asm.bswap(eax)?;
+    Ok(())
+}
+
+/// PSHUFB nibble-table fallback for non-GFNI hosts. For each byte:
+/// the high nibble is shifted to the low position and used as an index into
+/// `LO_REV_TABLE` (which gives the reversed nibble in the LOW position); the
+/// low nibble is used as an index into `HI_REV_TABLE` (reversed nibble in the
+/// HIGH position); the two are OR-ed. A final `bswap` reverses byte order.
+const RBIT_HI_NIBBLE_MASK: u64 = 0xF0F0_F0F0_F0F0_F0F0;
+const RBIT_HI_REV_TABLE:   u64 = 0xE060_A020_C040_8000;
+const RBIT_LO_REV_TABLE:   u64 = 0x0E06_0A02_0C04_0800;
+
+fn rbit64_pshufb(asm: &mut CodeAssembler) -> Result<()> {
+    asm.movq(xmm0, rax)?;
+    asm.mov(rcx, RBIT_HI_NIBBLE_MASK as i64)?;
+    asm.movq(xmm1, rcx)?;
+    asm.mov(rcx, RBIT_HI_REV_TABLE as i64)?;
+    asm.movq(xmm2, rcx)?;
+    asm.mov(rcx, RBIT_LO_REV_TABLE as i64)?;
+    asm.movq(xmm3, rcx)?;
+    asm.pand(xmm1, xmm0)?;       // xmm1 = data & 0xF0  (high nibbles)
+    asm.pxor(xmm0, xmm1)?;       // xmm0 = data & 0x0F  (low nibbles)
+    asm.psrld(xmm1, 4i32)?;      // xmm1 = high nibbles shifted to low position
+    asm.pshufb(xmm2, xmm0)?;     // xmm2 = reverse(low_nib) << 4
+    asm.pshufb(xmm3, xmm1)?;     // xmm3 = reverse(high_nib)
+    asm.por(xmm3, xmm2)?;        // byte-internal bit reverse complete
+    asm.movq(rax, xmm3)?;
+    asm.bswap(rax)?;
+    Ok(())
+}
+
+fn rbit32_pshufb(asm: &mut CodeAssembler) -> Result<()> {
+    asm.movd(xmm0, eax)?;
+    asm.mov(rcx, RBIT_HI_NIBBLE_MASK as i64)?;
+    asm.movq(xmm1, rcx)?;
+    asm.mov(rcx, RBIT_HI_REV_TABLE as i64)?;
+    asm.movq(xmm2, rcx)?;
+    asm.mov(rcx, RBIT_LO_REV_TABLE as i64)?;
+    asm.movq(xmm3, rcx)?;
+    asm.pand(xmm1, xmm0)?;
+    asm.pxor(xmm0, xmm1)?;
+    asm.psrld(xmm1, 4i32)?;
+    asm.pshufb(xmm2, xmm0)?;
+    asm.pshufb(xmm3, xmm1)?;
+    asm.por(xmm3, xmm2)?;
+    asm.movd(eax, xmm3)?;
     asm.bswap(eax)?;
     Ok(())
 }

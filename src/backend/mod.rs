@@ -20,6 +20,7 @@
 
 pub mod abi;
 pub mod clobbers;
+pub mod cpu_features;
 pub mod operand;
 pub mod regalloc;
 pub mod isel;
