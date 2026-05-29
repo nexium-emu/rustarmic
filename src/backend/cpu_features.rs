@@ -3,6 +3,7 @@ use std::sync::OnceLock;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CpuFeatures {
     pub has_gfni: bool,
+    pub has_lzcnt: bool,
 }
 
 static FEATURES: OnceLock<CpuFeatures> = OnceLock::new();
@@ -13,9 +14,11 @@ pub fn cpu_features() -> &'static CpuFeatures {
 
 #[cfg(target_arch = "x86_64")]
 fn detect() -> CpuFeatures {
-    let r = unsafe { std::arch::x86_64::__cpuid_count(7, 0) };
+    let leaf7 = unsafe { std::arch::x86_64::__cpuid_count(7, 0) };
+    let leaf_ext = unsafe { std::arch::x86_64::__cpuid(0x80000001) };
     CpuFeatures {
-        has_gfni: (r.ecx & (1 << 8)) != 0,
+        has_gfni:  (leaf7.ecx    & (1 << 8)) != 0,
+        has_lzcnt: (leaf_ext.ecx & (1 << 5)) != 0,
     }
 }
 

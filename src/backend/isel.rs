@@ -2287,68 +2287,59 @@ fn emit_div(
 }
 
 fn emit_clz(asm: &mut CodeAssembler, alloc: &Allocation, a: Armlet, dst: Option<ValueRef>, bits: u32) -> Result<()> {
-    let mut lbl_zero = asm.create_label();
-    let mut lbl_done = asm.create_label();
+    let has_lzcnt = crate::backend::cpu_features::cpu_features().has_lzcnt;
     if bits == 64 {
         load64(asm, alloc, a.args[0], rax)?;
-        asm.test(rax, rax)?;
-        asm.jz(lbl_zero)?;
-        asm.bsr(rcx, rax)?;
-        asm.mov(rax, 63i64)?;
-        asm.sub(rax, rcx)?;
-        asm.jmp(lbl_done)?;
-        asm.set_label(&mut lbl_zero)?;
-        asm.mov(rax, 64i64)?;
-        asm.set_label(&mut lbl_done)?;
+        if has_lzcnt { asm.lzcnt(rax, rax)?; }
+        else { clz64_bsr(asm)?; }
         if let Some(d) = dst { store64(asm, alloc, d, rax)?; }
     } else {
         load32(asm, alloc, a.args[0], eax)?;
-        asm.test(eax, eax)?;
-        asm.jz(lbl_zero)?;
-        asm.bsr(ecx, eax)?;
-        asm.mov(eax, 31i32)?;
-        asm.sub(eax, ecx)?;
-        asm.jmp(lbl_done)?;
-        asm.set_label(&mut lbl_zero)?;
-        asm.mov(eax, 32i32)?;
-        asm.set_label(&mut lbl_done)?;
+        if has_lzcnt { asm.lzcnt(eax, eax)?; }
+        else { clz32_bsr(asm)?; }
         if let Some(d) = dst { store32(asm, alloc, d, eax)?; }
     }
     Ok(())
 }
 
+/// 4-op CLZ via BSR + sentinel-CMOVNZ + XOR. ZF after BSR reflects src==0;
+/// the sentinel 127 (= 63 XOR 64) sits in rax so a non-zero source overwrites
+/// it with the BSR result before the final XOR with 63 converts bit-index ->
+/// leading-zero count, with the zero case naturally yielding 127 XOR 63 = 64.
+fn clz64_bsr(asm: &mut CodeAssembler) -> Result<()> {
+    asm.bsr(rcx, rax)?;
+    asm.mov(rax, 127i64)?;
+    asm.cmovnz(rax, rcx)?;
+    asm.xor(rax, 63i32)?;
+    Ok(())
+}
+fn clz32_bsr(asm: &mut CodeAssembler) -> Result<()> {
+    asm.bsr(ecx, eax)?;
+    asm.mov(eax, 63i32)?;
+    asm.cmovnz(eax, ecx)?;
+    asm.xor(eax, 31i32)?;
+    Ok(())
+}
+
 fn emit_cls(asm: &mut CodeAssembler, alloc: &Allocation, a: Armlet, dst: Option<ValueRef>, bits: u32) -> Result<()> {
-    let mut lbl_all_same = asm.create_label();
-    let mut lbl_done = asm.create_label();
+    let has_lzcnt = crate::backend::cpu_features::cpu_features().has_lzcnt;
     if bits == 64 {
         load64(asm, alloc, a.args[0], rax)?;
         asm.mov(rcx, rax)?;
-        asm.shl(rax, 1i32)?;
+        asm.sar(rcx, 1i32)?;
         asm.xor(rax, rcx)?;
-        asm.test(rax, rax)?;
-        asm.jz(lbl_all_same)?;
-        asm.bsr(rcx, rax)?;
-        asm.mov(rax, 63i64)?;
-        asm.sub(rax, rcx)?;
-        asm.jmp(lbl_done)?;
-        asm.set_label(&mut lbl_all_same)?;
-        asm.mov(rax, 63i64)?;
-        asm.set_label(&mut lbl_done)?;
+        if has_lzcnt { asm.lzcnt(rax, rax)?; }
+        else { clz64_bsr(asm)?; }
+        asm.dec(rax)?;
         if let Some(d) = dst { store64(asm, alloc, d, rax)?; }
     } else {
         load32(asm, alloc, a.args[0], eax)?;
         asm.mov(ecx, eax)?;
-        asm.shl(eax, 1i32)?;
+        asm.sar(ecx, 1i32)?;
         asm.xor(eax, ecx)?;
-        asm.test(eax, eax)?;
-        asm.jz(lbl_all_same)?;
-        asm.bsr(ecx, eax)?;
-        asm.mov(eax, 31i32)?;
-        asm.sub(eax, ecx)?;
-        asm.jmp(lbl_done)?;
-        asm.set_label(&mut lbl_all_same)?;
-        asm.mov(eax, 31i32)?;
-        asm.set_label(&mut lbl_done)?;
+        if has_lzcnt { asm.lzcnt(eax, eax)?; }
+        else { clz32_bsr(asm)?; }
+        asm.dec(eax)?;
         if let Some(d) = dst { store32(asm, alloc, d, eax)?; }
     }
     Ok(())

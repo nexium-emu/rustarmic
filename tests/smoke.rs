@@ -295,9 +295,6 @@ fn clz_typical_and_zero() {
 
 #[test]
 fn cls_typical_and_all_same() {
-    // movz x0, #0 ; cls x1, x0   ; all-same -> 63
-    // movz x2, #1 ; neg x2, x2   ; x2 = -1; cls x3, x2 -> 63
-    // movz/movk x4 = 0x80000000_00000000; cls x5, x4 -> 0 (just sign bit, no matches after)
     let code = build_code(&[
         0xD2800000, // movz x0, #0
         0xDAC01401, // cls x1, x0
@@ -311,9 +308,90 @@ fn cls_typical_and_all_same() {
     let mut ctx = CpuContext::default();
     ctx.pc = CODE_BASE;
     run(code, &mut ctx);
-    assert_eq!(ctx.x[1], 63, "CLS(0) should be 63 (all bits match sign)");
-    assert_eq!(ctx.x[3], 63, "CLS(-1) should be 63");
-    assert_eq!(ctx.x[5], 0,  "CLS(0x8000...0) should be 0");
+    assert_eq!(ctx.x[1], 63);
+    assert_eq!(ctx.x[3], 63);
+    assert_eq!(ctx.x[5], 0);
+}
+
+fn clz64(input: u64) -> u64 {
+    let code = build_code(&[0xDAC01001, 0xD4200000]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.x[0] = input;
+    run(code, &mut ctx);
+    ctx.x[1]
+}
+fn clz32(input: u32) -> u32 {
+    let code = build_code(&[0x5AC01001, 0xD4200000]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.x[0] = input as u64;
+    run(code, &mut ctx);
+    ctx.x[1] as u32
+}
+fn cls64(input: u64) -> u64 {
+    let code = build_code(&[0xDAC01401, 0xD4200000]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.x[0] = input;
+    run(code, &mut ctx);
+    ctx.x[1]
+}
+fn cls32(input: u32) -> u32 {
+    let code = build_code(&[0x5AC01401, 0xD4200000]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.x[0] = input as u64;
+    run(code, &mut ctx);
+    ctx.x[1] as u32
+}
+
+fn cls64_oracle(x: u64) -> u64 {
+    (x ^ ((x as i64 >> 1) as u64)).leading_zeros() as u64 - 1
+}
+fn cls32_oracle(x: u32) -> u32 {
+    (x ^ ((x as i32 >> 1) as u32)).leading_zeros() - 1
+}
+
+#[test]
+fn clz64_full_coverage() {
+    for &v in &[
+        0u64, 1, 0xFFFF_FFFF_FFFF_FFFF, 0x8000_0000_0000_0000,
+        0x4000_0000_0000_0000, 0x0000_0000_0000_0080,
+        0x0123_4567_89AB_CDEF, 0xDEAD_BEEF_CAFE_BABE,
+    ] {
+        assert_eq!(clz64(v), v.leading_zeros() as u64, "CLZ64({v:#018x})");
+    }
+}
+#[test]
+fn clz32_full_coverage() {
+    for &v in &[0u32, 1, 0xFFFF_FFFF, 0x8000_0000, 0x4000_0000, 0x0123_4567, 0xDEAD_BEEF] {
+        assert_eq!(clz32(v), v.leading_zeros(), "CLZ32({v:#010x})");
+    }
+}
+#[test]
+fn cls64_full_coverage() {
+    for &v in &[
+        0u64, 1, !0u64,
+        0x4000_0000_0000_0000, 0x3FFF_FFFF_FFFF_FFFF,
+        0x8000_0000_0000_0000, 0x8000_0000_0000_0001,
+        0xC000_0000_0000_0000, 0xE000_0000_0000_0000,
+        0x0123_4567_89AB_CDEF, 0xFEDC_BA98_7654_3210,
+    ] {
+        assert_eq!(cls64(v), cls64_oracle(v),
+            "CLS64({v:#018x}) expected {}", cls64_oracle(v));
+    }
+}
+#[test]
+fn cls32_full_coverage() {
+    for &v in &[
+        0u32, 1, !0u32,
+        0x4000_0000, 0x3FFF_FFFF, 0x8000_0000, 0x8000_0001,
+        0xC000_0000, 0xE000_0000, 0x0123_4567, 0xFEDC_BA98,
+    ] {
+        assert_eq!(cls32(v), cls32_oracle(v),
+            "CLS32({v:#010x}) expected {}", cls32_oracle(v));
+    }
 }
 
 #[test]
