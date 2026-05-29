@@ -55,6 +55,22 @@ impl CodeCache {
         self.table.get(&pc).map(|e| e.host_ptr)
     }
 
+    /// Drop cache entries whose guest PC falls in `[start, start+len)`.
+    ///
+    /// Limitation: chain sites in OTHER (still-cached) blocks that were already
+    /// patched to JMP into a now-invalidated block remain pointing at the old
+    /// host bytes. The bump allocator never reclaims those bytes, so the JMP
+    /// is still a valid host address but executes stale guest code. This is
+    /// acceptable for NeXium's current usage pattern, where invalidation
+    /// happens at NRO load time before any callers exist; true mid-execution
+    /// SMC is deferred to a later phase.
+    pub fn invalidate_range(&mut self, start: u64, len: u64) {
+        let end = start.wrapping_add(len);
+        let in_range = |pc: u64| pc >= start && pc < end;
+        self.table.retain(|&pc, _| !in_range(pc));
+        self.pending.retain(|&target_pc, _| !in_range(target_pc));
+    }
+
     fn append_raw(&mut self, bytes: &[u8]) -> Result<*const u8> {
         let aligned_cursor = (self.cursor + 15) & !15;
         if aligned_cursor + bytes.len() > self.capacity {

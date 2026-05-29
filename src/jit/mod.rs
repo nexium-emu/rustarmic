@@ -55,6 +55,12 @@ impl Jit {
         })
     }
 
+    /// Drop any cached blocks whose guest PC falls in `[start, start+len)`.
+    /// See [`CodeCache::invalidate_range`] for the SMC caveats.
+    pub fn invalidate_range(&mut self, start: u64, len: u64) {
+        self.cache.invalidate_range(start, len);
+    }
+
     pub fn run(&mut self, ctx: &mut CpuContext, mem: &mut dyn Memory) -> Result<ExitReason> {
         loop {
             let pc = ctx.pc;
