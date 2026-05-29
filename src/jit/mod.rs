@@ -83,6 +83,15 @@ impl Jit {
                 optimize_with_scratch(&mut self.block, &mut self.scratch);
                 self.block.use_fastmem = self.config.use_fastmem;
                 let emitted = crate::backend::emit_block(&self.block)?;
+                #[cfg(feature = "tracing")]
+                log::trace!(
+                    target: "rustarmic::jit",
+                    "compile pc={:#x} insns={} ir_live={} host_bytes={}",
+                    pc,
+                    self.block.cycles,
+                    self.block.iter_live().count(),
+                    emitted.code.len(),
+                );
                 self.cache.install(pc, &emitted.code, &emitted.chains, emitted.body_offset)?
             };
 
@@ -90,6 +99,14 @@ impl Jit {
                 let thunk: JitFn = core::mem::transmute(self.cache.thunk());
                 thunk(host_fn as u64, ctx as *mut CpuContext)
             };
+
+            #[cfg(feature = "tracing")]
+            log::trace!(
+                target: "rustarmic::jit",
+                "exit pc={:#x} next={:#x}",
+                pc,
+                next_pc,
+            );
 
             if (next_pc >> 60) == 0xE {
                 let kind = next_pc & 0xFF;

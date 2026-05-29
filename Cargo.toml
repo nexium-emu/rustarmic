@@ -34,6 +34,10 @@ disarm64 = { version = "0.1", default-features = false, features = ["full"] }
 #   $env:PATH  = "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja;$env:PATH"
 #   cargo test --features unicorn
 unicorn-engine = { version = "2", optional = true }
+# Optional lightweight trace logging. Enabled via the `tracing` feature; emits
+# `log::trace!` calls at block-compile and block-exit points so embedders can
+# wire the rustarmic JIT into their existing `log` infrastructure.
+log = { version = "0.4", optional = true }
 
 [dev-dependencies]
 rand = "0.8"
@@ -42,6 +46,7 @@ rand_chacha = "0.3"
 [features]
 default = []
 unicorn = ["dep:unicorn-engine"]
+tracing = ["dep:log"]
 
 [profile.release]
 opt-level   = 3
