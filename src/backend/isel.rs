@@ -2478,15 +2478,15 @@ fn emit_load(
         let mut lbl_slow = asm.create_label();
         let mut lbl_done = asm.create_label();
         emit_fastmem_bounds_check(asm, bytes, lbl_slow)?;
-        // Fast path: SCRATCH0 = mem_base + offset, then sized load.
+        // Fast path: SCRATCH0 = mem_base; the load uses the SIB-index form
+        // [base + index] so we save the explicit `add SCRATCH0, SCRATCH2`.
         asm.mov(SCRATCH0, qword_ptr(CTX_REG + cpu_offsets::mem_base() as i32))?;
-        asm.add(SCRATCH0, SCRATCH2)?;
         match bytes {
-            1  => asm.movzx(eax,   byte_ptr (SCRATCH0))?,
-            2  => asm.movzx(eax,   word_ptr (SCRATCH0))?,
-            4  => asm.mov  (eax,   dword_ptr(SCRATCH0))?,
-            8  => asm.mov  (rax,   qword_ptr(SCRATCH0))?,
-            16 => asm.movdqu(xmm0, xmmword_ptr(SCRATCH0))?,
+            1  => asm.movzx(eax,   byte_ptr (SCRATCH0 + SCRATCH2))?,
+            2  => asm.movzx(eax,   word_ptr (SCRATCH0 + SCRATCH2))?,
+            4  => asm.mov  (eax,   dword_ptr(SCRATCH0 + SCRATCH2))?,
+            8  => asm.mov  (rax,   qword_ptr(SCRATCH0 + SCRATCH2))?,
+            16 => asm.movdqu(xmm0, xmmword_ptr(SCRATCH0 + SCRATCH2))?,
             _ => return Err(Error::Backend("unsupported load width".into())),
         }
         asm.jmp(lbl_done)?;
@@ -2530,15 +2530,15 @@ fn emit_store(
         let mut lbl_slow = asm.create_label();
         let mut lbl_done = asm.create_label();
         emit_fastmem_bounds_check(asm, bytes, lbl_slow)?;
-        // Fast path: SCRATCH0 = mem_base + offset, then sized store.
+        // Fast path: SCRATCH0 = mem_base; the store uses the SIB-index form
+        // [base + index] so we save the explicit `add SCRATCH0, SCRATCH2`.
         asm.mov(SCRATCH0, qword_ptr(CTX_REG + cpu_offsets::mem_base() as i32))?;
-        asm.add(SCRATCH0, SCRATCH2)?;
         match bytes {
-            1  => asm.mov   (byte_ptr   (SCRATCH0), gpr8 (arg3_reg_id()))?,
-            2  => asm.mov   (word_ptr   (SCRATCH0), gpr16(arg3_reg_id()))?,
-            4  => asm.mov   (dword_ptr  (SCRATCH0), gpr32(arg3_reg_id()))?,
-            8  => asm.mov   (qword_ptr  (SCRATCH0), ARG3_REG)?,
-            16 => asm.movdqu(xmmword_ptr(SCRATCH0), xmm0)?,
+            1  => asm.mov   (byte_ptr   (SCRATCH0 + SCRATCH2), gpr8 (arg3_reg_id()))?,
+            2  => asm.mov   (word_ptr   (SCRATCH0 + SCRATCH2), gpr16(arg3_reg_id()))?,
+            4  => asm.mov   (dword_ptr  (SCRATCH0 + SCRATCH2), gpr32(arg3_reg_id()))?,
+            8  => asm.mov   (qword_ptr  (SCRATCH0 + SCRATCH2), ARG3_REG)?,
+            16 => asm.movdqu(xmmword_ptr(SCRATCH0 + SCRATCH2), xmm0)?,
             _ => return Err(Error::Backend("unsupported store width".into())),
         }
         asm.jmp(lbl_done)?;
@@ -2562,9 +2562,9 @@ fn emit_fastmem_bounds_check(
 ) -> Result<()> {
     asm.mov(SCRATCH2, SCRATCH1)?;
     asm.sub(SCRATCH2, qword_ptr(CTX_REG + cpu_offsets::mem_base_va() as i32))?;
-    // tail = offset + width; compare tail against mem_size.
-    asm.mov(SCRATCH0, SCRATCH2)?;
-    asm.add(SCRATCH0, bytes as i32)?;
+    // tail = offset + width; compare tail against mem_size. LEA folds the
+    // mov + add into one instruction.
+    asm.lea(SCRATCH0, qword_ptr(SCRATCH2 + bytes as i32))?;
     asm.cmp(SCRATCH0, qword_ptr(CTX_REG + cpu_offsets::mem_size() as i32))?;
     asm.ja(lbl_slow)?;
     Ok(())
