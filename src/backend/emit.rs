@@ -81,14 +81,20 @@ pub fn emit_block(block: &Block) -> Result<EmittedBlock> {
         Terminal::IndirectBranch { target, link: _, is_ret: _ } => {
             load64(&mut asm, &alloc, target, rax)?;
         }
-        Terminal::Exception { kind, imm: _ } => {
-            let kind_bits: u64 = match kind {
-                ExceptionKind::Svc => 0xE000_0000_0000_0001,
-                ExceptionKind::Brk => 0xE000_0000_0000_0002,
-                ExceptionKind::Hvc => 0xE000_0000_0000_0003,
-                ExceptionKind::UnknownInst => 0xE000_0000_0000_00FF,
+        Terminal::Exception { kind, imm } => {
+            // Exit-token layout:
+            //   bits [60..64] = 0xE (exit signal)
+            //   bits  [8..24] = imm (16 bits — SVC/BRK/HVC immediates are u16)
+            //   bits  [0..8]  = kind (0x01=Svc, 0x02=Brk, 0x03=Hvc, 0xFF=UnknownInst)
+            let kind_byte: u64 = match kind {
+                ExceptionKind::Svc => 0x01,
+                ExceptionKind::Brk => 0x02,
+                ExceptionKind::Hvc => 0x03,
+                ExceptionKind::UnknownInst => 0xFF,
             };
-            asm.mov(rax, kind_bits as i64)?;
+            let exit_value: u64 =
+                0xE000_0000_0000_0000 | ((imm as u64 & 0xFFFF) << 8) | kind_byte;
+            asm.mov(rax, exit_value as i64)?;
         }
     }
 

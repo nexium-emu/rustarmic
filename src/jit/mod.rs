@@ -79,10 +79,11 @@ impl Jit {
 
             if (next_pc >> 60) == 0xE {
                 let kind = next_pc & 0xFF;
+                let imm  = ((next_pc >> 8) & 0xFFFF) as u32;
                 return Ok(match kind {
-                    0x01 => ExitReason::Svc(0),
-                    0x02 => ExitReason::Brk(0),
-                    0x03 => ExitReason::Hvc(0),
+                    0x01 => ExitReason::Svc(imm),
+                    0x02 => ExitReason::Brk(imm),
+                    0x03 => ExitReason::Hvc(imm),
                     _    => ExitReason::Stopped,
                 });
             }
