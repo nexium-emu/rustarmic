@@ -7,7 +7,17 @@ pub struct CpuContext {
     pub v: [[u64; 2]; NUM_VREGS],
     pub pc: u64,
     pub exclusive_addr: u64,
+    /// Host pointer used by the soft-fastmem fast path. When `mem_size > 0`,
+    /// emitted code that has fastmem enabled does `mov reg, [mem_base + (va -
+    /// mem_base_va)]` for VAs in `[mem_base_va, mem_base_va + mem_size)`.
     pub mem_base: *mut u8,
+    /// Guest VA that `mem_base` maps to. Together with `mem_size` defines
+    /// the contiguous range eligible for direct host access.
+    pub mem_base_va: u64,
+    /// Length of the host region in bytes. `0` disables soft-fastmem even
+    /// when `JitConfig::use_fastmem` is set; out-of-range accesses fall back
+    /// to the fn-ptr handlers.
+    pub mem_size: u64,
     pub tpidr_el0: u64,
     pub tpidrro_el0: u64,
     /// Guest-visible value of `CNTFRQ_EL0`. Embedder sets this to match its
@@ -81,6 +91,8 @@ impl Default for CpuContext {
             pc: 0,
             exclusive_addr: 0,
             mem_base: core::ptr::null_mut(),
+            mem_base_va: 0,
+            mem_size: 0,
             tpidr_el0: 0,
             tpidrro_el0: 0,
             cntfrq_el0: 19_200_000,
@@ -116,6 +128,8 @@ pub mod cpu_offsets {
         offset_of!(CpuContext, v) + i * 16
     }
     #[inline] pub const fn mem_base() -> usize { offset_of!(CpuContext, mem_base) }
+    #[inline] pub const fn mem_base_va() -> usize { offset_of!(CpuContext, mem_base_va) }
+    #[inline] pub const fn mem_size() -> usize { offset_of!(CpuContext, mem_size) }
     #[inline] pub const fn exclusive_addr() -> usize { offset_of!(CpuContext, exclusive_addr) }
     #[inline] pub const fn exclusive_size() -> usize { offset_of!(CpuContext, exclusive_size) }
     #[inline] pub const fn tpidr_el0() -> usize { offset_of!(CpuContext, tpidr_el0) }

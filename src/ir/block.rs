@@ -26,6 +26,12 @@ pub struct Block {
     pub head: u32,
     pub tail: u32,
     pub cycles: u32,
+    /// Codegen flag set by `Jit::run` from `JitConfig::use_fastmem` after
+    /// translation/optimization. Read by `emit_op_load`/`emit_op_store` in
+    /// the backend to decide whether to wrap the fn-ptr call in a soft-fastmem
+    /// fast path. Lives on `Block` so it survives across the
+    /// translate→optimize→emit sequence without changing the `EmitFn` shape.
+    pub use_fastmem: bool,
 }
 
 impl Block {
@@ -43,6 +49,7 @@ impl Block {
             head: LINK_NONE,
             tail: LINK_NONE,
             cycles: 0,
+            use_fastmem: false,
         }
     }
 
@@ -55,6 +62,8 @@ impl Block {
         self.head = LINK_NONE;
         self.tail = LINK_NONE;
         self.cycles = 0;
+        // use_fastmem deliberately NOT reset; it's a codegen flag the JIT
+        // sets once after translate.
     }
 
     #[inline]

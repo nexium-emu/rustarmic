@@ -24,6 +24,26 @@ pub fn gpr32(n: u8) -> AsmRegister32 {
     }
 }
 
+pub fn gpr16(n: u8) -> AsmRegister16 {
+    match n {
+        0  => ax,   1  => cx,   2  => dx,   3  => bx,
+        4  => sp,   5  => bp,   6  => si,   7  => di,
+        8  => r8w,  9  => r9w,  10 => r10w, 11 => r11w,
+        12 => r12w, 13 => r13w, 14 => r14w, 15 => r15w,
+        _ => panic!("invalid GPR encoding: {}", n),
+    }
+}
+
+pub fn gpr8(n: u8) -> AsmRegister8 {
+    match n {
+        0  => al,   1  => cl,   2  => dl,   3  => bl,
+        4  => spl,  5  => bpl,  6  => sil,  7  => dil,
+        8  => r8b,  9  => r9b,  10 => r10b, 11 => r11b,
+        12 => r12b, 13 => r13b, 14 => r14b, 15 => r15b,
+        _ => panic!("invalid GPR encoding: {}", n),
+    }
+}
+
 pub fn xmm(n: u8) -> AsmRegisterXmm {
     match n {
         0  => xmm0,  1  => xmm1,  2  => xmm2,  3  => xmm3,

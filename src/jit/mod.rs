@@ -18,6 +18,12 @@ use dispatcher::JitFn;
 pub struct JitConfig {
     pub translate: TranslateOptions,
     pub code_cache_bytes: usize,
+    /// Emit the bounds-checked direct-memory fast path for guest loads/stores.
+    /// When `true`, the emitter wraps every `Load*`/`Store*` in a
+    /// `(va - mem_base_va) + width <= mem_size`-check; in-range accesses hit
+    /// `[mem_base + offset]` directly, out-of-range fall back to the fn-ptr
+    /// handlers. Default `false` so the disabled case pays nothing.
+    pub use_fastmem: bool,
 }
 
 impl Default for JitConfig {
@@ -25,6 +31,7 @@ impl Default for JitConfig {
         Self {
             translate: TranslateOptions::default(),
             code_cache_bytes: 16 * 1024 * 1024,
+            use_fastmem: false,
         }
     }
 }
@@ -74,6 +81,7 @@ impl Jit {
                     self.config.translate,
                 )?;
                 optimize_with_scratch(&mut self.block, &mut self.scratch);
+                self.block.use_fastmem = self.config.use_fastmem;
                 let emitted = crate::backend::emit_block(&self.block)?;
                 self.cache.install(pc, &emitted.code, &emitted.chains, emitted.body_offset)?
             };

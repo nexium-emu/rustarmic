@@ -5,7 +5,7 @@ use crate::backend::abi::{
     ARG0_REG, CALL_PRECALL_SUB, CTX_REG, SCRATCH0, SCRATCH1, SCRATCH2, SCRATCH3,
 };
 use crate::backend::operand::{
-    get_xmm_q, gpr32, gpr64, into_xmm_q, load32, load64, load_xmm_d, load_xmm_s, store32,
+    get_xmm_q, gpr8, gpr16, gpr32, gpr64, into_xmm_q, load32, load64, load_xmm_d, load_xmm_s, store32,
     store64, store_xmm_d, store_xmm_q, store_xmm_s, working_xmm_for,
 };
 use crate::backend::regalloc::{Allocation, Loc};
@@ -461,11 +461,11 @@ fn emit_op_flagged_addsub(asm: &mut CodeAssembler, block: &Block, alloc: &Alloca
 // ── Memory adapters ──────────────────────────────────────────────────────
 fn emit_op_load(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
     let a = block.code[idx];
-    emit_load(asm, alloc, a, dst_of(&a, idx), a.op.size_bytes())
+    emit_load(asm, alloc, a, dst_of(&a, idx), a.op.size_bytes(), block.use_fastmem)
 }
 fn emit_op_store(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
     let a = block.code[idx];
-    emit_store(asm, alloc, a, a.op.size_bytes())
+    emit_store(asm, alloc, a, a.op.size_bytes(), block.use_fastmem)
 }
 fn emit_op_load_ex(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
     let a = block.code[idx];
@@ -2456,10 +2456,109 @@ fn emit_bswap(asm: &mut CodeAssembler, alloc: &Allocation, a: Armlet, dst: Optio
     Ok(())
 }
 
-fn emit_load(asm: &mut CodeAssembler, alloc: &Allocation, a: Armlet, dst: Option<ValueRef>, bytes: u32) -> Result<()> {
+fn emit_load(
+    asm: &mut CodeAssembler,
+    alloc: &Allocation,
+    a: Armlet,
+    dst: Option<ValueRef>,
+    bytes: u32,
+    use_fastmem: bool,
+) -> Result<()> {
     // ABI: arg0 = ctx, arg1 = addr (SCRATCH1 IS the arg1 register on both
-    // calling conventions). Result lands in rax/eax.
+    // calling conventions). Result lands in rax/eax for either path.
     load64(asm, alloc, a.args[0], SCRATCH1)?;
+
+    if use_fastmem {
+        let mut lbl_slow = asm.create_label();
+        let mut lbl_done = asm.create_label();
+        emit_fastmem_bounds_check(asm, bytes, lbl_slow)?;
+        // Fast path: SCRATCH0 = mem_base + offset, then sized load into rax.
+        asm.mov(SCRATCH0, qword_ptr(CTX_REG + cpu_offsets::mem_base() as i32))?;
+        asm.add(SCRATCH0, SCRATCH2)?;
+        match bytes {
+            1 => asm.movzx(eax, byte_ptr(SCRATCH0))?,
+            2 => asm.movzx(eax, word_ptr(SCRATCH0))?,
+            4 => asm.mov(eax, dword_ptr(SCRATCH0))?,
+            8 => asm.mov(rax, qword_ptr(SCRATCH0))?,
+            _ => return Err(Error::Backend("unsupported load width".into())),
+        }
+        asm.jmp(lbl_done)?;
+        asm.set_label(&mut lbl_slow)?;
+        emit_load_slow_path(asm, bytes)?;
+        asm.set_label(&mut lbl_done)?;
+    } else {
+        emit_load_slow_path(asm, bytes)?;
+    }
+
+    if let Some(d) = dst {
+        match bytes {
+            1 | 2 | 4 => store32(asm, alloc, d, eax)?,
+            8         => store64(asm, alloc, d, rax)?,
+            _ => unreachable!(),
+        }
+    }
+    Ok(())
+}
+
+fn emit_store(
+    asm: &mut CodeAssembler,
+    alloc: &Allocation,
+    a: Armlet,
+    bytes: u32,
+    use_fastmem: bool,
+) -> Result<()> {
+    // ABI: arg0 = ctx, arg1 = addr, arg2 = value (SCRATCH3 IS the arg2 reg).
+    if bytes == 8 {
+        load64(asm, alloc, a.args[1], SCRATCH3)?;
+    } else {
+        load32(asm, alloc, a.args[1], gpr32(scratch3_id()))?;
+    }
+    load64(asm, alloc, a.args[0], SCRATCH1)?;
+
+    if use_fastmem {
+        let mut lbl_slow = asm.create_label();
+        let mut lbl_done = asm.create_label();
+        emit_fastmem_bounds_check(asm, bytes, lbl_slow)?;
+        // Fast path: SCRATCH0 = mem_base + offset, then sized store from value reg.
+        asm.mov(SCRATCH0, qword_ptr(CTX_REG + cpu_offsets::mem_base() as i32))?;
+        asm.add(SCRATCH0, SCRATCH2)?;
+        match bytes {
+            1 => asm.mov(byte_ptr (SCRATCH0), gpr8 (scratch3_id()))?,
+            2 => asm.mov(word_ptr (SCRATCH0), gpr16(scratch3_id()))?,
+            4 => asm.mov(dword_ptr(SCRATCH0), gpr32(scratch3_id()))?,
+            8 => asm.mov(qword_ptr(SCRATCH0), SCRATCH3)?,
+            _ => return Err(Error::Backend("unsupported store width".into())),
+        }
+        asm.jmp(lbl_done)?;
+        asm.set_label(&mut lbl_slow)?;
+        emit_store_slow_path(asm, bytes)?;
+        asm.set_label(&mut lbl_done)?;
+    } else {
+        emit_store_slow_path(asm, bytes)?;
+    }
+    Ok(())
+}
+
+/// Emits the soft-fastmem bounds check. On entry SCRATCH1 holds the guest VA.
+/// On exit SCRATCH2 holds `va - mem_base_va` (used by the fast path) and a
+/// `ja lbl_slow` has been emitted that fires when the access exceeds the
+/// declared region (including the wrap case where `va < mem_base_va`).
+fn emit_fastmem_bounds_check(
+    asm: &mut CodeAssembler,
+    bytes: u32,
+    lbl_slow: CodeLabel,
+) -> Result<()> {
+    asm.mov(SCRATCH2, SCRATCH1)?;
+    asm.sub(SCRATCH2, qword_ptr(CTX_REG + cpu_offsets::mem_base_va() as i32))?;
+    // tail = offset + width; compare tail against mem_size.
+    asm.mov(SCRATCH0, SCRATCH2)?;
+    asm.add(SCRATCH0, bytes as i32)?;
+    asm.cmp(SCRATCH0, qword_ptr(CTX_REG + cpu_offsets::mem_size() as i32))?;
+    asm.ja(lbl_slow)?;
+    Ok(())
+}
+
+fn emit_load_slow_path(asm: &mut CodeAssembler, bytes: u32) -> Result<()> {
     asm.mov(ARG0_REG, CTX_REG)?;
     let offset = match bytes {
         1 => cpu_offsets::mem_read8(),
@@ -2471,24 +2570,10 @@ fn emit_load(asm: &mut CodeAssembler, alloc: &Allocation, a: Armlet, dst: Option
     asm.sub(rsp, CALL_PRECALL_SUB)?;
     asm.call(qword_ptr(CTX_REG + offset as i32))?;
     asm.add(rsp, CALL_PRECALL_SUB)?;
-    if let Some(d) = dst {
-        match bytes {
-            1 | 2 | 4 => store32(asm, alloc, d, eax)?,
-            8         => store64(asm, alloc, d, rax)?,
-            _ => unreachable!(),
-        }
-    }
     Ok(())
 }
 
-fn emit_store(asm: &mut CodeAssembler, alloc: &Allocation, a: Armlet, bytes: u32) -> Result<()> {
-    // ABI: arg0 = ctx, arg1 = addr, arg2 = value (SCRATCH3 IS the arg2 reg).
-    if bytes == 8 {
-        load64(asm, alloc, a.args[1], SCRATCH3)?;
-    } else {
-        load32(asm, alloc, a.args[1], gpr32(scratch3_id()))?;
-    }
-    load64(asm, alloc, a.args[0], SCRATCH1)?;
+fn emit_store_slow_path(asm: &mut CodeAssembler, bytes: u32) -> Result<()> {
     asm.mov(ARG0_REG, CTX_REG)?;
     let offset = match bytes {
         1 => cpu_offsets::mem_write8(),
