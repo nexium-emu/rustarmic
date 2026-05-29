@@ -1,4 +1,4 @@
-use crate::backend::clobbers::{clobbers_for_op, GprMask};
+use crate::backend::clobbers::{clobbers_for_op, GprMask, XmmMask};
 use crate::ir::{Block, Op, Terminal, Ty};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -150,11 +150,14 @@ pub const ALLOCATABLE_GPRS: &[u8] = &[3, 12, 13, 14];
 #[cfg(target_os = "windows")]
 pub const SPILL_XMMS: &[u8] = &[6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 
-/// On SysV every XMM is caller-saved, so using them across memory callbacks
-/// is unsafe without per-call save/restore — leave the XMM spill pool empty
-/// and fall back to stack spills there for now.
+/// On SysV every XMM is caller-saved. Historically we left the pool empty
+/// to avoid having values clobbered across memory-hook callbacks; the
+/// `xmm_clobber_masks` machinery in `linear_scan` now keeps any value whose
+/// live range crosses a Load*/Store*/Mrs op out of XMM, so this is safe.
+/// Match the Windows shape — XMM6..XMM15 are picked first; XMM0..XMM5 stay
+/// available as emit-time scratch.
 #[cfg(not(target_os = "windows"))]
-pub const SPILL_XMMS: &[u8] = &[];
+pub const SPILL_XMMS: &[u8] = &[6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 
 pub fn op_clobbers(op: Op) -> GprMask {
     clobbers_for_op(op).gpr
@@ -189,11 +192,13 @@ pub fn linear_scan(block: &Block, ranges: &[LiveRange], pool: &[u8]) -> Allocati
     // remain there for the rest of the block (simpler, slightly wasteful).
     let mut xmm_active: Vec<(u32, u8, usize)> = Vec::new();
 
-    // Lambda that allocates a spill slot, preferring an XMM register. Picks
-    // the lowest-numbered free XMM (matching the old `Vec.pop` semantic).
-    let take_spill = |spill_cursor: &mut i32, xmm_free: &mut u16| -> Loc {
-        if *xmm_free != 0 {
-            let x = xmm_free.trailing_zeros() as u8;
+    // Allocates a spill slot, preferring a free XMM masked to the bits that
+    // ARE NOT clobbered by any op crossing the value's live range. Picks the
+    // lowest-numbered safe XMM (matching the old `Vec.pop` semantic).
+    let take_spill = |spill_cursor: &mut i32, xmm_free: &mut u16, safe_xmms: u16| -> Loc {
+        let candidates = *xmm_free & safe_xmms;
+        if candidates != 0 {
+            let x = candidates.trailing_zeros() as u8;
             *xmm_free &= !(1u16 << x);
             Loc::Xmm(x)
         } else {
@@ -206,12 +211,16 @@ pub fn linear_scan(block: &Block, ranges: &[LiveRange], pool: &[u8]) -> Allocati
     // new nodes via `insert_before` give them high Vec idx but earlier
     // linked-list positions, so iterating `block.code` here would be wrong.
     let mut clobber_masks: Vec<GprMask> = Vec::with_capacity(n);
+    let mut xmm_clobber_masks: Vec<XmmMask> = Vec::with_capacity(n);
     for (_vr, armlet) in block.iter_live() {
-        clobber_masks.push(if armlet.is_eliminated() {
-            GprMask::empty()
+        if armlet.is_eliminated() {
+            clobber_masks.push(GprMask::empty());
+            xmm_clobber_masks.push(XmmMask::empty());
         } else {
-            clobbers_for_op(armlet.op).gpr
-        });
+            let c = clobbers_for_op(armlet.op);
+            clobber_masks.push(c.gpr);
+            xmm_clobber_masks.push(c.xmm);
+        }
     }
 
     let mut intervals: Vec<usize> = (0..n)
@@ -243,10 +252,14 @@ pub fn linear_scan(block: &Block, ranges: &[LiveRange], pool: &[u8]) -> Allocati
         });
 
         // 128-bit values must live in an XMM (or a 16-byte aligned stack slot).
-        // Route them through a dedicated XMM allocation that recycles on death.
+        // Mask out XMMs clobbered across the value's live range so a callback
+        // can't trash it — if none of the free XMMs survive, fall back to a
+        // 16-byte aligned stack slot.
         if block.code[vr_idx].ty == Ty::U128 {
-            locs[vr_idx] = if xmm_free != 0 {
-                let x = xmm_free.trailing_zeros() as u8;
+            let safe = !interior_xmm_clobber_mask(&xmm_clobber_masks, range).bits();
+            let candidates = xmm_free & safe;
+            locs[vr_idx] = if candidates != 0 {
+                let x = candidates.trailing_zeros() as u8;
                 xmm_free &= !(1u16 << x);
                 xmm_active.push((end, x, vr_idx));
                 Loc::Xmm(x)
@@ -288,7 +301,7 @@ pub fn linear_scan(block: &Block, ranges: &[LiveRange], pool: &[u8]) -> Allocati
             locs[vr_idx] = Loc::Reg(reg);
             active.push((end, reg, vr_idx));
         } else if active.is_empty() {
-            locs[vr_idx] = take_spill(&mut spill_cursor, &mut xmm_free);
+            locs[vr_idx] = take_spill(&mut spill_cursor, &mut xmm_free, !interior_xmm_clobber_mask(&xmm_clobber_masks, range).bits());
         } else {
             let candidate = active
                 .iter()
@@ -298,15 +311,19 @@ pub fn linear_scan(block: &Block, ranges: &[LiveRange], pool: &[u8]) -> Allocati
 
             if let Some((spill_pos, &(victim_end, victim_reg, victim_vr))) = candidate {
                 if victim_end > end {
-                    let spilled = take_spill(&mut spill_cursor, &mut xmm_free);
+                    // The victim is being evicted — its safe-XMM set is
+                    // determined by clobbers crossing ITS live range, not
+                    // the current value's.
+                    let victim_safe = !interior_xmm_clobber_mask(&xmm_clobber_masks, ranges[victim_vr]).bits();
+                    let spilled = take_spill(&mut spill_cursor, &mut xmm_free, victim_safe);
                     locs[victim_vr] = spilled;
                     locs[vr_idx]    = Loc::Reg(victim_reg);
                     active[spill_pos] = (end, victim_reg, vr_idx);
                 } else {
-                    locs[vr_idx] = take_spill(&mut spill_cursor, &mut xmm_free);
+                    locs[vr_idx] = take_spill(&mut spill_cursor, &mut xmm_free, !interior_xmm_clobber_mask(&xmm_clobber_masks, range).bits());
                 }
             } else {
-                locs[vr_idx] = take_spill(&mut spill_cursor, &mut xmm_free);
+                locs[vr_idx] = take_spill(&mut spill_cursor, &mut xmm_free, !interior_xmm_clobber_mask(&xmm_clobber_masks, range).bits());
             }
         }
     }
@@ -332,6 +349,19 @@ fn mask_contains_gpr(mask: GprMask, gpr: u8) -> bool {
 
 fn interior_clobber_mask(clobber_masks: &[GprMask], range: LiveRange) -> GprMask {
     let mut mask = GprMask::empty();
+    if range.is_dead() { return mask; }
+    let start = range.start as usize;
+    let end = range.end() as usize;
+    if end > start + 1 {
+        for i in (start + 1)..end {
+            mask |= clobber_masks[i];
+        }
+    }
+    mask
+}
+
+fn interior_xmm_clobber_mask(clobber_masks: &[XmmMask], range: LiveRange) -> XmmMask {
+    let mut mask = XmmMask::empty();
     if range.is_dead() { return mask; }
     let start = range.start as usize;
     let end = range.end() as usize;

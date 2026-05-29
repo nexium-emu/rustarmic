@@ -332,8 +332,9 @@ fn emit_op_get_v(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx
             store64(asm, alloc, d, SCRATCH0)?;
         }
         Ty::U128 => {
-            asm.movdqu(xmm0, xmmword_ptr(CTX_REG + off))?;
-            store_xmm_q(asm, alloc, d, xmm0)?;
+            let dst_xmm = working_xmm_for(alloc, d, xmm0);
+            asm.movdqu(dst_xmm, xmmword_ptr(CTX_REG + off))?;
+            store_xmm_q(asm, alloc, d, dst_xmm)?;
         }
         other => return Err(Error::Backend(format!("GetV with unsupported ty {:?}", other))),
     }

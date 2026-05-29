@@ -53,6 +53,19 @@ pub const CALLER_SAVED_GPRS: GprMask = GprMask::from_bits_retain(
     | GprMask::R10.bits() | GprMask::R11.bits(),
 );
 
+/// XMM registers a host `extern "C"` callee may freely trash. Windows x64
+/// preserves XMM6..XMM15 (callee-saved) so only XMM0..XMM5 are caller-saved;
+/// SysV AMD64 treats every XMM as caller-saved. The regalloc uses this to
+/// keep U128 values whose live range crosses a hook-emitting op (Load*,
+/// Store*, Mrs CNTPCT) out of XMM slots that the callback would corrupt.
+#[cfg(target_os = "windows")]
+pub const CALLER_SAVED_XMMS: XmmMask = XmmMask::from_bits_retain(
+    XmmMask::XMM0.bits() | XmmMask::XMM1.bits() | XmmMask::XMM2.bits()
+    | XmmMask::XMM3.bits() | XmmMask::XMM4.bits() | XmmMask::XMM5.bits(),
+);
+#[cfg(not(target_os = "windows"))]
+pub const CALLER_SAVED_XMMS: XmmMask = XmmMask::from_bits_retain(0xFFFF);
+
 pub mod gpr_id {
     pub const RAX: u8 = 0;
     pub const RCX: u8 = 1;
@@ -115,17 +128,28 @@ pub fn clobbers_for_op(op: Op) -> ClobberSet {
             c.result_pinned_to_gpr = Some(gpr_id::RAX);
         }
 
-        Load8 | Load16 | Load32 | Load64
-        | Store8 | Store16 | Store32 | Store64
+        Load8 | Load16 | Load32 | Load64 | Load128
+        | Store8 | Store16 | Store32 | Store64 | Store128
         | LoadEx8 | LoadEx16 | LoadEx32 | LoadEx64
         | StoreEx8 | StoreEx16 | StoreEx32 | StoreEx64 => {
             c.gpr = CALLER_SAVED_GPRS;
+            c.xmm = CALLER_SAVED_XMMS;
             if matches!(op, Load8 | Load16 | Load32 | Load64
                 | LoadEx8 | LoadEx16 | LoadEx32 | LoadEx64
                 | StoreEx8 | StoreEx16 | StoreEx32 | StoreEx64)
             {
                 c.result_pinned_to_gpr = Some(gpr_id::RAX);
             }
+        }
+
+        Mrs => {
+            // CNTPCT_EL0 / CNTVCT_EL0 fall through to an indirect call to
+            // read_cntpct; other sysregs are inline ctx-relative mov. The
+            // imm is hidden from us here, so be conservative and mark every
+            // Mrs as a clobber barrier.
+            c.gpr = CALLER_SAVED_GPRS;
+            c.xmm = CALLER_SAVED_XMMS;
+            c.result_pinned_to_gpr = Some(gpr_id::RAX);
         }
 
         _ => {
