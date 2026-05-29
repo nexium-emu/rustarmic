@@ -175,8 +175,7 @@ pub fn linear_scan(block: &Block, ranges: &[LiveRange], pool: &[u8]) -> Allocati
     let mut locs = vec![Loc::None; n];
     let mut spill_cursor: i32 = SAVED_SIZE;
     let mut free: Vec<u8> = pool.iter().copied().rev().collect();
-    let mut xmm_free: Vec<u8> = SPILL_XMMS.iter().copied().rev().collect();
-    let mut used_xmms: u16 = 0;
+    let mut xmm_free: u16 = !SPILL_XMMS.iter().enumerate().map(|x| (1 << x.0) as u16).sum::<u16>();
     let mut active: Vec<(u32, u8, usize)> = Vec::new();
     // 128-bit values that own an XMM. Recycled on end-of-life back to xmm_free.
     // Scalar values that were spilled to an XMM are NOT tracked here — they
@@ -184,10 +183,11 @@ pub fn linear_scan(block: &Block, ranges: &[LiveRange], pool: &[u8]) -> Allocati
     let mut xmm_active: Vec<(u32, u8, usize)> = Vec::new();
 
     // Lambda that allocates a spill slot, preferring an XMM register.
-    let take_spill = |spill_cursor: &mut i32, xmm_free: &mut Vec<u8>, used_xmms: &mut u16| -> Loc {
-        if let Some(x) = xmm_free.pop() {
-            *used_xmms |= 1 << x;
-            Loc::Xmm(x)
+    let take_spill = |spill_cursor: &mut i32, xmm_free: &mut u16| -> Loc {
+        let x = 16 - 1 - xmm_free.trailing_zeros() as i8;
+        if x >= 0 {
+            *xmm_free &= !(1 << x);
+            Loc::Xmm(x as u8)
         } else {
             Loc::Spill(alloc_spill_slot(spill_cursor))
         }
@@ -227,7 +227,7 @@ pub fn linear_scan(block: &Block, ranges: &[LiveRange], pool: &[u8]) -> Allocati
 
         xmm_active.retain(|&(active_end, xmm_idx, _)| {
             if active_end < start {
-                xmm_free.push(xmm_idx);
+                xmm_free |= 1 << xmm_idx;
                 false
             } else {
                 true
@@ -237,13 +237,14 @@ pub fn linear_scan(block: &Block, ranges: &[LiveRange], pool: &[u8]) -> Allocati
         // 128-bit values must live in an XMM (or a 16-byte aligned stack slot).
         // Route them through a dedicated XMM allocation that recycles on death.
         if block.code[vr_idx].ty == Ty::U128 {
-            if let Some(x) = xmm_free.pop() {
-                used_xmms |= 1 << x;
-                locs[vr_idx] = Loc::Xmm(x);
-                xmm_active.push((end, x, vr_idx));
+            let x = 16 - 1 - xmm_free.trailing_zeros() as i8;
+            locs[vr_idx] = if x >= 0 {
+                xmm_free &= !(1 << x);
+                xmm_active.push((end, x as u8, vr_idx));
+                Loc::Xmm(x as u8)
             } else {
-                locs[vr_idx] = Loc::Spill(alloc_spill_slot_16(&mut spill_cursor));
-            }
+                Loc::Spill(alloc_spill_slot(&mut spill_cursor))
+            };
             continue;
         }
 
@@ -279,7 +280,7 @@ pub fn linear_scan(block: &Block, ranges: &[LiveRange], pool: &[u8]) -> Allocati
             locs[vr_idx] = Loc::Reg(reg);
             active.push((end, reg, vr_idx));
         } else if active.is_empty() {
-            locs[vr_idx] = take_spill(&mut spill_cursor, &mut xmm_free, &mut used_xmms);
+            locs[vr_idx] = take_spill(&mut spill_cursor, &mut xmm_free);
         } else {
             let candidate = active
                 .iter()
@@ -289,15 +290,15 @@ pub fn linear_scan(block: &Block, ranges: &[LiveRange], pool: &[u8]) -> Allocati
 
             if let Some((spill_pos, &(victim_end, victim_reg, victim_vr))) = candidate {
                 if victim_end > end {
-                    let spilled = take_spill(&mut spill_cursor, &mut xmm_free, &mut used_xmms);
+                    let spilled = take_spill(&mut spill_cursor, &mut xmm_free);
                     locs[victim_vr] = spilled;
                     locs[vr_idx]    = Loc::Reg(victim_reg);
                     active[spill_pos] = (end, victim_reg, vr_idx);
                 } else {
-                    locs[vr_idx] = take_spill(&mut spill_cursor, &mut xmm_free, &mut used_xmms);
+                    locs[vr_idx] = take_spill(&mut spill_cursor, &mut xmm_free);
                 }
             } else {
-                locs[vr_idx] = take_spill(&mut spill_cursor, &mut xmm_free, &mut used_xmms);
+                locs[vr_idx] = take_spill(&mut spill_cursor, &mut xmm_free);
             }
         }
     }
@@ -309,7 +310,7 @@ pub fn linear_scan(block: &Block, ranges: &[LiveRange], pool: &[u8]) -> Allocati
     Allocation {
         locs,
         spill_bytes: spill_cursor - SAVED_SIZE,
-        used_xmms,
+        used_xmms: !xmm_free, //used = not free
     }
 }
 
@@ -520,8 +521,8 @@ mod tests {
 
         let loc_a = alloc.loc(q0);
         let loc_b = alloc.loc(q2);
-        assert!(matches!(loc_a, Loc::Xmm(_)), "first u128 should be Xmm, got {:?}", loc_a);
-        assert!(matches!(loc_b, Loc::Xmm(_)), "second u128 should be Xmm, got {:?}", loc_b);
+        assert!(matches!(loc_a, Loc::Xmm(_)), "first u128 should be Xmm, got {loc_a:?}");
+        assert!(matches!(loc_b, Loc::Xmm(_)), "second u128 should be Xmm, got {loc_b:?}");
         if !SPILL_XMMS.is_empty() {
             assert_eq!(loc_a, loc_b, "non-overlapping u128 ranges should reuse the same XMM");
         }
