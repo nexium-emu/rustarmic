@@ -2,7 +2,7 @@ use iced_x86::code_asm::*;
 
 use crate::arch::{Cond, NUM_GPRS, ZR_ENCODING};
 use crate::backend::abi::{
-    ARG0_REG, ARG3_REG, CALL_PRECALL_SUB, CTX_REG, SCRATCH0, SCRATCH1, SCRATCH2, SCRATCH3,
+    ARG0_REG, CALL_PRECALL_SUB, CTX_REG, SCRATCH0, SCRATCH1, SCRATCH2, SCRATCH3,
 };
 use crate::backend::operand::{
     get_xmm_q, gpr32, gpr64, into_xmm_q, load32, load64, load_xmm_d, load_xmm_s, store32,
@@ -12,10 +12,6 @@ use crate::backend::regalloc::{Allocation, Loc};
 use crate::error::{Error, Result};
 use crate::ir::{Armlet, Block, Op, Ty, ValueRef};
 use crate::jit::context::cpu_offsets;
-use crate::jit::memory::{
-    addr_mem_read8, addr_mem_read16, addr_mem_read32, addr_mem_read64,
-    addr_mem_write8, addr_mem_write16, addr_mem_write32, addr_mem_write64,
-};
 
 /// Function-pointer shape every per-op emitter conforms to. The block + idx
 /// give the emitter the armlet, its destination value (derived from idx +
@@ -2461,18 +2457,19 @@ fn emit_bswap(asm: &mut CodeAssembler, alloc: &Allocation, a: Armlet, dst: Optio
 }
 
 fn emit_load(asm: &mut CodeAssembler, alloc: &Allocation, a: Armlet, dst: Option<ValueRef>, bytes: u32) -> Result<()> {
+    // ABI: arg0 = ctx, arg1 = addr (SCRATCH1 IS the arg1 register on both
+    // calling conventions). Result lands in rax/eax.
     load64(asm, alloc, a.args[0], SCRATCH1)?;
-    asm.mov(ARG3_REG, CTX_REG)?;
-    let fn_addr = match bytes {
-        1 => addr_mem_read8(),
-        2 => addr_mem_read16(),
-        4 => addr_mem_read32(),
-        8 => addr_mem_read64(),
+    asm.mov(ARG0_REG, CTX_REG)?;
+    let offset = match bytes {
+        1 => cpu_offsets::mem_read8(),
+        2 => cpu_offsets::mem_read16(),
+        4 => cpu_offsets::mem_read32(),
+        8 => cpu_offsets::mem_read64(),
         _ => return Err(Error::Backend("unsupported load width".into())),
     };
     asm.sub(rsp, CALL_PRECALL_SUB)?;
-    asm.mov(SCRATCH0, fn_addr as i64)?;
-    asm.call(SCRATCH0)?;
+    asm.call(qword_ptr(CTX_REG + offset as i32))?;
     asm.add(rsp, CALL_PRECALL_SUB)?;
     if let Some(d) = dst {
         match bytes {
@@ -2485,40 +2482,39 @@ fn emit_load(asm: &mut CodeAssembler, alloc: &Allocation, a: Armlet, dst: Option
 }
 
 fn emit_store(asm: &mut CodeAssembler, alloc: &Allocation, a: Armlet, bytes: u32) -> Result<()> {
+    // ABI: arg0 = ctx, arg1 = addr, arg2 = value (SCRATCH3 IS the arg2 reg).
     if bytes == 8 {
         load64(asm, alloc, a.args[1], SCRATCH3)?;
     } else {
         load32(asm, alloc, a.args[1], gpr32(scratch3_id()))?;
     }
     load64(asm, alloc, a.args[0], SCRATCH1)?;
-    asm.mov(ARG3_REG, CTX_REG)?;
-    let fn_addr = match bytes {
-        1 => addr_mem_write8(),
-        2 => addr_mem_write16(),
-        4 => addr_mem_write32(),
-        8 => addr_mem_write64(),
+    asm.mov(ARG0_REG, CTX_REG)?;
+    let offset = match bytes {
+        1 => cpu_offsets::mem_write8(),
+        2 => cpu_offsets::mem_write16(),
+        4 => cpu_offsets::mem_write32(),
+        8 => cpu_offsets::mem_write64(),
         _ => return Err(Error::Backend("unsupported store width".into())),
     };
     asm.sub(rsp, CALL_PRECALL_SUB)?;
-    asm.mov(SCRATCH0, fn_addr as i64)?;
-    asm.call(SCRATCH0)?;
+    asm.call(qword_ptr(CTX_REG + offset as i32))?;
     asm.add(rsp, CALL_PRECALL_SUB)?;
     Ok(())
 }
 
 fn emit_load_ex(asm: &mut CodeAssembler, alloc: &Allocation, a: Armlet, dst: Option<ValueRef>, bytes: u32) -> Result<()> {
     load64(asm, alloc, a.args[0], SCRATCH1)?;
-    asm.mov(ARG3_REG, CTX_REG)?;
-    let fn_addr = match bytes {
-        1 => addr_mem_read8(),
-        2 => addr_mem_read16(),
-        4 => addr_mem_read32(),
-        8 => addr_mem_read64(),
+    asm.mov(ARG0_REG, CTX_REG)?;
+    let offset = match bytes {
+        1 => cpu_offsets::mem_read8(),
+        2 => cpu_offsets::mem_read16(),
+        4 => cpu_offsets::mem_read32(),
+        8 => cpu_offsets::mem_read64(),
         _ => return Err(Error::Backend("unsupported ldex width".into())),
     };
     asm.sub(rsp, CALL_PRECALL_SUB)?;
-    asm.mov(SCRATCH0, fn_addr as i64)?;
-    asm.call(SCRATCH0)?;
+    asm.call(qword_ptr(CTX_REG + offset as i32))?;
     asm.add(rsp, CALL_PRECALL_SUB)?;
     if let Some(d) = dst {
         match bytes {
@@ -2554,17 +2550,17 @@ fn emit_store_ex(
     } else {
         load32(asm, alloc, a.args[1], gpr32(scratch3_id()))?;
     }
-    asm.mov(ARG3_REG, CTX_REG)?;
-    let fn_addr = match bytes {
-        1 => addr_mem_write8(),
-        2 => addr_mem_write16(),
-        4 => addr_mem_write32(),
-        8 => addr_mem_write64(),
+    // SCRATCH1 still holds `addr` from the exclusive-monitor compare above.
+    asm.mov(ARG0_REG, CTX_REG)?;
+    let offset = match bytes {
+        1 => cpu_offsets::mem_write8(),
+        2 => cpu_offsets::mem_write16(),
+        4 => cpu_offsets::mem_write32(),
+        8 => cpu_offsets::mem_write64(),
         _ => return Err(Error::Backend("unsupported stex width".into())),
     };
     asm.sub(rsp, CALL_PRECALL_SUB)?;
-    asm.mov(SCRATCH0, fn_addr as i64)?;
-    asm.call(SCRATCH0)?;
+    asm.call(qword_ptr(CTX_REG + offset as i32))?;
     asm.add(rsp, CALL_PRECALL_SUB)?;
     asm.xor(eax, eax)?;
     asm.jmp(lbl_done)?;

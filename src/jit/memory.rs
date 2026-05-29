@@ -1,5 +1,3 @@
-use crate::jit::context::CpuContext;
-
 pub trait Memory {
     fn fetch_inst(&mut self, addr: u64) -> Option<u32>;
 }
@@ -39,23 +37,4 @@ impl Memory for FlatMemory {
     }
 }
 
-unsafe extern "C" {
-    pub fn rustarmic_mem_read8 (a: u64, addr: u64, c: u64,           ctx: *mut CpuContext) -> u8;
-    pub fn rustarmic_mem_read16(a: u64, addr: u64, c: u64,           ctx: *mut CpuContext) -> u16;
-    pub fn rustarmic_mem_read32(a: u64, addr: u64, c: u64,           ctx: *mut CpuContext) -> u32;
-    pub fn rustarmic_mem_read64(a: u64, addr: u64, c: u64,           ctx: *mut CpuContext) -> u64;
-    pub fn rustarmic_mem_write8 (a: u64, addr: u64, value: u8,       ctx: *mut CpuContext);
-    pub fn rustarmic_mem_write16(a: u64, addr: u64, value: u16,      ctx: *mut CpuContext);
-    pub fn rustarmic_mem_write32(a: u64, addr: u64, value: u32,      ctx: *mut CpuContext);
-    pub fn rustarmic_mem_write64(a: u64, addr: u64, value: u64,      ctx: *mut CpuContext);
-}
-
-#[inline] pub fn addr_mem_read8 () -> u64 { rustarmic_mem_read8  as *const () as usize as u64 }
-#[inline] pub fn addr_mem_read16() -> u64 { rustarmic_mem_read16 as *const () as usize as u64 }
-#[inline] pub fn addr_mem_read32() -> u64 { rustarmic_mem_read32 as *const () as usize as u64 }
-#[inline] pub fn addr_mem_read64() -> u64 { rustarmic_mem_read64 as *const () as usize as u64 }
-#[inline] pub fn addr_mem_write8 () -> u64 { rustarmic_mem_write8  as *const () as usize as u64 }
-#[inline] pub fn addr_mem_write16() -> u64 { rustarmic_mem_write16 as *const () as usize as u64 }
-#[inline] pub fn addr_mem_write32() -> u64 { rustarmic_mem_write32 as *const () as usize as u64 }
-#[inline] pub fn addr_mem_write64() -> u64 { rustarmic_mem_write64 as *const () as usize as u64 }
 

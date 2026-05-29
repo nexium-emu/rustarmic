@@ -19,6 +19,18 @@ pub struct CpuContext {
     /// `cntfrq_el0`); embedders that care about accurate scaling should
     /// install a callback that derives the value from their host clock.
     pub read_cntpct: unsafe extern "C" fn(*mut CpuContext) -> u64,
+    /// Guest memory load hooks. Called by emitted code for any guest load.
+    /// Signature: `(ctx, addr) -> value`. Defaults panic — embedders MUST
+    /// install real handlers before running code that does any data access.
+    pub mem_read8:   unsafe extern "C" fn(*mut CpuContext, u64) -> u8,
+    pub mem_read16:  unsafe extern "C" fn(*mut CpuContext, u64) -> u16,
+    pub mem_read32:  unsafe extern "C" fn(*mut CpuContext, u64) -> u32,
+    pub mem_read64:  unsafe extern "C" fn(*mut CpuContext, u64) -> u64,
+    /// Guest memory store hooks. Signature: `(ctx, addr, value)`.
+    pub mem_write8:  unsafe extern "C" fn(*mut CpuContext, u64, u8),
+    pub mem_write16: unsafe extern "C" fn(*mut CpuContext, u64, u16),
+    pub mem_write32: unsafe extern "C" fn(*mut CpuContext, u64, u32),
+    pub mem_write64: unsafe extern "C" fn(*mut CpuContext, u64, u64),
     pub fpcr: u32,
     pub fpsr: u32,
     pub nzcv: u8,
@@ -35,6 +47,31 @@ unsafe extern "C" fn default_read_cntpct(_ctx: *mut CpuContext) -> u64 {
     { 0 }
 }
 
+unsafe extern "C" fn default_mem_read8 (_: *mut CpuContext, addr: u64) -> u8 {
+    panic!("rustarmic: CpuContext.mem_read8 not installed (addr={:#x})",  addr)
+}
+unsafe extern "C" fn default_mem_read16(_: *mut CpuContext, addr: u64) -> u16 {
+    panic!("rustarmic: CpuContext.mem_read16 not installed (addr={:#x})", addr)
+}
+unsafe extern "C" fn default_mem_read32(_: *mut CpuContext, addr: u64) -> u32 {
+    panic!("rustarmic: CpuContext.mem_read32 not installed (addr={:#x})", addr)
+}
+unsafe extern "C" fn default_mem_read64(_: *mut CpuContext, addr: u64) -> u64 {
+    panic!("rustarmic: CpuContext.mem_read64 not installed (addr={:#x})", addr)
+}
+unsafe extern "C" fn default_mem_write8 (_: *mut CpuContext, addr: u64, _: u8) {
+    panic!("rustarmic: CpuContext.mem_write8 not installed (addr={:#x})",  addr)
+}
+unsafe extern "C" fn default_mem_write16(_: *mut CpuContext, addr: u64, _: u16) {
+    panic!("rustarmic: CpuContext.mem_write16 not installed (addr={:#x})", addr)
+}
+unsafe extern "C" fn default_mem_write32(_: *mut CpuContext, addr: u64, _: u32) {
+    panic!("rustarmic: CpuContext.mem_write32 not installed (addr={:#x})", addr)
+}
+unsafe extern "C" fn default_mem_write64(_: *mut CpuContext, addr: u64, _: u64) {
+    panic!("rustarmic: CpuContext.mem_write64 not installed (addr={:#x})", addr)
+}
+
 impl Default for CpuContext {
     fn default() -> Self {
         Self {
@@ -48,6 +85,14 @@ impl Default for CpuContext {
             tpidrro_el0: 0,
             cntfrq_el0: 19_200_000,
             read_cntpct: default_read_cntpct,
+            mem_read8:   default_mem_read8,
+            mem_read16:  default_mem_read16,
+            mem_read32:  default_mem_read32,
+            mem_read64:  default_mem_read64,
+            mem_write8:  default_mem_write8,
+            mem_write16: default_mem_write16,
+            mem_write32: default_mem_write32,
+            mem_write64: default_mem_write64,
             fpcr: 0,
             fpsr: 0,
             nzcv: 0,
@@ -77,6 +122,14 @@ pub mod cpu_offsets {
     #[inline] pub const fn tpidrro_el0() -> usize { offset_of!(CpuContext, tpidrro_el0) }
     #[inline] pub const fn cntfrq_el0() -> usize { offset_of!(CpuContext, cntfrq_el0) }
     #[inline] pub const fn read_cntpct() -> usize { offset_of!(CpuContext, read_cntpct) }
+    #[inline] pub const fn mem_read8 () -> usize { offset_of!(CpuContext, mem_read8) }
+    #[inline] pub const fn mem_read16() -> usize { offset_of!(CpuContext, mem_read16) }
+    #[inline] pub const fn mem_read32() -> usize { offset_of!(CpuContext, mem_read32) }
+    #[inline] pub const fn mem_read64() -> usize { offset_of!(CpuContext, mem_read64) }
+    #[inline] pub const fn mem_write8 () -> usize { offset_of!(CpuContext, mem_write8) }
+    #[inline] pub const fn mem_write16() -> usize { offset_of!(CpuContext, mem_write16) }
+    #[inline] pub const fn mem_write32() -> usize { offset_of!(CpuContext, mem_write32) }
+    #[inline] pub const fn mem_write64() -> usize { offset_of!(CpuContext, mem_write64) }
     #[inline] pub const fn fpcr() -> usize { offset_of!(CpuContext, fpcr) }
     #[inline] pub const fn fpsr() -> usize { offset_of!(CpuContext, fpsr) }
 }

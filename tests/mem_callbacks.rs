@@ -25,37 +25,24 @@ fn mem_write(addr: u64, value: u64, bytes: usize) {
     m[off..off + bytes].copy_from_slice(&value.to_le_bytes()[..bytes]);
 }
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rustarmic_mem_read8(_: u64, addr: u64, _: u64, _: *mut CpuContext) -> u8 {
-    mem_read(addr, 1) as u8
-}
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rustarmic_mem_read16(_: u64, addr: u64, _: u64, _: *mut CpuContext) -> u16 {
-    mem_read(addr, 2) as u16
-}
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rustarmic_mem_read32(_: u64, addr: u64, _: u64, _: *mut CpuContext) -> u32 {
-    mem_read(addr, 4) as u32
-}
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rustarmic_mem_read64(_: u64, addr: u64, _: u64, _: *mut CpuContext) -> u64 {
-    mem_read(addr, 8)
-}
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rustarmic_mem_write8(_: u64, addr: u64, value: u8, _: *mut CpuContext) {
-    mem_write(addr, value as u64, 1)
-}
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rustarmic_mem_write16(_: u64, addr: u64, value: u16, _: *mut CpuContext) {
-    mem_write(addr, value as u64, 2)
-}
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rustarmic_mem_write32(_: u64, addr: u64, value: u32, _: *mut CpuContext) {
-    mem_write(addr, value as u64, 4)
-}
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rustarmic_mem_write64(_: u64, addr: u64, value: u64, _: *mut CpuContext) {
-    mem_write(addr, value, 8)
+unsafe extern "C" fn hk_read8 (_: *mut CpuContext, addr: u64) -> u8  { mem_read(addr, 1) as u8 }
+unsafe extern "C" fn hk_read16(_: *mut CpuContext, addr: u64) -> u16 { mem_read(addr, 2) as u16 }
+unsafe extern "C" fn hk_read32(_: *mut CpuContext, addr: u64) -> u32 { mem_read(addr, 4) as u32 }
+unsafe extern "C" fn hk_read64(_: *mut CpuContext, addr: u64) -> u64 { mem_read(addr, 8) }
+unsafe extern "C" fn hk_write8 (_: *mut CpuContext, addr: u64, v: u8)  { mem_write(addr, v as u64, 1) }
+unsafe extern "C" fn hk_write16(_: *mut CpuContext, addr: u64, v: u16) { mem_write(addr, v as u64, 2) }
+unsafe extern "C" fn hk_write32(_: *mut CpuContext, addr: u64, v: u32) { mem_write(addr, v as u64, 4) }
+unsafe extern "C" fn hk_write64(_: *mut CpuContext, addr: u64, v: u64) { mem_write(addr, v,        8) }
+
+fn install_hooks(ctx: &mut CpuContext) {
+    ctx.mem_read8  = hk_read8;
+    ctx.mem_read16 = hk_read16;
+    ctx.mem_read32 = hk_read32;
+    ctx.mem_read64 = hk_read64;
+    ctx.mem_write8  = hk_write8;
+    ctx.mem_write16 = hk_write16;
+    ctx.mem_write32 = hk_write32;
+    ctx.mem_write64 = hk_write64;
 }
 
 fn build_code(words: &[u32]) -> Vec<u8> {
@@ -76,6 +63,7 @@ impl Memory for CodeMem {
 }
 
 fn run(code: Vec<u8>, ctx: &mut CpuContext) -> ExitReason {
+    install_hooks(ctx);
     let mut mem = CodeMem { bytes: code, base: CODE_BASE };
     let mut jit = Jit::new(JitConfig::default()).expect("jit init");
     jit.run(ctx, &mut mem).unwrap_or(ExitReason::Stopped)
@@ -104,6 +92,7 @@ fn ldxr_stxr_success_then_self_fail() {
     ]);
 
     let mut ctx = CpuContext::default();
+    install_hooks(&mut ctx);
     ctx.pc = CODE_BASE;
     ctx.x[0] = DATA_BASE + 0x200;
     let mut mem = CodeMem { bytes: code, base: CODE_BASE };
@@ -135,6 +124,7 @@ fn clrex_clears_reservation_so_stxr_fails() {
         0xD4200000, // brk #0
     ]);
     let mut ctx = CpuContext::default();
+    install_hooks(&mut ctx);
     ctx.pc = CODE_BASE;
     ctx.x[0] = DATA_BASE + 0x300;
     let mut mem = CodeMem { bytes: code, base: CODE_BASE };
