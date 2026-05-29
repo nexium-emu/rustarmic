@@ -48,11 +48,7 @@ unicorn = ["dep:unicorn-engine"]
 tracing = ["dep:log"]
 
 [profile.release]
-opt-level   = 3
-lto         = "fat"
-codegen-units = 1
-panic       = "abort"
-debug       = 1
+panic = "abort"
 
 [[test]]
 name = "unicorn_diff"
