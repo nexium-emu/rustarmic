@@ -177,9 +177,12 @@ pub fn linear_scan(block: &Block, ranges: &[LiveRange], pool: &[u8]) -> Allocati
     let mut free: Vec<u8> = pool.iter().copied().rev().collect();
     // Bitmask of XMM register IDs currently free in the spill pool. Bit `r`
     // set ⇔ XMM `r` is available. Built by OR-ing one bit per SPILL_XMMS
-    // entry, so the bit index matches the actual register number.
-    let mut xmm_free: u16 = SPILL_XMMS.iter().fold(0u16, |a, &r| a | (1u16 << r));
-    let mut used_xmms: u16 = 0;
+    // entry, so the bit index matches the actual register number. `spill_mask`
+    // is the immutable initial value, kept around so the final `used_xmms`
+    // can be recovered as `spill_mask & !xmm_free` — the bits that started
+    // free but are not free now.
+    let spill_mask: u16 = SPILL_XMMS.iter().fold(0u16, |a, &r| a | (1u16 << r));
+    let mut xmm_free: u16 = spill_mask;
     let mut active: Vec<(u32, u8, usize)> = Vec::new();
     // 128-bit values that own an XMM. Recycled on end-of-life back to xmm_free.
     // Scalar values that were spilled to an XMM are NOT tracked here — they
@@ -188,11 +191,10 @@ pub fn linear_scan(block: &Block, ranges: &[LiveRange], pool: &[u8]) -> Allocati
 
     // Lambda that allocates a spill slot, preferring an XMM register. Picks
     // the lowest-numbered free XMM (matching the old `Vec.pop` semantic).
-    let take_spill = |spill_cursor: &mut i32, xmm_free: &mut u16, used_xmms: &mut u16| -> Loc {
+    let take_spill = |spill_cursor: &mut i32, xmm_free: &mut u16| -> Loc {
         if *xmm_free != 0 {
             let x = xmm_free.trailing_zeros() as u8;
-            *xmm_free  &= !(1u16 << x);
-            *used_xmms |=   1u16 << x;
+            *xmm_free &= !(1u16 << x);
             Loc::Xmm(x)
         } else {
             Loc::Spill(alloc_spill_slot(spill_cursor))
@@ -245,8 +247,7 @@ pub fn linear_scan(block: &Block, ranges: &[LiveRange], pool: &[u8]) -> Allocati
         if block.code[vr_idx].ty == Ty::U128 {
             locs[vr_idx] = if xmm_free != 0 {
                 let x = xmm_free.trailing_zeros() as u8;
-                xmm_free  &= !(1u16 << x);
-                used_xmms |=   1u16 << x;
+                xmm_free &= !(1u16 << x);
                 xmm_active.push((end, x, vr_idx));
                 Loc::Xmm(x)
             } else {
@@ -287,7 +288,7 @@ pub fn linear_scan(block: &Block, ranges: &[LiveRange], pool: &[u8]) -> Allocati
             locs[vr_idx] = Loc::Reg(reg);
             active.push((end, reg, vr_idx));
         } else if active.is_empty() {
-            locs[vr_idx] = take_spill(&mut spill_cursor, &mut xmm_free, &mut used_xmms);
+            locs[vr_idx] = take_spill(&mut spill_cursor, &mut xmm_free);
         } else {
             let candidate = active
                 .iter()
@@ -297,15 +298,15 @@ pub fn linear_scan(block: &Block, ranges: &[LiveRange], pool: &[u8]) -> Allocati
 
             if let Some((spill_pos, &(victim_end, victim_reg, victim_vr))) = candidate {
                 if victim_end > end {
-                    let spilled = take_spill(&mut spill_cursor, &mut xmm_free, &mut used_xmms);
+                    let spilled = take_spill(&mut spill_cursor, &mut xmm_free);
                     locs[victim_vr] = spilled;
                     locs[vr_idx]    = Loc::Reg(victim_reg);
                     active[spill_pos] = (end, victim_reg, vr_idx);
                 } else {
-                    locs[vr_idx] = take_spill(&mut spill_cursor, &mut xmm_free, &mut used_xmms);
+                    locs[vr_idx] = take_spill(&mut spill_cursor, &mut xmm_free);
                 }
             } else {
-                locs[vr_idx] = take_spill(&mut spill_cursor, &mut xmm_free, &mut used_xmms);
+                locs[vr_idx] = take_spill(&mut spill_cursor, &mut xmm_free);
             }
         }
     }
@@ -317,7 +318,10 @@ pub fn linear_scan(block: &Block, ranges: &[LiveRange], pool: &[u8]) -> Allocati
     Allocation {
         locs,
         spill_bytes: spill_cursor - SAVED_SIZE,
-        used_xmms,
+        // Liz's b4aacc5 semantic restored: used = bits that started free in
+        // the pool but aren't free now. The `& spill_mask` keeps out-of-pool
+        // bits (XMM0..5 on Windows, XMM0..15 on SysV) from leaking in.
+        used_xmms: spill_mask & !xmm_free,
     }
 }
 
@@ -514,10 +518,13 @@ mod tests {
 
     #[test]
     fn u128_values_get_xmm_and_recycle_on_death() {
+        // Non-overlapping 128-bit lifetimes. On platforms with an XMM spill
+        // pool (Windows) both should reuse the SAME XMM. On SysV (FreeBSD,
+        // Linux, macOS) the pool is empty by safety policy — every XMM is
+        // caller-saved and would be clobbered across memory-hook callbacks —
+        // so each U128 lands in a fresh 16-byte-aligned stack slot instead.
         let mut b = fresh_block();
         let mut em = IrEmitter::new(&mut b, 0x1000);
-        // Two non-overlapping 128-bit lifetimes — both should land in the SAME
-        // XMM if the allocator recycles on death.
         let q0 = em.get_v_q(0);
         em.set_v_q(1, q0);
         let q2 = em.get_v_q(2);
@@ -528,16 +535,29 @@ mod tests {
 
         let loc_a = alloc.loc(q0);
         let loc_b = alloc.loc(q2);
-        assert!(matches!(loc_a, Loc::Xmm(_)), "first u128 should be Xmm, got {loc_a:?}");
-        assert!(matches!(loc_b, Loc::Xmm(_)), "second u128 should be Xmm, got {loc_b:?}");
+
         if !SPILL_XMMS.is_empty() {
+            assert!(matches!(loc_a, Loc::Xmm(_)), "first u128 should be Xmm, got {loc_a:?}");
+            assert!(matches!(loc_b, Loc::Xmm(_)), "second u128 should be Xmm, got {loc_b:?}");
             assert_eq!(loc_a, loc_b, "non-overlapping u128 ranges should reuse the same XMM");
+        } else {
+            // SysV: both go to Spill slots; stack spills don't recycle, so
+            // each U128 gets a distinct slot. Both must still be 16-byte
+            // aligned because U128 stores require it.
+            let (Loc::Spill(off_a), Loc::Spill(off_b)) = (loc_a, loc_b) else {
+                panic!("on SysV both u128 values must be Spill; got {loc_a:?} / {loc_b:?}");
+            };
+            assert_eq!(off_a % 16, 0, "first u128 spill slot must be 16-byte aligned (off={off_a})");
+            assert_eq!(off_b % 16, 0, "second u128 spill slot must be 16-byte aligned (off={off_b})");
+            assert_ne!(off_a, off_b, "fresh u128 spill slots are not recycled");
         }
     }
 
     #[test]
     fn overlapping_u128_values_take_different_xmms() {
-        if SPILL_XMMS.len() < 2 { return; } // platform without XMM pool
+        // Overlapping lifetimes can NEVER share a location, regardless of
+        // platform. On Windows both go to distinct XMMs; on SysV both go to
+        // distinct (16-byte-aligned) stack slots.
         let mut b = fresh_block();
         let mut em = IrEmitter::new(&mut b, 0x1000);
         let a = em.get_v_q(0);
@@ -547,7 +567,15 @@ mod tests {
 
         let ranges = compute_live_ranges(&b);
         let alloc = linear_scan(&b, &ranges, ALLOCATABLE_GPRS);
-        assert_ne!(alloc.loc(a), alloc.loc(c));
+        let loc_a = alloc.loc(a);
+        let loc_c = alloc.loc(c);
+        assert_ne!(loc_a, loc_c, "overlapping u128 lifetimes must not share a slot");
+        if SPILL_XMMS.is_empty() {
+            assert!(matches!(loc_a, Loc::Spill(off) if off % 16 == 0),
+                    "SysV overlapping u128 must be aligned Spill, got {loc_a:?}");
+            assert!(matches!(loc_c, Loc::Spill(off) if off % 16 == 0),
+                    "SysV overlapping u128 must be aligned Spill, got {loc_c:?}");
+        }
     }
 
     #[test]
