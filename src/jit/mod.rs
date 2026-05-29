@@ -84,14 +84,15 @@ impl Jit {
                 self.block.use_fastmem = self.config.use_fastmem;
                 let emitted = crate::backend::emit_block(&self.block)?;
                 #[cfg(feature = "tracing")]
-                log::trace!(
-                    target: "rustarmic::jit",
-                    "compile pc={:#x} insns={} ir_live={} host_bytes={}",
-                    pc,
-                    self.block.cycles,
-                    self.block.iter_live().count(),
-                    emitted.code.len(),
-                );
+                {
+                    let insns = self.block.cycles;
+                    let ir_live = self.block.iter_live().count();
+                    let host_bytes = emitted.code.len();
+                    log::trace!(
+                        target: "rustarmic::jit",
+                        "compile pc={pc:#x} insns={insns} ir_live={ir_live} host_bytes={host_bytes}",
+                    );
+                }
                 self.cache.install(pc, &emitted.code, &emitted.chains, emitted.body_offset)?
             };
 
@@ -103,9 +104,7 @@ impl Jit {
             #[cfg(feature = "tracing")]
             log::trace!(
                 target: "rustarmic::jit",
-                "exit pc={:#x} next={:#x}",
-                pc,
-                next_pc,
+                "exit pc={pc:#x} next={next_pc:#x}",
             );
 
             if (next_pc >> 60) == 0xE {
