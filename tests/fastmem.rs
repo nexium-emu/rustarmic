@@ -40,17 +40,18 @@ static FALLBACK_READS:  AtomicU64 = AtomicU64::new(0);
 static FALLBACK_WRITES: AtomicU64 = AtomicU64::new(0);
 
 // Slow-path handlers — should be called ONLY when fastmem misses (mem_size
-// = 0, out-of-range VA, or fastmem disabled). Returns vary by size so the
-// tests can prove the slow path actually ran for each width.
-unsafe extern "C" fn hk_read(_: *mut CpuContext, _addr: u64, size: u8) -> u64 {
+// = 0, out-of-range VA, or fastmem disabled). The fake "read" values are
+// written into ctx.io_value where the JIT picks them up.
+unsafe extern "C" fn hk_read(ctx: *mut CpuContext, _addr: u64, size: u8) {
     FALLBACK_READS.fetch_add(1, Ordering::Relaxed);
-    match size {
+    let lo: u64 = match size {
         4 => 0xFEEDFACE,
         8 => 0xCAFE_BABE_DEAD_BEEF,
         _ => 0,
-    }
+    };
+    unsafe { (*ctx).io_value = [lo, 0]; }
 }
-unsafe extern "C" fn hk_write(_: *mut CpuContext, _addr: u64, _size: u8, _v: u64) {
+unsafe extern "C" fn hk_write(_ctx: *mut CpuContext, _addr: u64, _size: u8) {
     FALLBACK_WRITES.fetch_add(1, Ordering::Relaxed);
 }
 

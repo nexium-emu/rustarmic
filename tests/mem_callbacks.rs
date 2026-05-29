@@ -25,11 +25,27 @@ fn mem_write(addr: u64, value: u64, bytes: usize) {
     m[off..off + bytes].copy_from_slice(&value.to_le_bytes()[..bytes]);
 }
 
-unsafe extern "C" fn hk_read(_: *mut CpuContext, addr: u64, size: u8) -> u64 {
-    mem_read(addr, size as usize)
+unsafe extern "C" fn hk_read(ctx: *mut CpuContext, addr: u64, size: u8) {
+    let n = size as usize;
+    let m = MEM.lock().unwrap();
+    let off = (addr - DATA_BASE) as usize;
+    let mut buf = [0u8; 16];
+    if off + n <= m.len() {
+        buf[..n].copy_from_slice(&m[off..off + n]);
+    }
+    let lo = u64::from_le_bytes(buf[..8].try_into().unwrap());
+    let hi = u64::from_le_bytes(buf[8..].try_into().unwrap());
+    unsafe { (*ctx).io_value = [lo, hi]; }
 }
-unsafe extern "C" fn hk_write(_: *mut CpuContext, addr: u64, size: u8, value: u64) {
-    mem_write(addr, value, size as usize)
+unsafe extern "C" fn hk_write(ctx: *mut CpuContext, addr: u64, size: u8) {
+    let n = size as usize;
+    let io = unsafe { (*ctx).io_value };
+    let mut buf = [0u8; 16];
+    buf[..8].copy_from_slice(&io[0].to_le_bytes());
+    buf[8..].copy_from_slice(&io[1].to_le_bytes());
+    let mut m = MEM.lock().unwrap();
+    let off = (addr - DATA_BASE) as usize;
+    m[off..off + n].copy_from_slice(&buf[..n]);
 }
 
 fn install_hooks(ctx: &mut CpuContext) {

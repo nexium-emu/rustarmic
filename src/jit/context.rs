@@ -1,5 +1,16 @@
 use crate::arch::{NUM_GPRS, NUM_VREGS};
 
+/// Memory-hook function pointer types. Single hook each for read/write, no
+/// value argument — the value travels via `CpuContext.io_value` instead:
+/// for reads the hook writes its result there, for writes the JIT stages
+/// the value there before the call. This sidesteps the cross-platform XMM
+/// argument-passing problem (vectorcall is nightly-only on stable Rust;
+/// sysv64-on-Windows would trash callee-saved xmm6-15 and break the
+/// regalloc's XMM spill pool). The cost is one extra mov per slow-path
+/// access, which is dominated by the fastmem fast path in M1.5.
+pub type MemReadFn  = unsafe extern "C" fn(*mut CpuContext, addr: u64, size: u8);
+pub type MemWriteFn = unsafe extern "C" fn(*mut CpuContext, addr: u64, size: u8);
+
 #[repr(C, align(64))]
 pub struct CpuContext {
     pub x: [u64; NUM_GPRS],
@@ -29,16 +40,20 @@ pub struct CpuContext {
     /// `cntfrq_el0`); embedders that care about accurate scaling should
     /// install a callback that derives the value from their host clock.
     pub read_cntpct: unsafe extern "C" fn(*mut CpuContext) -> u64,
-    /// Guest memory load hook. Called by emitted code for any scalar guest
-    /// load. `size` is the byte count (1, 2, 4, or 8). Result is returned in
-    /// `u64`, zero-extended for smaller widths. 128-bit vector loads are
-    /// decomposed in the frontend into two 64-bit halves, so this signature
-    /// covers every memory access the JIT can issue. Default panics —
-    /// embedders MUST install a real handler before running data-bearing code.
-    pub mem_read:  unsafe extern "C" fn(*mut CpuContext, addr: u64, size: u8) -> u64,
-    /// Guest memory store hook. `size` is the byte count, `value` is
-    /// zero-extended for widths < 8. Default panics.
-    pub mem_write: unsafe extern "C" fn(*mut CpuContext, addr: u64, size: u8, value: u64),
+    /// Guest memory load hook. Called by emitted code for every guest load
+    /// (scalar OR vector). `size` is the byte count (1, 2, 4, 8, or 16).
+    /// The hook MUST write the loaded value into `self.io_value` (low `size`
+    /// bytes; high bytes should be zero for sub-128-bit reads). Default panics
+    /// — embedders MUST install a real handler before running data-bearing code.
+    pub mem_read:  MemReadFn,
+    /// Guest memory store hook. The JIT stages the value in `self.io_value`
+    /// (low `size` bytes) before the call. Default panics.
+    pub mem_write: MemWriteFn,
+    /// 16-byte I/O buffer used to carry the value through every mem-hook
+    /// call. `repr(C, align(16))` is inherited from CpuContext, so the
+    /// emitter can use `movdqa` against `[CTX_REG + io_value_off]` for the
+    /// 128-bit cases.
+    pub io_value: [u64; 2],
     pub fpcr: u32,
     pub fpsr: u32,
     pub nzcv: u8,
@@ -55,10 +70,10 @@ unsafe extern "C" fn default_read_cntpct(_ctx: *mut CpuContext) -> u64 {
     { 0 }
 }
 
-unsafe extern "C" fn default_mem_read(_: *mut CpuContext, addr: u64, size: u8) -> u64 {
+unsafe extern "C" fn default_mem_read(_: *mut CpuContext, addr: u64, size: u8) {
     panic!("rustarmic: CpuContext.mem_read not installed (addr={:#x}, size={})", addr, size)
 }
-unsafe extern "C" fn default_mem_write(_: *mut CpuContext, addr: u64, size: u8, _: u64) {
+unsafe extern "C" fn default_mem_write(_: *mut CpuContext, addr: u64, size: u8) {
     panic!("rustarmic: CpuContext.mem_write not installed (addr={:#x}, size={})", addr, size)
 }
 
@@ -79,6 +94,7 @@ impl Default for CpuContext {
             read_cntpct: default_read_cntpct,
             mem_read:  default_mem_read,
             mem_write: default_mem_write,
+            io_value:  [0; 2],
             fpcr: 0,
             fpsr: 0,
             nzcv: 0,
@@ -112,6 +128,7 @@ pub mod cpu_offsets {
     #[inline] pub const fn read_cntpct() -> usize { offset_of!(CpuContext, read_cntpct) }
     #[inline] pub const fn mem_read()  -> usize { offset_of!(CpuContext, mem_read) }
     #[inline] pub const fn mem_write() -> usize { offset_of!(CpuContext, mem_write) }
+    #[inline] pub const fn io_value()  -> usize { offset_of!(CpuContext, io_value) }
     #[inline] pub const fn fpcr() -> usize { offset_of!(CpuContext, fpcr) }
     #[inline] pub const fn fpsr() -> usize { offset_of!(CpuContext, fpsr) }
 }

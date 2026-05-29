@@ -5,7 +5,7 @@ use crate::backend::abi::{
     ARG0_REG, ARG3_REG, CALL_PRECALL_SUB, CTX_REG, SCRATCH0, SCRATCH1, SCRATCH2, SCRATCH3,
 };
 use crate::backend::operand::{
-    get_xmm_q, gpr8, gpr16, gpr32, gpr64, into_xmm_q, load32, load64, load_xmm_d, load_xmm_s, store32,
+    get_xmm_q, gpr8, gpr16, gpr32, gpr64, into_xmm_q, load32, load64, load_xmm_d, load_xmm_q, load_xmm_s, store32,
     store64, store_xmm_d, store_xmm_q, store_xmm_s, working_xmm_for,
 };
 use crate::backend::regalloc::{Allocation, Loc};
@@ -95,8 +95,8 @@ fn dispatch_op(op: Op) -> Option<EmitFn> {
 
         AddsFlags32 | AddsFlags64 | SubsFlags32 | SubsFlags64 => emit_op_flagged_addsub,
 
-        Load8 | Load16 | Load32 | Load64 => emit_op_load,
-        Store8 | Store16 | Store32 | Store64 => emit_op_store,
+        Load8 | Load16 | Load32 | Load64 | Load128 => emit_op_load,
+        Store8 | Store16 | Store32 | Store64 | Store128 => emit_op_store,
 
         LoadEx8 | LoadEx16 | LoadEx32 | LoadEx64 => emit_op_load_ex,
         StoreEx8 | StoreEx16 | StoreEx32 | StoreEx64 => emit_op_store_ex,
@@ -461,11 +461,15 @@ fn emit_op_flagged_addsub(asm: &mut CodeAssembler, block: &Block, alloc: &Alloca
 // ── Memory adapters ──────────────────────────────────────────────────────
 fn emit_op_load(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
     let a = block.code[idx];
-    emit_load(asm, alloc, a, dst_of(&a, idx), a.op.size_bytes(), block.use_fastmem)
+    // Load128's encoding (0x404) collides with the size-in-low-2-bits family
+    // convention, so size_bytes() returns 1 — special-case 16 here.
+    let bytes = if matches!(a.op, Op::Load128) { 16 } else { a.op.size_bytes() };
+    emit_load(asm, alloc, a, dst_of(&a, idx), bytes, block.use_fastmem)
 }
 fn emit_op_store(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
     let a = block.code[idx];
-    emit_store(asm, alloc, a, a.op.size_bytes(), block.use_fastmem)
+    let bytes = if matches!(a.op, Op::Store128) { 16 } else { a.op.size_bytes() };
+    emit_store(asm, alloc, a, bytes, block.use_fastmem)
 }
 fn emit_op_load_ex(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
     let a = block.code[idx];
@@ -2465,22 +2469,24 @@ fn emit_load(
     use_fastmem: bool,
 ) -> Result<()> {
     // ABI for the slow path: arg0 = ctx, arg1 = addr (SCRATCH1), arg2 = size
-    // (SCRATCH3). Result u64 lands in rax/eax; the caller masks to width via
-    // store32/store64.
+    // (SCRATCH3). The hook writes the loaded value into CpuContext.io_value;
+    // the slow path then loads it from there into eax/rax (≤8 byte) or xmm0
+    // (16 byte) to converge with the fast path's output location.
     load64(asm, alloc, a.args[0], SCRATCH1)?;
 
     if use_fastmem {
         let mut lbl_slow = asm.create_label();
         let mut lbl_done = asm.create_label();
         emit_fastmem_bounds_check(asm, bytes, lbl_slow)?;
-        // Fast path: SCRATCH0 = mem_base + offset, then sized load into rax.
+        // Fast path: SCRATCH0 = mem_base + offset, then sized load.
         asm.mov(SCRATCH0, qword_ptr(CTX_REG + cpu_offsets::mem_base() as i32))?;
         asm.add(SCRATCH0, SCRATCH2)?;
         match bytes {
-            1 => asm.movzx(eax, byte_ptr(SCRATCH0))?,
-            2 => asm.movzx(eax, word_ptr(SCRATCH0))?,
-            4 => asm.mov(eax, dword_ptr(SCRATCH0))?,
-            8 => asm.mov(rax, qword_ptr(SCRATCH0))?,
+            1  => asm.movzx(eax,   byte_ptr (SCRATCH0))?,
+            2  => asm.movzx(eax,   word_ptr (SCRATCH0))?,
+            4  => asm.mov  (eax,   dword_ptr(SCRATCH0))?,
+            8  => asm.mov  (rax,   qword_ptr(SCRATCH0))?,
+            16 => asm.movdqu(xmm0, xmmword_ptr(SCRATCH0))?,
             _ => return Err(Error::Backend("unsupported load width".into())),
         }
         asm.jmp(lbl_done)?;
@@ -2495,6 +2501,7 @@ fn emit_load(
         match bytes {
             1 | 2 | 4 => store32(asm, alloc, d, eax)?,
             8         => store64(asm, alloc, d, rax)?,
+            16        => store_xmm_q(asm, alloc, d, xmm0)?,
             _ => unreachable!(),
         }
     }
@@ -2508,15 +2515,14 @@ fn emit_store(
     bytes: u32,
     use_fastmem: bool,
 ) -> Result<()> {
-    // ABI for the slow path: arg0 = ctx, arg1 = addr (SCRATCH1), arg2 = size
-    // (SCRATCH3), arg3 = value (ARG3_REG). Value is staged in ARG3_REG so
-    // both the fast path (which uses its sub-register to write the backing
-    // store directly) and the slow path (which passes it to the fn-ptr) can
-    // consume it without an extra copy.
-    if bytes == 8 {
-        load64(asm, alloc, a.args[1], ARG3_REG)?;
-    } else {
-        load32(asm, alloc, a.args[1], gpr32(arg3_reg_id()))?;
+    // Value is staged: scalar widths in ARG3_REG (its sub-register feeds the
+    // fast-path memory store directly and the slow path copies it into
+    // CpuContext.io_value); the 16-byte width lives in xmm0 (movdqu to/from
+    // mem_base on the fast path, movdqu into io_value on the slow path).
+    match bytes {
+        16 => load_xmm_q(asm, alloc, a.args[1], xmm0)?,
+        8  => load64(asm, alloc, a.args[1], ARG3_REG)?,
+        _  => load32(asm, alloc, a.args[1], gpr32(arg3_reg_id()))?,
     }
     load64(asm, alloc, a.args[0], SCRATCH1)?;
 
@@ -2524,14 +2530,15 @@ fn emit_store(
         let mut lbl_slow = asm.create_label();
         let mut lbl_done = asm.create_label();
         emit_fastmem_bounds_check(asm, bytes, lbl_slow)?;
-        // Fast path: SCRATCH0 = mem_base + offset, then sized store from value reg.
+        // Fast path: SCRATCH0 = mem_base + offset, then sized store.
         asm.mov(SCRATCH0, qword_ptr(CTX_REG + cpu_offsets::mem_base() as i32))?;
         asm.add(SCRATCH0, SCRATCH2)?;
         match bytes {
-            1 => asm.mov(byte_ptr (SCRATCH0), gpr8 (arg3_reg_id()))?,
-            2 => asm.mov(word_ptr (SCRATCH0), gpr16(arg3_reg_id()))?,
-            4 => asm.mov(dword_ptr(SCRATCH0), gpr32(arg3_reg_id()))?,
-            8 => asm.mov(qword_ptr(SCRATCH0), ARG3_REG)?,
+            1  => asm.mov   (byte_ptr   (SCRATCH0), gpr8 (arg3_reg_id()))?,
+            2  => asm.mov   (word_ptr   (SCRATCH0), gpr16(arg3_reg_id()))?,
+            4  => asm.mov   (dword_ptr  (SCRATCH0), gpr32(arg3_reg_id()))?,
+            8  => asm.mov   (qword_ptr  (SCRATCH0), ARG3_REG)?,
+            16 => asm.movdqu(xmmword_ptr(SCRATCH0), xmm0)?,
             _ => return Err(Error::Backend("unsupported store width".into())),
         }
         asm.jmp(lbl_done)?;
@@ -2564,7 +2571,7 @@ fn emit_fastmem_bounds_check(
 }
 
 fn emit_load_slow_path(asm: &mut CodeAssembler, bytes: u32) -> Result<()> {
-    if !matches!(bytes, 1 | 2 | 4 | 8) {
+    if !matches!(bytes, 1 | 2 | 4 | 8 | 16) {
         return Err(Error::Backend("unsupported load width".into()));
     }
     asm.mov(SCRATCH3, bytes as i64)?;      // arg2 = size
@@ -2572,14 +2579,37 @@ fn emit_load_slow_path(asm: &mut CodeAssembler, bytes: u32) -> Result<()> {
     asm.sub(rsp, CALL_PRECALL_SUB)?;
     asm.call(qword_ptr(CTX_REG + cpu_offsets::mem_read() as i32))?;
     asm.add(rsp, CALL_PRECALL_SUB)?;
+    // Pull the value the hook wrote to io_value into the convergence
+    // register (eax/rax for scalar, xmm0 for 16) so the post-merge store-to-dst
+    // doesn't have to care which path ran.
+    let io_off = cpu_offsets::io_value() as i32;
+    match bytes {
+        1  => asm.movzx(eax,   byte_ptr (CTX_REG + io_off))?,
+        2  => asm.movzx(eax,   word_ptr (CTX_REG + io_off))?,
+        4  => asm.mov  (eax,   dword_ptr(CTX_REG + io_off))?,
+        8  => asm.mov  (rax,   qword_ptr(CTX_REG + io_off))?,
+        16 => asm.movdqu(xmm0, xmmword_ptr(CTX_REG + io_off))?,
+        _ => unreachable!(),
+    }
     Ok(())
 }
 
 fn emit_store_slow_path(asm: &mut CodeAssembler, bytes: u32) -> Result<()> {
-    if !matches!(bytes, 1 | 2 | 4 | 8) {
+    if !matches!(bytes, 1 | 2 | 4 | 8 | 16) {
         return Err(Error::Backend("unsupported store width".into()));
     }
-    asm.mov(SCRATCH3, bytes as i64)?;      // arg2 = size; addr already in SCRATCH1, value already in ARG3_REG
+    // Stage the value into io_value (scalar widths from ARG3_REG's
+    // sub-register, 16-byte from xmm0) so the hook can read it from there.
+    let io_off = cpu_offsets::io_value() as i32;
+    match bytes {
+        1  => asm.mov   (byte_ptr   (CTX_REG + io_off), gpr8 (arg3_reg_id()))?,
+        2  => asm.mov   (word_ptr   (CTX_REG + io_off), gpr16(arg3_reg_id()))?,
+        4  => asm.mov   (dword_ptr  (CTX_REG + io_off), gpr32(arg3_reg_id()))?,
+        8  => asm.mov   (qword_ptr  (CTX_REG + io_off), ARG3_REG)?,
+        16 => asm.movdqu(xmmword_ptr(CTX_REG + io_off), xmm0)?,
+        _ => unreachable!(),
+    }
+    asm.mov(SCRATCH3, bytes as i64)?;      // arg2 = size
     asm.mov(ARG0_REG, CTX_REG)?;
     asm.sub(rsp, CALL_PRECALL_SUB)?;
     asm.call(qword_ptr(CTX_REG + cpu_offsets::mem_write() as i32))?;
@@ -2597,6 +2627,16 @@ fn emit_load_ex(asm: &mut CodeAssembler, alloc: &Allocation, a: Armlet, dst: Opt
     asm.sub(rsp, CALL_PRECALL_SUB)?;
     asm.call(qword_ptr(CTX_REG + cpu_offsets::mem_read() as i32))?;
     asm.add(rsp, CALL_PRECALL_SUB)?;
+    // Hook wrote the loaded value to io_value; pull it into eax/rax for the
+    // store-to-dst that follows.
+    let io_off = cpu_offsets::io_value() as i32;
+    match bytes {
+        1 => asm.movzx(eax, byte_ptr (CTX_REG + io_off))?,
+        2 => asm.movzx(eax, word_ptr (CTX_REG + io_off))?,
+        4 => asm.mov  (eax, dword_ptr(CTX_REG + io_off))?,
+        8 => asm.mov  (rax, qword_ptr(CTX_REG + io_off))?,
+        _ => unreachable!(),
+    }
     if let Some(d) = dst {
         match bytes {
             1 | 2 | 4 => store32(asm, alloc, d, eax)?,
@@ -2635,6 +2675,15 @@ fn emit_store_ex(
         load32(asm, alloc, a.args[1], gpr32(arg3_reg_id()))?;
     }
     // SCRATCH1 still holds `addr` from the exclusive-monitor compare above.
+    // Stage value into io_value for the hook to pick up.
+    let io_off = cpu_offsets::io_value() as i32;
+    match bytes {
+        1 => asm.mov(byte_ptr (CTX_REG + io_off), gpr8 (arg3_reg_id()))?,
+        2 => asm.mov(word_ptr (CTX_REG + io_off), gpr16(arg3_reg_id()))?,
+        4 => asm.mov(dword_ptr(CTX_REG + io_off), gpr32(arg3_reg_id()))?,
+        8 => asm.mov(qword_ptr(CTX_REG + io_off), ARG3_REG)?,
+        _ => unreachable!(),
+    }
     asm.mov(SCRATCH3, bytes as i64)?;      // arg2 = size
     asm.mov(ARG0_REG, CTX_REG)?;
     asm.sub(rsp, CALL_PRECALL_SUB)?;
