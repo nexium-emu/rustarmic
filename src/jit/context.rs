@@ -10,6 +10,15 @@ pub struct CpuContext {
     pub mem_base: *mut u8,
     pub tpidr_el0: u64,
     pub tpidrro_el0: u64,
+    /// Guest-visible value of `CNTFRQ_EL0`. Embedder sets this to match its
+    /// time source (Switch hardware: 19_200_000 Hz). The default below is the
+    /// Switch value so libnx homebrew computes sensible nanoseconds.
+    pub cntfrq_el0: u64,
+    /// Called by emitted code on `MRS x, CNTPCT_EL0` / `MRS x, CNTVCT_EL0`.
+    /// The default returns the host TSC (monotonic but rate-mismatched with
+    /// `cntfrq_el0`); embedders that care about accurate scaling should
+    /// install a callback that derives the value from their host clock.
+    pub read_cntpct: unsafe extern "C" fn(*mut CpuContext) -> u64,
     pub fpcr: u32,
     pub fpsr: u32,
     pub nzcv: u8,
@@ -18,6 +27,13 @@ pub struct CpuContext {
 }
 
 unsafe impl Send for CpuContext {}
+
+unsafe extern "C" fn default_read_cntpct(_ctx: *mut CpuContext) -> u64 {
+    #[cfg(target_arch = "x86_64")]
+    unsafe { core::arch::x86_64::_rdtsc() }
+    #[cfg(not(target_arch = "x86_64"))]
+    { 0 }
+}
 
 impl Default for CpuContext {
     fn default() -> Self {
@@ -30,6 +46,8 @@ impl Default for CpuContext {
             mem_base: core::ptr::null_mut(),
             tpidr_el0: 0,
             tpidrro_el0: 0,
+            cntfrq_el0: 19_200_000,
+            read_cntpct: default_read_cntpct,
             fpcr: 0,
             fpsr: 0,
             nzcv: 0,
@@ -57,6 +75,8 @@ pub mod cpu_offsets {
     #[inline] pub const fn exclusive_size() -> usize { offset_of!(CpuContext, exclusive_size) }
     #[inline] pub const fn tpidr_el0() -> usize { offset_of!(CpuContext, tpidr_el0) }
     #[inline] pub const fn tpidrro_el0() -> usize { offset_of!(CpuContext, tpidrro_el0) }
+    #[inline] pub const fn cntfrq_el0() -> usize { offset_of!(CpuContext, cntfrq_el0) }
+    #[inline] pub const fn read_cntpct() -> usize { offset_of!(CpuContext, read_cntpct) }
     #[inline] pub const fn fpcr() -> usize { offset_of!(CpuContext, fpcr) }
     #[inline] pub const fn fpsr() -> usize { offset_of!(CpuContext, fpsr) }
 }

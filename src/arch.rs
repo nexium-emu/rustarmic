@@ -141,6 +141,7 @@ pub mod sysreg {
     pub const MIDR_EL1:    u16 = pack(3, 0, 0,  0, 0);
     pub const MPIDR_EL1:   u16 = pack(3, 0, 0,  0, 5);
     pub const CNTFRQ_EL0:  u16 = pack(3, 3, 14, 0, 0);
+    pub const CNTPCT_EL0:  u16 = pack(3, 3, 14, 0, 1);
     pub const CNTVCT_EL0:  u16 = pack(3, 3, 14, 0, 2);
 }
 

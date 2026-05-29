@@ -2,7 +2,7 @@ use iced_x86::code_asm::*;
 
 use crate::arch::{Cond, NUM_GPRS, ZR_ENCODING};
 use crate::backend::abi::{
-    ARG3_REG, CALL_PRECALL_SUB, CTX_REG, SCRATCH0, SCRATCH1, SCRATCH2, SCRATCH3,
+    ARG0_REG, ARG3_REG, CALL_PRECALL_SUB, CTX_REG, SCRATCH0, SCRATCH1, SCRATCH2, SCRATCH3,
 };
 use crate::backend::operand::{
     get_xmm_q, gpr32, gpr64, into_xmm_q, load32, load64, load_xmm_d, load_xmm_s, store32,
@@ -2878,10 +2878,16 @@ fn emit_mrs(
             asm.mov(SCRATCH0, 0x8000_0000u64 as i64)?;
         }
         sysreg::CNTFRQ_EL0 => {
-            asm.mov(SCRATCH0, 1_000_000_000i64)?;
+            asm.mov(SCRATCH0, qword_ptr(CTX_REG + cpu_offsets::cntfrq_el0() as i32))?;
         }
-        sysreg::CNTVCT_EL0 => {
-            asm.xor(rax, rax)?;
+        sysreg::CNTPCT_EL0 | sysreg::CNTVCT_EL0 => {
+            // Indirect call through CpuContext.read_cntpct. First arg = ctx ptr.
+            // SCRATCH0/RAX holds the return value, which falls through to the
+            // common store64 below.
+            asm.mov(ARG0_REG, CTX_REG)?;
+            asm.sub(rsp, CALL_PRECALL_SUB)?;
+            asm.call(qword_ptr(CTX_REG + cpu_offsets::read_cntpct() as i32))?;
+            asm.add(rsp, CALL_PRECALL_SUB)?;
         }
         _ => return Err(Error::Unsupported {
             pc: 0,
