@@ -2399,31 +2399,29 @@ fn rbit32_gfni(asm: &mut CodeAssembler) -> Result<()> {
 /// `LO_REV_TABLE` (which gives the reversed nibble in the LOW position); the
 /// low nibble is used as an index into `HI_REV_TABLE` (reversed nibble in the
 /// HIGH position); the two are OR-ed. A final `bswap` reverses byte order.
-const RBIT_HI_NIBBLE_MASK:  u64 = 0xF0F0_F0F0_F0F0_F0F0;
-// Tables MUST cover all 16 nibble indices — pshufb reads bytes 0..15 of the
-// table, and a high-nibble index from any input byte can be 0..F regardless
-// of input width. A movq-only load (high qword = 0) was wrong: an index of
-// 0xF looked up table[15] = 0 and zeroed the output for any input with an
-// all-ones nibble.
-const RBIT_HI_REV_TABLE_LO: u64 = 0xE060_A020_C040_8000;
-const RBIT_HI_REV_TABLE_HI: u64 = 0xF070_B030_D050_9010;
-const RBIT_LO_REV_TABLE_LO: u64 = 0x0E06_0A02_0C04_0800;
-const RBIT_LO_REV_TABLE_HI: u64 = 0x0F07_0B03_0D05_0901;
-
-fn load_xmm_u128(asm: &mut CodeAssembler, dst: iced_x86::code_asm::AsmRegisterXmm, lo: u64, hi: u64) -> Result<()> {
-    asm.mov(rcx, lo as i64)?;
-    asm.movq(dst, rcx)?;
-    asm.mov(rcx, hi as i64)?;
-    asm.pinsrq(dst, rcx, 1i32)?;
-    Ok(())
+#[repr(C, align(16))]
+struct RbitConsts {
+    hi_mask:      [u64; 2],
+    hi_rev_table: [u64; 2],
+    lo_rev_table: [u64; 2],
 }
+
+// Static rodata: process-stable address, 16-byte aligned by repr. The JIT
+// fetches the address at emit time via mov+immediate, then addresses each
+// 16-byte slot with a base+disp movdqa — collapsing the previous
+// mov+movq+mov+pinsrq sequence per table to a single movdqa per table.
+static RBIT_CONSTS: RbitConsts = RbitConsts {
+    hi_mask:      [0xF0F0_F0F0_F0F0_F0F0; 2],
+    hi_rev_table: [0xE060_A020_C040_8000, 0xF070_B030_D050_9010],
+    lo_rev_table: [0x0E06_0A02_0C04_0800, 0x0F07_0B03_0D05_0901],
+};
 
 fn rbit64_pshufb(asm: &mut CodeAssembler) -> Result<()> {
     asm.movq(xmm0, rax)?;
-    asm.mov(rcx, RBIT_HI_NIBBLE_MASK as i64)?;
-    asm.movq(xmm1, rcx)?;
-    load_xmm_u128(asm, xmm2, RBIT_HI_REV_TABLE_LO, RBIT_HI_REV_TABLE_HI)?;
-    load_xmm_u128(asm, xmm3, RBIT_LO_REV_TABLE_LO, RBIT_LO_REV_TABLE_HI)?;
+    asm.mov(rcx, &RBIT_CONSTS as *const RbitConsts as i64)?;
+    asm.movdqa(xmm1, xmmword_ptr(rcx))?;
+    asm.movdqa(xmm2, xmmword_ptr(rcx + 16))?;
+    asm.movdqa(xmm3, xmmword_ptr(rcx + 32))?;
     asm.pand(xmm1, xmm0)?;
     asm.pxor(xmm0, xmm1)?;
     asm.psrld(xmm1, 4i32)?;
@@ -2437,10 +2435,10 @@ fn rbit64_pshufb(asm: &mut CodeAssembler) -> Result<()> {
 
 fn rbit32_pshufb(asm: &mut CodeAssembler) -> Result<()> {
     asm.movd(xmm0, eax)?;
-    asm.mov(rcx, RBIT_HI_NIBBLE_MASK as i64)?;
-    asm.movq(xmm1, rcx)?;
-    load_xmm_u128(asm, xmm2, RBIT_HI_REV_TABLE_LO, RBIT_HI_REV_TABLE_HI)?;
-    load_xmm_u128(asm, xmm3, RBIT_LO_REV_TABLE_LO, RBIT_LO_REV_TABLE_HI)?;
+    asm.mov(rcx, &RBIT_CONSTS as *const RbitConsts as i64)?;
+    asm.movdqa(xmm1, xmmword_ptr(rcx))?;
+    asm.movdqa(xmm2, xmmword_ptr(rcx + 16))?;
+    asm.movdqa(xmm3, xmmword_ptr(rcx + 32))?;
     asm.pand(xmm1, xmm0)?;
     asm.pxor(xmm0, xmm1)?;
     asm.psrld(xmm1, 4i32)?;
