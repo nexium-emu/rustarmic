@@ -28,10 +28,6 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
     if n == 0 { return; }
     scratch.resize(n);
 
-    unsafe { core::hint::assert_unchecked(scratch.consts.len() == n) };
-    unsafe { core::hint::assert_unchecked(scratch.uses.len()   == n) };
-    unsafe { core::hint::assert_unchecked(block.code.len()     == n) };
-
     let mut reach_x:    [ValueRef; NUM_GPRS] = [ValueRef::NONE; NUM_GPRS];
     let mut reach_sp:   ValueRef = ValueRef::NONE;
     let mut reach_nzcv: ValueRef = ValueRef::NONE;
