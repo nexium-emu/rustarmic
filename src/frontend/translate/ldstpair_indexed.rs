@@ -13,6 +13,12 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: LDSTPAIR_INDEXED) -> Result<InstS
         LDP_Rt_W_Rt2_W_ADDR_SIMM7_S_S(i)     => (i.0, true,  false),
         STP_Ft_S_S_Ft2_S_S_ADDR_SIMM7_S_S(i) => (i.0, false, true),
         LDP_Ft_S_S_Ft2_S_S_ADDR_SIMM7_S_S(i) => (i.0, true,  true),
+        LDPSW_Rt_X_Rt2_X_ADDR_SIMM7_S_S(i)   => {
+            let raw = i.0;
+            let mode = bits(raw, 23, 3);
+            let idx = if mode == 0b001 { super::ldstpair_off::IdxMode::Post } else { super::ldstpair_off::IdxMode::Pre };
+            return super::ldstpair_off::ldpsw(em, raw, idx);
+        }
         _ => return Err(Error::Unsupported { pc: em.current_pc, opcode: 0 }),
     };
 

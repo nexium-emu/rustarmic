@@ -35,6 +35,34 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: IC_SYSTEM) -> Result<InstStatus> 
             let val = em.get_gpr(rt, RegSize::X);
             em.push(Armlet::new(Op::Msr, Ty::Void).with_args(&[val]).with_imm(sysreg as u64));
         }
+        SYS_UIMM3_OP1_CRn_CRm_UIMM3_OP2_Rt(i) => {
+            let raw = i.0;
+            let op1 = bits(raw, 16, 3);
+            let crn = bits(raw, 12, 4);
+            let crm = bits(raw, 8, 4);
+            let op2 = bits(raw, 5, 3);
+            let rt  = bits(raw, 0, 5) as u8;
+            // DC ZVA: zero one 64-byte block at (Xt & ~63). Other cache/TLB
+            // maintenance variants (DC CVAU/CVAC/CIVAC, IC IVAU, TLBI, ...)
+            // are safe no-ops under our flat memory + no-modeled-cache setup.
+            if (op1, crn, crm, op2) == (3, 7, 4, 1) {
+                let base = em.get_x_or_sp(rt, false);
+                let mask = em.const_u64(!63u64);
+                let aligned = em.and(base, mask, RegSize::X);
+                let zero = em.const_u64(0);
+                for off in (0..64).step_by(8) {
+                    let addr = if off == 0 {
+                        aligned
+                    } else {
+                        let d = em.const_u64(off as u64);
+                        em.add(aligned, d, RegSize::X)
+                    };
+                    em.store(addr, zero, 8);
+                }
+            } else {
+                em.push(Armlet::new(Op::Hint, Ty::Void));
+            }
+        }
         _ => return Err(Error::Unsupported { pc: em.current_pc, opcode: 0 }),
     }
     Ok(InstStatus::Continue)

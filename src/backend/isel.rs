@@ -71,6 +71,8 @@ fn dispatch_op(op: Op) -> Option<EmitFn> {
         Or32  | Or64  => emit_op_or,
         Eor32 | Eor64 => emit_op_xor,
         Mul32 | Mul64 => emit_op_mul,
+        UMulH64       => emit_op_umulh,
+        SMulH64       => emit_op_smulh,
 
         Adc32 | Adc64 => emit_op_adc,
         Sbc32 | Sbc64 => emit_op_sbc,
@@ -380,6 +382,29 @@ adapt_binop!(emit_op_and, BinKind::And);
 adapt_binop!(emit_op_or,  BinKind::Or);
 adapt_binop!(emit_op_xor, BinKind::Xor);
 adapt_binop!(emit_op_mul, BinKind::Imul);
+
+fn emit_op_umulh(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    emit_mulh(asm, alloc, a, dst_of(&a, idx), false)
+}
+fn emit_op_smulh(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    let a = block.code[idx];
+    emit_mulh(asm, alloc, a, dst_of(&a, idx), true)
+}
+
+fn emit_mulh(
+    asm: &mut CodeAssembler,
+    alloc: &Allocation,
+    a: Armlet,
+    dst: Option<ValueRef>,
+    signed: bool,
+) -> Result<()> {
+    load64(asm, alloc, a.args[0], rax)?;
+    load64(asm, alloc, a.args[1], rcx)?;
+    if signed { asm.imul(rcx)?; } else { asm.mul(rcx)?; }
+    if let Some(d) = dst { store64(asm, alloc, d, rdx)?; } else { asm.nop()?; }
+    Ok(())
+}
 
 macro_rules! adapt_adc {
     ($name:ident, $subtract:expr) => {
@@ -2258,7 +2283,7 @@ fn emit_div(
         asm.set_label(&mut lbl_zero)?;
         asm.xor(rax, rax)?;
         asm.set_label(&mut lbl_done)?;
-        if let Some(d) = dst { store64(asm, alloc, d, rax)?; }
+        if let Some(d) = dst { store64(asm, alloc, d, rax)?; } else { asm.nop()?; }
     } else {
         load32(asm, alloc, a.args[0], eax)?;
         load32(asm, alloc, a.args[1], ecx)?;
@@ -2281,7 +2306,7 @@ fn emit_div(
         asm.set_label(&mut lbl_zero)?;
         asm.xor(eax, eax)?;
         asm.set_label(&mut lbl_done)?;
-        if let Some(d) = dst { store32(asm, alloc, d, eax)?; }
+        if let Some(d) = dst { store32(asm, alloc, d, eax)?; } else { asm.nop()?; }
     }
     Ok(())
 }

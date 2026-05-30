@@ -7,7 +7,7 @@ use crate::ir::IrEmitter;
 use crate::util::bits::{bit, bits};
 
 #[derive(Clone, Copy)]
-enum Kind { Madd, Msub, Smaddl, Umaddl, Smsubl, Umsubl }
+enum Kind { Madd, Msub, Smaddl, Umaddl, Smsubl, Umsubl, Umulh, Smulh }
 
 pub fn translate(em: &mut IrEmitter<'_>, insn: DP_3SRC) -> Result<InstStatus> {
     use DP_3SRC::*;
@@ -18,6 +18,8 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: DP_3SRC) -> Result<InstStatus> {
         UMADDL_Rd_Rn_Rm_Ra(i) => (i.0, Kind::Umaddl),
         SMSUBL_Rd_Rn_Rm_Ra(i) => (i.0, Kind::Smsubl),
         UMSUBL_Rd_Rn_Rm_Ra(i) => (i.0, Kind::Umsubl),
+        UMULH_Rd_Rn_Rm(i)     => (i.0, Kind::Umulh),
+        SMULH_Rd_Rn_Rm(i)     => (i.0, Kind::Smulh),
         _ => return Err(Error::Unsupported { pc: em.current_pc, opcode: 0 }),
     };
 
@@ -43,6 +45,19 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: DP_3SRC) -> Result<InstStatus> {
                 _ => unreachable!(),
             };
             em.set_gpr(rd, result, size);
+        }
+        Kind::Umulh | Kind::Smulh => {
+            let n = em.get_x(rn);
+            let m = em.get_x(rm);
+            let op = if matches!(kind, Kind::Umulh) {
+                crate::ir::Op::UMulH64
+            } else {
+                crate::ir::Op::SMulH64
+            };
+            let hi = em.push(crate::ir::Armlet::new(op, crate::ir::Ty::U64)
+                .with_args(&[n, m]));
+            em.set_x(rd, hi);
+            let _ = ra;
         }
         Kind::Smaddl | Kind::Umaddl | Kind::Smsubl | Kind::Umsubl => {
             let n = em.get_w(rn);
