@@ -12,9 +12,11 @@ enum Kind {
     CmEq, CmGt, CmGe, CmHi, CmHs,
     Bit, Bif, Bsl,
     Smin, Smax, Umin, Umax,
+    Addp, Smaxp, Sminp, Umaxp, Uminp,
     FAdd, FSub, FMul, FDiv, FMax, FMin,
     FCmEq, FCmGt, FCmGe,
     FMla, FMls,
+    FAddp, FMaxp, FMinp,
 }
 
 pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDSAME) -> Result<InstStatus> {
@@ -40,6 +42,21 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDSAME) -> Result<InstStatus> 
         SMAX_Vd_Vn_Vm(i) => (i.0, Kind::Smax),
         UMIN_Vd_Vn_Vm(i) => (i.0, Kind::Umin),
         UMAX_Vd_Vn_Vm(i) => (i.0, Kind::Umax),
+        ADDP_Vd_Vn_Vm(i) => (i.0, Kind::Addp),
+        SMAXP_Vd_Vn_Vm(i) => (i.0, Kind::Smaxp),
+        SMINP_Vd_Vn_Vm(i) => (i.0, Kind::Sminp),
+        UMAXP_Vd_Vn_Vm(i) => (i.0, Kind::Umaxp),
+        UMINP_Vd_Vn_Vm(i) => (i.0, Kind::Uminp),
+        FADDP_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => (i.0, Kind::FAddp),
+        FADDP_Vd_Vn_Vm(i)                => (i.0, Kind::FAddp),
+        FMAXP_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => (i.0, Kind::FMaxp),
+        FMAXP_Vd_Vn_Vm(i)                => (i.0, Kind::FMaxp),
+        FMINP_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => (i.0, Kind::FMinp),
+        FMINP_Vd_Vn_Vm(i)                => (i.0, Kind::FMinp),
+        FMAXNMP_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => (i.0, Kind::FMaxp),
+        FMAXNMP_Vd_Vn_Vm(i)                => (i.0, Kind::FMaxp),
+        FMINNMP_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => (i.0, Kind::FMinp),
+        FMINNMP_Vd_Vn_Vm(i)                => (i.0, Kind::FMinp),
         FADD_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => (i.0, Kind::FAdd),
         FADD_Vd_Vn_Vm(i)                => (i.0, Kind::FAdd),
         FSUB_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => (i.0, Kind::FSub),
@@ -108,6 +125,33 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDSAME) -> Result<InstStatus> 
                 Kind::Smax => em.vec_smax(vn, vm, size, q),
                 Kind::Umin => em.vec_umin(vn, vm, size, q),
                 Kind::Umax => em.vec_umax(vn, vm, size, q),
+                _ => unreachable!(),
+            }
+        }
+        Kind::Addp | Kind::Smaxp | Kind::Sminp | Kind::Umaxp | Kind::Uminp => {
+            let u1 = em.vec_uzp1(vn, vm, size, q);
+            let u2 = em.vec_uzp2(vn, vm, size, q);
+            match kind {
+                Kind::Addp  => em.vec_add(u1, u2, size, q),
+                Kind::Smaxp => em.vec_smax(u1, u2, size, q),
+                Kind::Sminp => em.vec_smin(u1, u2, size, q),
+                Kind::Umaxp => em.vec_umax(u1, u2, size, q),
+                Kind::Uminp => em.vec_umin(u1, u2, size, q),
+                _ => unreachable!(),
+            }
+        }
+        Kind::FAddp | Kind::FMaxp | Kind::FMinp => {
+            let double = bit(raw, 22) == 1;
+            if double && !q {
+                return Err(Error::Decode { pc: em.current_pc, opcode: raw });
+            }
+            let lane = if double { 3 } else { 2 };
+            let u1 = em.vec_uzp1(vn, vm, lane, q);
+            let u2 = em.vec_uzp2(vn, vm, lane, q);
+            match kind {
+                Kind::FAddp => em.vec_fadd(u1, u2, double, q),
+                Kind::FMaxp => em.vec_fmax(u1, u2, double, q),
+                Kind::FMinp => em.vec_fmin(u1, u2, double, q),
                 _ => unreachable!(),
             }
         }
