@@ -1,7 +1,3 @@
-//! Soft-fastmem regression — exercises both the in-range fast path (direct
-//! `[mem_base + offset]` access, no fn-ptr) and the out-of-range slow path
-//! (fall through to the existing fn-ptr handlers).
-
 #[allow(dead_code)]
 mod common;
 
@@ -9,9 +5,6 @@ use rustarmic::{CpuContext, ExitReason, Jit, JitConfig, Memory};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
-// Tests share the FALLBACK_READS/WRITES counters and the slow-path hooks,
-// so cargo's default parallel execution would bleed counts across tests.
-// Every test holds this mutex for its body to force serial execution.
 static SERIALIZE: Mutex<()> = Mutex::new(());
 
 const CODE_BASE: u64 = 0x1000;
@@ -35,13 +28,9 @@ impl Memory for CodeMem {
     }
 }
 
-// Counters to prove which path actually executed.
 static FALLBACK_READS:  AtomicU64 = AtomicU64::new(0);
 static FALLBACK_WRITES: AtomicU64 = AtomicU64::new(0);
 
-// Slow-path handlers — should be called ONLY when fastmem misses (mem_size
-// = 0, out-of-range VA, or fastmem disabled). The fake "read" values are
-// written into ctx.io_value where the JIT picks them up.
 unsafe extern "C" fn hk_read(ctx: *mut CpuContext, _addr: u64, size: u8) {
     FALLBACK_READS.fetch_add(1, Ordering::Relaxed);
     let lo: u64 = match size {
@@ -70,8 +59,6 @@ fn run_with_cfg(code: Vec<u8>, ctx: &mut CpuContext, cfg: JitConfig) -> ExitReas
 
 #[test]
 fn fastmem_disabled_routes_through_fn_ptrs() {
-    // Sanity: with use_fastmem=false (default), every load goes through the
-    // fn-ptr handler regardless of mem_base/mem_size setup.
     let _g = SERIALIZE.lock().unwrap();
     FALLBACK_READS.store(0, Ordering::Relaxed);
     let mut backing = vec![0u8; 0x1000];
@@ -86,7 +73,7 @@ fn fastmem_disabled_routes_through_fn_ptrs() {
     ctx.x[0] = DATA_BASE;
 
     let code = build_code(&[
-        0xF9400001, // ldr x1, [x0]
+        0xF9400001,
         BRK_0,
     ]);
     run_with_cfg(code, &mut ctx, JitConfig::default());
@@ -97,8 +84,6 @@ fn fastmem_disabled_routes_through_fn_ptrs() {
 
 #[test]
 fn fastmem_in_range_load_bypasses_fn_ptr() {
-    // Backing memory holds a known qword; fastmem on; load from in-range VA.
-    // Expected: zero fn-ptr calls; X1 = byte pattern from backing memory.
     let _g = SERIALIZE.lock().unwrap();
     FALLBACK_READS.store(0, Ordering::Relaxed);
     let mut backing = vec![0u8; 0x1000];
@@ -113,7 +98,7 @@ fn fastmem_in_range_load_bypasses_fn_ptr() {
     ctx.x[0] = DATA_BASE + 0x100;
 
     let code = build_code(&[
-        0xF9400001, // ldr x1, [x0]
+        0xF9400001,
         BRK_0,
     ]);
     let cfg = JitConfig { use_fastmem: true, ..JitConfig::default() };
@@ -139,14 +124,13 @@ fn fastmem_in_range_store_bypasses_fn_ptr() {
     ctx.x[1] = 0x1234_5678_9ABC_DEF0;
 
     let code = build_code(&[
-        0xF9000001, // str x1, [x0]
+        0xF9000001,
         BRK_0,
     ]);
     let cfg = JitConfig { use_fastmem: true, ..JitConfig::default() };
     run_with_cfg(code, &mut ctx, cfg);
     assert_eq!(FALLBACK_WRITES.load(Ordering::Relaxed), 0,
                "in-range fastmem store must NOT invoke fn-ptr");
-    // Re-read the backing buffer directly.
     let mut buf = [0u8; 8];
     buf.copy_from_slice(&backing[0x200..0x208]);
     assert_eq!(u64::from_le_bytes(buf), 0x1234_5678_9ABC_DEF0,
@@ -155,7 +139,6 @@ fn fastmem_in_range_store_bypasses_fn_ptr() {
 
 #[test]
 fn fastmem_out_of_range_falls_through_to_fn_ptr() {
-    // VA above mem_base_va + mem_size → bounds check fails → slow path.
     let _g = SERIALIZE.lock().unwrap();
     FALLBACK_READS.store(0, Ordering::Relaxed);
     let mut backing = vec![0u8; 0x1000];
@@ -164,12 +147,12 @@ fn fastmem_out_of_range_falls_through_to_fn_ptr() {
     install_counting_hooks(&mut ctx);
     ctx.mem_base = backing.as_mut_ptr();
     ctx.mem_base_va = DATA_BASE;
-    ctx.mem_size = backing.len() as u64;   // covers [DATA_BASE, DATA_BASE+0x1000)
+    ctx.mem_size = backing.len() as u64;
     ctx.pc = CODE_BASE;
-    ctx.x[0] = DATA_BASE + 0x2000;          // way past the range
+    ctx.x[0] = DATA_BASE + 0x2000;
 
     let code = build_code(&[
-        0xF9400001, // ldr x1, [x0]
+        0xF9400001,
         BRK_0,
     ]);
     let cfg = JitConfig { use_fastmem: true, ..JitConfig::default() };
@@ -181,7 +164,6 @@ fn fastmem_out_of_range_falls_through_to_fn_ptr() {
 
 #[test]
 fn fastmem_before_range_falls_through_to_fn_ptr() {
-    // VA < mem_base_va → subtract wraps to huge unsigned → bounds check fails.
     let _g = SERIALIZE.lock().unwrap();
     FALLBACK_READS.store(0, Ordering::Relaxed);
     let mut backing = vec![0u8; 0x1000];
@@ -192,10 +174,10 @@ fn fastmem_before_range_falls_through_to_fn_ptr() {
     ctx.mem_base_va = DATA_BASE;
     ctx.mem_size = backing.len() as u64;
     ctx.pc = CODE_BASE;
-    ctx.x[0] = DATA_BASE - 0x10;            // before the region
+    ctx.x[0] = DATA_BASE - 0x10;
 
     let code = build_code(&[
-        0xF9400001, // ldr x1, [x0]
+        0xF9400001,
         BRK_0,
     ]);
     let cfg = JitConfig { use_fastmem: true, ..JitConfig::default() };
@@ -206,8 +188,6 @@ fn fastmem_before_range_falls_through_to_fn_ptr() {
 
 #[test]
 fn fastmem_zero_size_disables_path() {
-    // mem_size = 0 means every access falls to fn-ptr even with use_fastmem
-    // on. Models the "fastmem enabled but no region declared yet" state.
     let _g = SERIALIZE.lock().unwrap();
     FALLBACK_READS.store(0, Ordering::Relaxed);
     let mut backing = vec![0u8; 0x1000];
@@ -216,12 +196,12 @@ fn fastmem_zero_size_disables_path() {
     install_counting_hooks(&mut ctx);
     ctx.mem_base = backing.as_mut_ptr();
     ctx.mem_base_va = DATA_BASE;
-    ctx.mem_size = 0;                       // no region
+    ctx.mem_size = 0;
     ctx.pc = CODE_BASE;
     ctx.x[0] = DATA_BASE;
 
     let code = build_code(&[
-        0xF9400001, // ldr x1, [x0]
+        0xF9400001,
         BRK_0,
     ]);
     let cfg = JitConfig { use_fastmem: true, ..JitConfig::default() };
@@ -232,7 +212,6 @@ fn fastmem_zero_size_disables_path() {
 
 #[test]
 fn fastmem_word_load_in_range() {
-    // 32-bit load through the fast path.
     let _g = SERIALIZE.lock().unwrap();
     FALLBACK_READS.store(0, Ordering::Relaxed);
     let mut backing = vec![0u8; 0x1000];
@@ -247,7 +226,7 @@ fn fastmem_word_load_in_range() {
     ctx.x[0] = DATA_BASE + 0x40;
 
     let code = build_code(&[
-        0xB9400001, // ldr w1, [x0]
+        0xB9400001,
         BRK_0,
     ]);
     let cfg = JitConfig { use_fastmem: true, ..JitConfig::default() };

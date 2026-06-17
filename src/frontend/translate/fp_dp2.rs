@@ -1,6 +1,3 @@
-//! Floating-point data-processing (2 source) — `FADD`, `FSUB`, `FMUL`,
-//! `FDIV`. Scalar S/D for now; FMAX/FMIN/FNMUL/half-precision later.
-
 use disarm64::decoder::FLOATDP2;
 
 use crate::error::{Error, Result};
@@ -22,8 +19,6 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: FLOATDP2) -> Result<InstStatus> {
         FMUL_Fd_S_S_Fn_S_S_Fm_S_S(i)   => (i.0, Kind::Mul),
         FDIV_Fd_Fn_Fm(i)               => (i.0, Kind::Div),
         FDIV_Fd_S_S_Fn_S_S_Fm_S_S(i)   => (i.0, Kind::Div),
-        // FMAX/FMAXNM share emit; ARM's NaN semantics differ but x86's
-        // MAXSS/MAXSD matches "FMAXNM-ish" — diverges on signalling NaN.
         FMAX_Fd_Fn_Fm(i)               => (i.0, Kind::Max),
         FMAX_Fd_S_S_Fn_S_S_Fm_S_S(i)   => (i.0, Kind::Max),
         FMAXNM_Fd_Fn_Fm(i)             => (i.0, Kind::Max),

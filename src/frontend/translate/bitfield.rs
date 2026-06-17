@@ -32,12 +32,7 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: BITFIELD) -> Result<InstStatus> {
 
     let src = em.get_gpr(rn, size);
 
-    // Decompose into the two cases ARM's `DecodeBitMasks`/`bot = ROR(src,R) & wmask`
-    // collapses into:
-    //   - imms >= immr → extract: bits [imms:immr] of src into bits [imms-immr:0] of dst.
-    //   - imms <  immr → LSL form: bits [imms:0] of src into bits [width-immr+imms : width-immr].
     let (bot, low_mask_bits): (crate::ir::ValueRef, u32) = if imms >= immr {
-        // (src >> immr) & ((1 << (imms - immr + 1)) - 1)
         let extract_bits = imms - immr + 1;
         let amt = em.const_u64(immr as u64);
         let shifted = em.lsr(src, amt, size);
@@ -46,21 +41,18 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: BITFIELD) -> Result<InstStatus> {
         let mask_c = em.const_u64(mask);
         (em.and(shifted, mask_c, size), extract_bits)
     } else {
-        // (src & ((1 << (imms + 1)) - 1)) << (width - immr)
         let extract_bits = imms + 1;
         let mask = (1u64 << extract_bits) - 1;
         let mask_c = em.const_u64(mask);
         let masked = em.and(src, mask_c, size);
         let shift = (width - immr) as u64;
         let shift_c = em.const_u64(shift);
-        (em.lsl(masked, shift_c, size), 0) // BFM clear mask path not used in LSL form
+        (em.lsl(masked, shift_c, size), 0)
     };
 
     let result = match kind {
         Kind::Ubfm => bot,
         Kind::Sbfm => {
-            // Sign-extend: shift left until the extracted MSB lands in bit
-            // (width-1), then arithmetic shift right by the same amount.
             let high_bit = if imms < immr { width - 1 } else { imms - immr };
             let shl_amt = (width - 1 - high_bit) as u64;
             let amt_c = em.const_u64(shl_amt);
@@ -69,9 +61,6 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: BITFIELD) -> Result<InstStatus> {
             em.asr(shifted_l, amt2, size)
         }
         Kind::Bfm => {
-            // Only the extract form is well-defined for BFM clear+insert; for
-            // the LSL form we'd need to recompute the destination mask, which
-            // we approximate by re-masking `bot`'s placement window.
             let dst_prev = em.get_gpr(rd, size);
             let mask = if imms >= immr {
                 let bits_n = low_mask_bits;

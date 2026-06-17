@@ -82,21 +82,13 @@ fn ldxr_stxr_success_then_self_fail() {
     mem_init(0x10000);
     mem_write(DATA_BASE + 0x200, 0x12345678_9ABCDEF0, 8);
 
-    // movz x1, #0x200 ; movz x0, #(DATA_BASE>>... build address)
-    // Easier: put DATA_BASE+0x200 in X0 via ctx, then:
-    //   ldxr  x2, [x0]            ; x2 = mem; reservation set on x0
-    //   movz  x3, #0xAAAA
-    //   stxr  w4, x3, [x0]        ; should succeed -> w4 = 0
-    //   movz  x5, #0xBBBB
-    //   stxr  w6, x5, [x0]        ; reservation cleared by prev stxr -> w6 = 1
-    //   brk #0
     let code = build_code(&[
-        0xC85F7C02, // ldxr x2, [x0]
-        0xD2955543, // movz x3, #0xAAAA
-        0xC8047C03, // stxr w4, x3, [x0]
-        0xD2977765, // movz x5, #0xBBBB
-        0xC8067C05, // stxr w6, x5, [x0]
-        0xD4200000, // brk #0
+        0xC85F7C02,
+        0xD2955543,
+        0xC8047C03,
+        0xD2977765,
+        0xC8067C05,
+        0xD4200000,
     ]);
 
     let mut ctx = CpuContext::default();
@@ -120,16 +112,12 @@ fn clrex_clears_reservation_so_stxr_fails() {
     mem_init(0x10000);
     mem_write(DATA_BASE + 0x300, 0xDEAD_BEEF_CAFE_BABE, 8);
 
-    // ldxr x2, [x0]   ; load + set reservation
-    // clrex           ; explicitly clear reservation
-    // movz x3, #0x11
-    // stxr w4, x3, [x0]  ; w4 must be 1 (no reservation)
     let code = build_code(&[
-        0xC85F7C02, // ldxr x2, [x0]
-        0xD5033F5F, // clrex
-        0xD2800223, // movz x3, #0x11
-        0xC8047C03, // stxr w4, x3, [x0]
-        0xD4200000, // brk #0
+        0xC85F7C02,
+        0xD5033F5F,
+        0xD2800223,
+        0xC8047C03,
+        0xD4200000,
     ]);
     let mut ctx = CpuContext::default();
     install_hooks(&mut ctx);
@@ -153,12 +141,12 @@ fn str_then_ldr_round_trip() {
     ctx.pc = CODE_BASE;
     ctx.x[0] = DATA_BASE;
     let code = build_code(&[
-        0xD2802001, // movz x1, #0x100
-        0x8B000020, // add  x0, x1, x0       (x0 = DATA_BASE + 0x100)
-        0xD2824682, // movz x2, #0x1234
-        0xF9000002, // str  x2, [x0]
-        0xF9400003, // ldr  x3, [x0]
-        0xD4200000, // brk
+        0xD2802001,
+        0x8B000020,
+        0xD2824682,
+        0xF9000002,
+        0xF9400003,
+        0xD4200000,
     ]);
     let exit = run(code, &mut ctx);
     assert!(matches!(exit, ExitReason::Brk(_)), "expected BRK, got {:?}", exit);
@@ -179,7 +167,7 @@ fn ldadd_atomic_add_returns_old_and_writes_sum() {
     ctx.x[0] = DATA_BASE + 0x400;
     ctx.x[1] = 7;
     let code = build_code(&[
-        0xF821_0002, // ldadd x1, x2, [x0]
+        0xF821_0002,
         0xD4200000,
     ]);
     let exit = run(code, &mut ctx);
@@ -198,7 +186,7 @@ fn swp_atomic_exchanges_value() {
     ctx.x[0] = DATA_BASE + 0x500;
     ctx.x[1] = 0xBBBB;
     let code = build_code(&[
-        0xF821_8002, // swp x1, x2, [x0]
+        0xF821_8002,
         0xD4200000,
     ]);
     let exit = run(code, &mut ctx);
@@ -215,10 +203,10 @@ fn cas_success_writes_rt_and_returns_old_in_rs() {
     let mut ctx = CpuContext::default();
     ctx.pc = CODE_BASE;
     ctx.x[0] = DATA_BASE + 0x600;
-    ctx.x[1] = 0x100;   // compare value (matches memory)
-    ctx.x[2] = 0x999;   // new value
+    ctx.x[1] = 0x100;
+    ctx.x[2] = 0x999;
     let code = build_code(&[
-        0xC8A1_7C02, // cas x1, x2, [x0]
+        0xC8A1_7C02,
         0xD4200000,
     ]);
     let exit = run(code, &mut ctx);
@@ -235,10 +223,10 @@ fn cas_failure_leaves_memory_unchanged() {
     let mut ctx = CpuContext::default();
     ctx.pc = CODE_BASE;
     ctx.x[0] = DATA_BASE + 0x700;
-    ctx.x[1] = 0x200;   // wrong compare value
+    ctx.x[1] = 0x200;
     ctx.x[2] = 0x999;
     let code = build_code(&[
-        0xC8A1_7C02, // cas x1, x2, [x0]
+        0xC8A1_7C02,
         0xD4200000,
     ]);
     let exit = run(code, &mut ctx);
@@ -256,7 +244,7 @@ fn ldr_dt_loads_double_from_memory() {
     ctx.pc = CODE_BASE;
     ctx.x[1] = DATA_BASE + 0x800;
     let code = build_code(&[
-        0xFD40_0020, // ldr d0, [x1]
+        0xFD40_0020,
         0xD4200000,
     ]);
     run(code, &mut ctx);
@@ -274,7 +262,7 @@ fn str_dt_stores_double_to_memory() {
     ctx.x[1] = DATA_BASE + 0x900;
     ctx.v[0] = [(2.5_f64).to_bits(), 0];
     let code = build_code(&[
-        0xFD00_0020, // str d0, [x1]
+        0xFD00_0020,
         0xD4200000,
     ]);
     run(code, &mut ctx);
@@ -290,7 +278,7 @@ fn ldr_st_loads_float_from_memory() {
     ctx.pc = CODE_BASE;
     ctx.x[1] = DATA_BASE + 0xA00;
     let code = build_code(&[
-        0xBD40_0020, // ldr s0, [x1]
+        0xBD40_0020,
         0xD4200000,
     ]);
     run(code, &mut ctx);
@@ -308,7 +296,7 @@ fn ldr_q_loads_full_128_from_memory() {
     ctx.pc = CODE_BASE;
     ctx.x[1] = DATA_BASE + 0xB00;
     let code = build_code(&[
-        0x3DC0_0020, // ldr q0, [x1, #0]
+        0x3DC0_0020,
         0xD4200000,
     ]);
     run(code, &mut ctx);
@@ -325,7 +313,7 @@ fn str_q_writes_full_128_to_memory() {
     ctx.v[0] = [0xAAAA_AAAA_BBBB_BBBB, 0xCCCC_CCCC_DDDD_DDDD];
 
     let code = build_code(&[
-        0x3D80_0020, // str q0, [x1, #0]
+        0x3D80_0020,
         0xD4200000,
     ]);
     run(code, &mut ctx);
@@ -340,7 +328,7 @@ fn mov_v_16b_copies_full_register() {
     ctx.v[1] = [0x0F0E_0D0C_0B0A_0908, 0x1716_1514_1312_1110];
 
     let code = build_code(&[
-        0x4EA1_1C20, // mov v0.16b, v1.16b  (ORR V0, V1, V1)
+        0x4EA1_1C20,
         0xD4200000,
     ]);
     run(code, &mut ctx);

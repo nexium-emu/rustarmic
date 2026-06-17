@@ -1,28 +1,19 @@
-//! Bit-twiddling helpers used by the AArch64 decoder.
-
-/// Extract `len` bits from `value` starting at bit `lsb`.
 #[inline(always)]
 pub const fn bits(value: u32, lsb: u32, len: u32) -> u32 {
     (value >> lsb) & ((1u32 << len) - 1)
 }
 
-/// Single-bit extraction.
 #[inline(always)]
 pub const fn bit(value: u32, idx: u32) -> u32 {
     (value >> idx) & 1
 }
 
-/// Sign-extend the low `bits` of `value` to i64.
 #[inline(always)]
 pub const fn sign_extend(value: u64, bits: u32) -> i64 {
     let shift = 64 - bits;
     ((value << shift) as i64) >> shift
 }
 
-/// Decode an AArch64 logical immediate (N:immr:imms encoding).
-///
-/// Returns `Some((value, encoding_valid))` or `None` for reserved encodings.
-/// Reference: ARMv8 ARM J1-7282 "DecodeBitMasks".
 pub fn decode_bit_masks(n: u32, imms: u32, immr: u32, width: u32) -> Option<u64> {
     unsafe { core::hint::assert_unchecked(width == 32 || width == 64) };
     let combined = (n << 6) | (!imms & 0x3f);

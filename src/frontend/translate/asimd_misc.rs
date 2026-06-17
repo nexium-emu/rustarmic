@@ -1,11 +1,3 @@
-//! ASIMD "misc"-form single-operand ops (Vd, Vn).
-//!
-//! Coverage so far:
-//!   - NEG Vd.<T>, Vn.<T>: per-lane two's-complement negation
-//!   - ABS Vd.<T>, Vn.<T>: per-lane absolute value (8/16/32-bit lanes only;
-//!     64-bit lane ABS needs SSE emulation, deferred)
-//!   - NOT Vd.<T>, Vn.<T> (aka MVN): bitwise complement
-
 use disarm64::decoder::ASIMDMISC;
 
 use crate::error::{Error, Result};
@@ -39,14 +31,12 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDMISC) -> Result<InstStatus> 
         FRINTZ_Vd_Vn(i) => (i.0, Kind::FRintZ),
         FRINTA_Vd_Vn(i) => (i.0, Kind::FRintA),
         FRINTX_Vd_Vn(i) => (i.0, Kind::FRintX),
-        // FRINTI rounds per FPCR; we use ties-to-even (FPCR default) for both
-        // FRINTX and FRINTI, since we don't track guest FPCR rounding mode.
         FRINTI_Vd_Vn(i) => (i.0, Kind::FRintX),
         _ => return Err(Error::Unsupported { pc: em.current_pc, opcode: 0 }),
     };
 
     let q    = bit(raw, 30) == 1;
-    let size = bits(raw, 22, 2); // 00=B, 01=H, 10=S, 11=D
+    let size = bits(raw, 22, 2);
     let rn   = bits(raw, 5, 5) as u8;
     let rd   = bits(raw, 0, 5) as u8;
 
@@ -61,7 +51,6 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDMISC) -> Result<InstStatus> 
         }
         Kind::Not => em.vec_not(vn, q),
         Kind::FNeg | Kind::FAbs | Kind::FSqrt => {
-            // FP misc ops use bit 22 as the sz flag (0 = single, 1 = double).
             let double = bit(raw, 22) == 1;
             match kind {
                 Kind::FNeg  => em.vec_fneg(vn, double, q),
@@ -71,9 +60,6 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDMISC) -> Result<InstStatus> 
             }
         }
         Kind::Xtn => {
-            // `size` (bits 23:22) indicates the DESTINATION lane width;
-            // source lane is one wider. Q=0 → XTN (zero upper); Q=1 → XTN2
-            // (preserve low half of Vd, write narrowed result to upper).
             if size > 2 {
                 return Err(Error::Decode { pc: em.current_pc, opcode: raw });
             }
@@ -86,7 +72,6 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDMISC) -> Result<InstStatus> 
         }
         Kind::FRintN | Kind::FRintM | Kind::FRintP | Kind::FRintZ
         | Kind::FRintA | Kind::FRintX => {
-            // FP misc op: bit 22 = sz (0=single, 1=double). 2D requires Q=1.
             let double = bit(raw, 22) == 1;
             if double && !q {
                 return Err(Error::Decode { pc: em.current_pc, opcode: raw });
@@ -102,10 +87,6 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDMISC) -> Result<InstStatus> 
             }
         }
         Kind::Rev16 | Kind::Rev32 | Kind::Rev64 => {
-            // ARM encodes the byte-level reversal granularity in `size`. The
-            // outer container is implied by the mnemonic. Reject invalid
-            // (mnemonic, size) combinations: REV16 only takes B, REV32 takes
-            // B or H, REV64 takes B/H/S.
             let max_src = match kind {
                 Kind::Rev16 => 1,
                 Kind::Rev32 => 2,

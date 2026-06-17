@@ -64,10 +64,6 @@ pub enum Op {
 
     UDiv8 = 0x190, UDiv16 = 0x191, UDiv32 = 0x192, UDiv64 = 0x193,
     SDiv8 = 0x194, SDiv16 = 0x195, SDiv32 = 0x196, SDiv64 = 0x197,
-    // AArch64 div semantics — backend MUST guard:
-    //   UDiv/SDiv: divisor == 0  -> result = 0       (no #DE trap)
-    //   SDiv only: dividend == INT_MIN && divisor == -1 -> result = dividend (no overflow trap)
-    // x86 IDIV/DIV raise #DE in both cases; emit branches/cmov to bypass.
 
     Zext = 0x1A0,
     Sext = 0x1A4,
@@ -127,108 +123,69 @@ pub enum Op {
     Fmax32 = 0x526, Fmax64 = 0x527,
     Fmin32 = 0x52A, Fmin64 = 0x52B,
 
-    // FP conversions (FP→signed-int truncate, signed-int→FP).
-    FcvtZsSW = 0x540,  // single → i32 (truncate)
-    FcvtZsSX = 0x541,  // single → i64 (truncate)
-    FcvtZsDW = 0x542,  // double → i32 (truncate)
-    FcvtZsDX = 0x543,  // double → i64 (truncate)
-    ScvtfWS  = 0x544,  // i32 → single
-    ScvtfXS  = 0x545,  // i64 → single
-    ScvtfWD  = 0x546,  // i32 → double
-    ScvtfXD  = 0x547,  // i64 → double
-    FcvtSD   = 0x548,  // single → double
-    FcvtDS   = 0x549,  // double → single
+    FcvtZsSW = 0x540,
+    FcvtZsSX = 0x541,
+    FcvtZsDW = 0x542,
+    FcvtZsDX = 0x543,
+    ScvtfWS  = 0x544,
+    ScvtfXS  = 0x545,
+    ScvtfWD  = 0x546,
+    ScvtfXD  = 0x547,
+    FcvtSD   = 0x548,
+    FcvtDS   = 0x549,
 
-    // Per-lane vector ops. The lane element width is encoded in the low 2 bits
-    // (B/H/S/D = 1/2/4/8 bytes), matching the scalar size_log2 convention.
-    // The Q-flag (1 = 128-bit vector, 0 = 64-bit half-vector with upper bits
-    // zeroed) is carried in `imm` bit 0.
     VecAdd8  = 0x600, VecAdd16  = 0x601, VecAdd32  = 0x602, VecAdd64  = 0x603,
     VecSub8  = 0x604, VecSub16  = 0x605, VecSub32  = 0x606, VecSub64  = 0x607,
 
-    // Bitwise logicals — lane size is meaningless; only the Q-flag matters.
     VecAnd   = 0x608,
     VecOrr   = 0x60C,
     VecEor   = 0x610,
     VecBic   = 0x614,
     VecOrn   = 0x618,
 
-    // DUP from GPR: broadcast a scalar value to every lane of a u128.
     VecDupGpr8  = 0x61C, VecDupGpr16 = 0x61D, VecDupGpr32 = 0x61E, VecDupGpr64 = 0x61F,
-    // INS from GPR: write a scalar lane. `imm` carries `(lane_idx << 1) | q_form`.
     VecInsGpr8  = 0x620, VecInsGpr16 = 0x621, VecInsGpr32 = 0x622, VecInsGpr64 = 0x623,
 
-    // Glue ops for 128-bit values without dedicated 128-bit memory callbacks:
-    // BuildQ assembles two u64 halves into a u128; ExtractLo/Hi64 pull them
-    // back out. These map to single x86 instructions (movq / pinsrq / pextrq)
-    // and let the optimizer fold round-trips when both halves are visible.
     VecBuildQ      = 0x62C,
     VecExtractLo64 = 0x630,
     VecExtractHi64 = 0x634,
 
-    // Lane-sized extracts. Lane index goes in `imm`; the byte lane size
-    // matches the low 2 bits (log2 byte width) per the existing convention.
-    // Result is zero-extended into a U32 — callers do sign-extension via
-    // a separate Sext armlet for SMOV-style usage.
     VecExtract8  = 0x638,
     VecExtract16 = 0x639,
     VecExtract32 = 0x63A,
 
-    // Unary per-lane ops. Lane size in low 2 bits; Q-flag in imm bit 0.
     VecNeg8  = 0x640, VecNeg16 = 0x641, VecNeg32 = 0x642, VecNeg64 = 0x643,
     VecAbs8  = 0x644, VecAbs16 = 0x645, VecAbs32 = 0x646, VecAbs64 = 0x647,
     VecNot   = 0x648,
 
-    // Per-lane multiply. Only 16/32-bit lanes are directly supported by SSE2
-    // (PMULLW / PMULLD); 8 and 64-bit lane MUL are emulated or unsupported.
     VecMul8  = 0x64C, VecMul16 = 0x64D, VecMul32 = 0x64E, VecMul64 = 0x64F,
 
-    // Immediate shifts. Shift amount in `imm` bits 1..8; Q-flag in imm bit 0.
     VecShlImm8  = 0x650, VecShlImm16  = 0x651, VecShlImm32  = 0x652, VecShlImm64  = 0x653,
     VecUshrImm8 = 0x654, VecUshrImm16 = 0x655, VecUshrImm32 = 0x656, VecUshrImm64 = 0x657,
     VecSshrImm8 = 0x658, VecSshrImm16 = 0x659, VecSshrImm32 = 0x65A, VecSshrImm64 = 0x65B,
 
-    // Per-lane compare. Result lane is all-ones on true, zero on false — matches
-    // ARM NEON CMxx semantics and x86 PCMPxx exactly.
     VecCmEq8 = 0x65C, VecCmEq16 = 0x65D, VecCmEq32 = 0x65E, VecCmEq64 = 0x65F,
-    VecCmGt8 = 0x660, VecCmGt16 = 0x661, VecCmGt32 = 0x662, VecCmGt64 = 0x663, // signed >
-    VecCmGe8 = 0x664, VecCmGe16 = 0x665, VecCmGe32 = 0x666, VecCmGe64 = 0x667, // signed >=
-    VecCmHi8 = 0x668, VecCmHi16 = 0x669, VecCmHi32 = 0x66A, VecCmHi64 = 0x66B, // unsigned >
-    VecCmHs8 = 0x66C, VecCmHs16 = 0x66D, VecCmHs32 = 0x66E, VecCmHs64 = 0x66F, // unsigned >=
+    VecCmGt8 = 0x660, VecCmGt16 = 0x661, VecCmGt32 = 0x662, VecCmGt64 = 0x663,
+    VecCmGe8 = 0x664, VecCmGe16 = 0x665, VecCmGe32 = 0x666, VecCmGe64 = 0x667,
+    VecCmHi8 = 0x668, VecCmHi16 = 0x669, VecCmHi32 = 0x66A, VecCmHi64 = 0x66B,
+    VecCmHs8 = 0x66C, VecCmHs16 = 0x66D, VecCmHs32 = 0x66E, VecCmHs64 = 0x66F,
 
-    // Bit-select trio. All three are 3-operand reads of Vd as well, so each
-    // op takes args (vd_prev, vn, vm) and writes the combined result.
-    //   BIT: vd = (vd & ~vm) | (vn & vm)     — bit insert if mask bit set
-    //   BIF: vd = (vd &  vm) | (vn & ~vm)    — bit insert if mask bit clear
-    //   BSL: vd = (vn &  vd) | (vm & ~vd)    — vd is the mask
     VecBit = 0x670,
     VecBif = 0x674,
     VecBsl = 0x678,
 
-    /// EXT Vd, Vn, Vm, #imm: concatenate (Vm:Vn) and extract 16 bytes
-    /// starting at byte offset `imm`. `imm` field carries `(byte_off << 1) | q`.
     VecExt = 0x67C,
 
-    /// Per-lane ZIP: interleave the LOW (Zip1) or HIGH (Zip2) halves of the
-    /// two source vectors. Lane size in low 2 bits; q_form in `imm` bit 0.
     VecZip1_8 = 0x680, VecZip1_16 = 0x681, VecZip1_32 = 0x682, VecZip1_64 = 0x683,
     VecZip2_8 = 0x684, VecZip2_16 = 0x685, VecZip2_32 = 0x686, VecZip2_64 = 0x687,
 
-    // Per-lane min/max. 8/16/32-bit lanes are natively supported by
-    // pminsb/sw/sd and pmaxsb/sw/sd (SSE4.1). 64-bit lanes need PCMPGTQ +
-    // blend and are deferred until a real use case appears.
     VecSmin8 = 0x688, VecSmin16 = 0x689, VecSmin32 = 0x68A, VecSmin64 = 0x68B,
     VecSmax8 = 0x68C, VecSmax16 = 0x68D, VecSmax32 = 0x68E, VecSmax64 = 0x68F,
     VecUmin8 = 0x690, VecUmin16 = 0x691, VecUmin32 = 0x692, VecUmin64 = 0x693,
     VecUmax8 = 0x694, VecUmax16 = 0x695, VecUmax32 = 0x696, VecUmax64 = 0x697,
 
-    // ADDV horizontal sum. Result is a scalar of the same lane size, written
-    // to the low lane of a u128 (the surrounding `set_v_*` decides which
-    // lane width is exposed). 4S is the most common; 8H/16B are TBD.
     VecAddv32 = 0x698,
 
-    // Per-lane FP ops. `_S` = packed single (2S/4S), `_D` = packed double
-    // (2D). Q-flag in `imm` bit 0 distinguishes 2S (Q=0) from 4S (Q=1).
     VecFAdd_S  = 0x6A0, VecFAdd_D  = 0x6A1,
     VecFSub_S  = 0x6A2, VecFSub_D  = 0x6A3,
     VecFMul_S  = 0x6A4, VecFMul_D  = 0x6A5,
@@ -239,76 +196,37 @@ pub enum Op {
     VecFAbs_S  = 0x6AE, VecFAbs_D  = 0x6AF,
     VecFSqrt_S = 0x6B0, VecFSqrt_D = 0x6B1,
 
-    // Widening add. Source lane log2 in imm bits 2..4 (0=B, 1=H, 2=S);
-    // bit 1 = high-half flag (1 = SADDL2/UADDL2); bit 0 unused.
     VecSaddl = 0x6B4,
     VecUaddl = 0x6B8,
-    /// Widening subtract; same imm layout as VecSaddl.
     VecSsubl = 0x6E0,
     VecUsubl = 0x6E4,
-    /// Widening multiply; same imm layout. 8H←B and 4S←H supported via SSE4.1;
-    /// 2D←S requires 64-bit lane mul (deferred).
     VecSmull = 0x6E8,
     VecUmull = 0x6EC,
 
-    // Narrowing truncate. Source lane log2 in imm bits 2..4 (1=H, 2=S, 3=D),
-    // dst lane is one smaller. Result is written to the LOW 64 bits; upper
-    // 64 zeroed.
     VecXtn = 0x6BC,
-    /// XTN2: writes the narrowed result to the UPPER 64 of Vd; lower 64 is
-    /// preserved from Vd_prev. Args (vd_prev, vn); imm layout same as VecXtn.
     VecXtn2 = 0x6F0,
 
-    /// Per-lane FP compares. Result is all-ones per lane on true, zero on
-    /// false (matches ARM NEON semantics; NaN inputs → false).
-    /// `_S` = single precision (2S/4S), `_D` = double precision (2D).
     VecFCmEq_S = 0x6F4, VecFCmEq_D = 0x6F5,
     VecFCmGt_S = 0x6F8, VecFCmGt_D = 0x6F9,
     VecFCmGe_S = 0x6FC, VecFCmGe_D = 0x6FD,
 
-    /// TBL (single-register form): args (vn = table, vm = indices); Q-flag
-    /// in `imm` bit 0. Each byte of vm is an index into vn's 16 bytes;
-    /// values >= 16 produce zero in the result lane.
     VecTbl = 0x6C0,
 
-    /// REV16/32/64 family: byte-reverse within larger elements. `imm` holds
-    /// `(src_lane_log2 << 2) | q_form`, where src_lane_log2 is the BYTE-level
-    /// granularity being reversed (0=B, 1=H, 2=S) and the outer container
-    /// is implied by the op (Rev16 → H, Rev32 → S, Rev64 → D).
     VecRev16 = 0x6C4,
     VecRev32 = 0x6C8,
     VecRev64 = 0x6CC,
 
-    /// UZP1/UZP2: deinterleave even/odd lanes from two sources.
-    /// TRN1/TRN2: transpose even/odd lanes (interleave) from two sources.
-    /// `imm` holds `(lane_log2 << 2) | q_form`.
     VecUzp1 = 0x6D0,
     VecUzp2 = 0x6D4,
     VecTrn1 = 0x6D8,
     VecTrn2 = 0x6DC,
 
-    /// FMLA Vd, Vn, Vm: Vd = Vd + Vn*Vm (composed mul + add — not bit-exact
-    /// fused yet). Args (vd_prev, vn, vm); `_S`/`_D` pick precision.
     VecFmla_S = 0x720, VecFmla_D = 0x721,
-    /// FMLS Vd, Vn, Vm: Vd = Vd - Vn*Vm (composed).
     VecFmls_S = 0x724, VecFmls_D = 0x725,
 
-    /// TBL with a 2-register table (32 bytes). Args (table0, table1, indices);
-    /// indices in 0..32 select bytes, otherwise zero. Q-flag in `imm` bit 0.
     VecTbl2 = 0x728,
-    /// TBL with a 3-register table (48 bytes). Args (table0, table1, table2,
-    /// indices); indices in 0..48 select bytes, otherwise zero.
     VecTbl3 = 0x72C,
 
-    /// FRINT family — per-lane FP round-to-integral with a fixed rounding
-    /// mode. `_S` = packed single (2S/4S), `_D` = packed double (2D);
-    /// `imm` bit 0 carries Q-flag for the S forms.
-    /// • FRINTN: ties-to-even (default IEEE mode)
-    /// • FRINTM: floor (toward −∞)
-    /// • FRINTP: ceil (toward +∞)
-    /// • FRINTZ: truncate (toward zero)
-    /// • FRINTA: ties-away-from-zero (no native x86 mode — emulated)
-    /// • FRINTX: current FPCR mode (we treat as FRINTN since FPCR isn't live)
     VecFRintN_S = 0x730, VecFRintN_D = 0x731,
     VecFRintM_S = 0x734, VecFRintM_D = 0x735,
     VecFRintP_S = 0x738, VecFRintP_D = 0x739,

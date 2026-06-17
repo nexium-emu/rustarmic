@@ -1,13 +1,7 @@
-//! Shared harness for differential tests.
-
 use rustarmic::{CpuContext, Jit, JitConfig, Memory};
 use std::sync::Mutex;
 use unicorn_engine::{Arch, Mode, Prot, RegisterARM64, Unicorn};
 
-// Flat backing store shared between rustarmic memory callbacks and the
-// harness setup helpers. Each test should call `mem_init` to size it before
-// running anything that touches memory. Lives at offset `DATA_BASE` in the
-// guest address space (matches the Unicorn mapping below).
 static MEM: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 
 #[allow(dead_code)]
@@ -76,13 +70,9 @@ pub struct RegState {
     pub sp: u64,
     pub pc: u64,
     pub nzcv: u8,
-    /// V[0..31], each represented as `[low_u64, high_u64]` (little-endian
-    /// lane order — V[i][0] holds bytes 0..7, V[i][1] holds bytes 8..15).
     pub v: [[u64; 2]; 32],
 }
 
-/// Execute `code` on Unicorn and rustarmic with the same initial state and
-/// return the final register snapshot from each.
 pub fn run_pair(code: &[u8], init: RegState) -> (RegState, RegState) {
     let uni_state = run_unicorn(code, init);
     let jit_state = run_rustarmic(code, init);
@@ -93,21 +83,14 @@ fn run_unicorn(code: &[u8], init: RegState) -> RegState {
     let mut emu = Unicorn::new(Arch::ARM64, Mode::LITTLE_ENDIAN)
         .expect("unicorn init failed");
 
-    // Map code region.
     emu.mem_map(CODE_BASE, CODE_SIZE, Prot::ALL).unwrap();
     emu.mem_write(CODE_BASE, code).unwrap();
 
-    // Map data region (acts as stack + heap).
     emu.mem_map(DATA_BASE, DATA_SIZE, Prot::ALL).unwrap();
 
-    // Enable FP/SIMD via CPACR_EL1.FPEN = 0b11. Without this Unicorn traps
-    // every NEON instruction silently (emu_start returns an error we ignore)
-    // leaving the V regs untouched — making the diff look like our JIT is
-    // wrong when it's actually executing correctly.
     let cpacr = emu.reg_read(RegisterARM64::CPACR_EL1).unwrap_or(0);
     let _ = emu.reg_write(RegisterARM64::CPACR_EL1, cpacr | (0b11 << 20));
 
-    // Seed registers.
     for i in 0..31 {
         emu.reg_write(arm_reg(i), init.x[i]).unwrap();
     }
@@ -120,9 +103,6 @@ fn run_unicorn(code: &[u8], init: RegState) -> RegState {
         emu.reg_write_long(arm_qreg(i), &buf).unwrap();
     }
 
-    // Run until either BRK or end of code mapping. Unicorn stops on BRK
-    // automatically via the exception handler; we set a sane instruction
-    // limit just in case.
     let end = CODE_BASE + code.len() as u64;
     let _ = emu.emu_start(init.pc, end, 0, 1024);
 
@@ -182,9 +162,6 @@ impl Memory for HostMem {
 
 fn run_rustarmic(code: &[u8], init: RegState) -> RegState {
     let mut mem = HostMem { code: code.to_vec(), code_base: CODE_BASE };
-    // We don't currently exercise data accesses against a fastmem pointer;
-    // those tests will live alongside data-bearing snippets and use a
-    // separate flat allocation later. Pass null for now.
 
     let mut jit = Jit::new(JitConfig::default()).expect("jit init");
     let mut ctx = CpuContext::default();
@@ -199,8 +176,6 @@ fn run_rustarmic(code: &[u8], init: RegState) -> RegState {
         ctx.v[i] = init.v[i];
     }
 
-    // Each `run` chains through linked blocks internally and only returns on
-    // exception / unchainable exit; one call is enough for the harness.
     let _ = jit.run(&mut ctx, &mut mem);
 
     let mut out = RegState::default();

@@ -34,15 +34,8 @@ pub fn emit_block(block: &Block) -> Result<EmittedBlock> {
 
     emit_prologue(&mut asm, &alloc)?;
 
-    // With the shared thunk, "body" starts at offset 0; no per-block prologue
-    // bytes precede it. We still emit and resolve the label so future moves
-    // (re-introducing per-block setup, alignment padding, etc.) stay free.
     let mut body_label = asm.create_label();
     asm.set_label(&mut body_label)?;
-    // Give `body_label` an instruction to attach to. Without this, a block
-    // whose iter_live list is empty (or fully eliminated) leaves body_label
-    // pending until the Terminal section's emit_patch_site calls set_label —
-    // iced then rejects the two pending labels on the same first instruction.
     asm.nop()?;
 
     for (vr, _) in block.iter_live() {
@@ -87,10 +80,6 @@ pub fn emit_block(block: &Block) -> Result<EmittedBlock> {
             load64(&mut asm, &alloc, target, rax)?;
         }
         Terminal::Exception { kind, imm } => {
-            // Exit-token layout:
-            //   bits [60..64] = 0xE (exit signal)
-            //   bits  [8..24] = imm (16 bits — SVC/BRK/HVC immediates are u16)
-            //   bits  [0..8]  = kind (0x01=Svc, 0x02=Brk, 0x03=Hvc, 0xFF=UnknownInst)
             let kind_byte: u64 = match kind {
                 ExceptionKind::Svc => 0x01,
                 ExceptionKind::Brk => 0x02,
@@ -99,19 +88,12 @@ pub fn emit_block(block: &Block) -> Result<EmittedBlock> {
             };
             let exit_value: u64 =
                 0xE000_0000_0000_0000 | ((imm as u64 & 0xFFFF) << 8) | kind_byte;
-            // Dispatcher early-returns on the 0xE-prefixed token without
-            // writing ctx.pc. Store the post-exception PC ourselves so the
-            // kernel re-enters past the SVC/BRK/HVC instead of looping on it.
             asm.mov(rcx, block.end_pc as i64)?;
             asm.mov(qword_ptr(CTX_REG + cpu_offsets::pc() as i32), rcx)?;
             asm.mov(rax, exit_value as i64)?;
         }
     }
 
-    // Iced rejects two labels on the same instruction. emit_two_way_patches's
-    // last `mov rax, taken_pc` carries `taken_label`; without an instruction
-    // here the immediately-following set_label(epilogue_label) would collide
-    // on the next emitted instruction. A 1-byte NOP keeps them apart.
     asm.nop()?;
     asm.set_label(&mut epilogue_label)?;
     emit_epilogue(&mut asm, &alloc)?;

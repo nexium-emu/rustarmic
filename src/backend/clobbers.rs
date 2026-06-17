@@ -53,11 +53,6 @@ pub const CALLER_SAVED_GPRS: GprMask = GprMask::from_bits_retain(
     | GprMask::R10.bits() | GprMask::R11.bits(),
 );
 
-/// XMM registers a host `extern "C"` callee may freely trash. Windows x64
-/// preserves XMM6..XMM15 (callee-saved) so only XMM0..XMM5 are caller-saved;
-/// SysV AMD64 treats every XMM as caller-saved. The regalloc uses this to
-/// keep U128 values whose live range crosses a hook-emitting op (Load*,
-/// Store*, Mrs CNTPCT) out of XMM slots that the callback would corrupt.
 #[cfg(target_os = "windows")]
 pub const CALLER_SAVED_XMMS: XmmMask = XmmMask::from_bits_retain(
     XmmMask::XMM0.bits() | XmmMask::XMM1.bits() | XmmMask::XMM2.bits()
@@ -118,8 +113,6 @@ pub fn clobbers_for_op(op: Op) -> ClobberSet {
         }
 
         Rbit32 | Rbit64 => {
-            // The PSHUFB / GFNI lowerings stage value, mask, and (up to two)
-            // lookup tables in xmm0..xmm3. The SWAR fallback also uses RCX/RDX.
             c.gpr = GprMask::RAX | GprMask::RCX | GprMask::RDX;
             c.xmm = XmmMask::XMM0 | XmmMask::XMM1 | XmmMask::XMM2 | XmmMask::XMM3;
             c.result_pinned_to_gpr = Some(gpr_id::RAX);
@@ -151,10 +144,6 @@ pub fn clobbers_for_op(op: Op) -> ClobberSet {
         }
 
         Mrs => {
-            // CNTPCT_EL0 / CNTVCT_EL0 fall through to an indirect call to
-            // read_cntpct; other sysregs are inline ctx-relative mov. The
-            // imm is hidden from us here, so be conservative and mark every
-            // Mrs as a clobber barrier.
             c.gpr = CALLER_SAVED_GPRS;
             c.xmm = CALLER_SAVED_XMMS;
             c.result_pinned_to_gpr = Some(gpr_id::RAX);

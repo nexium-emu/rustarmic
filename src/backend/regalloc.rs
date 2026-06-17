@@ -3,22 +3,12 @@ use crate::ir::{Block, Op, Terminal, Ty};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Loc {
-    /// Lives in a host GPR. `u8` is the x86 register encoding (0=RAX, 3=RBX, …).
     Reg(u8),
-    /// Lives in a host XMM register, used as a fast non-cache-touching spill
-    /// slot per the Intel optimisation manual recommendation. `u8` is the XMM
-    /// index (0..15). Loads/stores use `movq` / `movd`.
     Xmm(u8),
-    /// Lives on the host stack at `[rbp - offset]`.
     Spill(i32),
     None,
 }
 
-/// SSA live range. Stored as `(start, count)` rather than `(start, end)` so
-/// the struct is 4 bytes — half the cache footprint of a `Vec<LiveRange>`.
-/// `count == 0` is the dead marker; otherwise the range covers
-/// `[start, start + count - 1]` inclusive. `count` saturates at 65 535 (blocks
-/// cap at 65 536 SSA nodes anyway).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LiveRange {
     pub start: u16,
@@ -66,8 +56,6 @@ impl LiveRange {
 pub struct Allocation {
     pub locs:        Vec<Loc>,
     pub spill_bytes: i32,
-    /// Bitmask of XMM registers (0..15) used as spill slots within this
-    /// block. The prologue must save these into the per-block frame.
     pub used_xmms:   u16,
 }
 
@@ -77,9 +65,6 @@ impl Allocation {
         self.locs[v.as_usize()]
     }
 
-    /// XMM6..15 are saved by the shared thunk, not per-block; this is kept
-    /// as a no-op so we don't have to ripple a constant deletion through the
-    /// rest of the codebase.
     #[inline]
     pub fn xmm_save_bytes(&self) -> i32 { 0 }
 
@@ -95,11 +80,6 @@ pub fn compute_live_ranges(block: &Block) -> Vec<LiveRange> {
     let n = block.code.len();
     let mut ranges = vec![LiveRange::DEAD; n];
 
-    // "Time" is the linked-list position, NOT the Vec index. The optimizer's
-    // `insert_before` peepholes (mul-fold, const-combine) push new nodes to
-    // the tail of `code` but splice them in linked-list order, so idx-as-time
-    // gets uses appearing before defs. Walking the live list assigns ordinals
-    // matching execution order.
     let mut pos: Vec<u32> = vec![0; n];
     let mut t: u32 = 0;
     for (vr, _) in block.iter_live() {
@@ -144,18 +124,9 @@ pub fn compute_live_ranges(block: &Block) -> Vec<LiveRange> {
 
 pub const ALLOCATABLE_GPRS: &[u8] = &[3, 12, 13, 14];
 
-/// XMM registers used as fast spill slots (movq/movd round-trip beats a
-/// stack store). On Windows these are callee-saved (XMM6..XMM15), so the
-/// prologue restores any that the block actually uses.
 #[cfg(target_os = "windows")]
 pub const SPILL_XMMS: &[u8] = &[6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 
-/// On SysV every XMM is caller-saved. Historically we left the pool empty
-/// to avoid having values clobbered across memory-hook callbacks; the
-/// `xmm_clobber_masks` machinery in `linear_scan` now keeps any value whose
-/// live range crosses a Load*/Store*/Mrs op out of XMM, so this is safe.
-/// Match the Windows shape — XMM6..XMM15 are picked first; XMM0..XMM5 stay
-/// available as emit-time scratch.
 #[cfg(not(target_os = "windows"))]
 pub const SPILL_XMMS: &[u8] = &[6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 
@@ -178,23 +149,11 @@ pub fn linear_scan(block: &Block, ranges: &[LiveRange], pool: &[u8]) -> Allocati
     let mut locs = vec![Loc::None; n];
     let mut spill_cursor: i32 = SAVED_SIZE;
     let mut free: Vec<u8> = pool.iter().copied().rev().collect();
-    // Bitmask of XMM register IDs currently free in the spill pool. Bit `r`
-    // set ⇔ XMM `r` is available. Built by OR-ing one bit per SPILL_XMMS
-    // entry, so the bit index matches the actual register number. `spill_mask`
-    // is the immutable initial value, kept around so the final `used_xmms`
-    // can be recovered as `spill_mask & !xmm_free` — the bits that started
-    // free but are not free now.
     let spill_mask: u16 = SPILL_XMMS.iter().fold(0u16, |a, &r| a | (1u16 << r));
     let mut xmm_free: u16 = spill_mask;
     let mut active: Vec<(u32, u8, usize)> = Vec::new();
-    // 128-bit values that own an XMM. Recycled on end-of-life back to xmm_free.
-    // Scalar values that were spilled to an XMM are NOT tracked here — they
-    // remain there for the rest of the block (simpler, slightly wasteful).
     let mut xmm_active: Vec<(u32, u8, usize)> = Vec::new();
 
-    // Allocates a spill slot, preferring a free XMM masked to the bits that
-    // ARE NOT clobbered by any op crossing the value's live range. Picks the
-    // lowest-numbered safe XMM (matching the old `Vec.pop` semantic).
     let take_spill = |spill_cursor: &mut i32, xmm_free: &mut u16, safe_xmms: u16| -> Loc {
         let candidates = *xmm_free & safe_xmms;
         if candidates != 0 {
@@ -206,10 +165,6 @@ pub fn linear_scan(block: &Block, ranges: &[LiveRange], pool: &[u8]) -> Allocati
         }
     };
 
-    // Clobber masks indexed by linked-list position (matching the time axis
-    // used by live ranges), not by Vec idx. Optimizer peepholes that insert
-    // new nodes via `insert_before` give them high Vec idx but earlier
-    // linked-list positions, so iterating `block.code` here would be wrong.
     let mut clobber_masks: Vec<GprMask> = Vec::with_capacity(n);
     let mut xmm_clobber_masks: Vec<XmmMask> = Vec::with_capacity(n);
     for (_vr, armlet) in block.iter_live() {
@@ -251,10 +206,6 @@ pub fn linear_scan(block: &Block, ranges: &[LiveRange], pool: &[u8]) -> Allocati
             }
         });
 
-        // 128-bit values must live in an XMM (or a 16-byte aligned stack slot).
-        // Mask out XMMs clobbered across the value's live range so a callback
-        // can't trash it — if none of the free XMMs survive, fall back to a
-        // 16-byte aligned stack slot.
         if block.code[vr_idx].ty == Ty::U128 {
             let safe = !interior_xmm_clobber_mask(&xmm_clobber_masks, range).bits();
             let candidates = xmm_free & safe;
@@ -311,9 +262,6 @@ pub fn linear_scan(block: &Block, ranges: &[LiveRange], pool: &[u8]) -> Allocati
 
             if let Some((spill_pos, &(victim_end, victim_reg, victim_vr))) = candidate {
                 if victim_end > end {
-                    // The victim is being evicted — its safe-XMM set is
-                    // determined by clobbers crossing ITS live range, not
-                    // the current value's.
                     let victim_safe = !interior_xmm_clobber_mask(&xmm_clobber_masks, ranges[victim_vr]).bits();
                     let spilled = take_spill(&mut spill_cursor, &mut xmm_free, victim_safe);
                     locs[victim_vr] = spilled;
@@ -328,16 +276,9 @@ pub fn linear_scan(block: &Block, ranges: &[LiveRange], pool: &[u8]) -> Allocati
         }
     }
 
-    // Per-block XMM save is gone — the shared thunk preserves XMM6..15 once
-    // per host→JIT call. We still track `used_xmms` for allocation correctness
-    // (so spill scalars don't collide with live u128 values), but the prologue
-    // emits nothing for them and stack-spill offsets need no extra shift.
     Allocation {
         locs,
         spill_bytes: spill_cursor - SAVED_SIZE,
-        // Liz's b4aacc5 semantic restored: used = bits that started free in
-        // the pool but aren't free now. The `& spill_mask` keeps out-of-pool
-        // bits (XMM0..5 on Windows, XMM0..15 on SysV) from leaking in.
         used_xmms: spill_mask & !xmm_free,
     }
 }
@@ -405,9 +346,6 @@ mod tests {
         em.set_x(0, add2);
 
         let ranges = compute_live_ranges(&b);
-        // Ranges are now indexed by linked-list position; on this freshly
-        // built block (no peephole inserts) position == idx - 1 because the
-        // Op::Void sentinel occupies idx 0 but isn't in the live list.
         let pos = |v: crate::ir::ValueRef| v.idx() - 1;
         assert!(!ranges[c1.as_usize()].is_dead());
         assert_eq!(ranges[c1.as_usize()].end(), pos(add1));
@@ -431,7 +369,7 @@ mod tests {
         };
 
         let ranges = compute_live_ranges(&b);
-        let last_pos = b.tail_vr().unwrap().idx() - 1; // subtract sentinel
+        let last_pos = b.tail_vr().unwrap().idx() - 1;
         assert_eq!(ranges[val.as_usize()].end(), last_pos);
     }
 
@@ -548,11 +486,6 @@ mod tests {
 
     #[test]
     fn u128_values_get_xmm_and_recycle_on_death() {
-        // Non-overlapping 128-bit lifetimes. On platforms with an XMM spill
-        // pool (Windows) both should reuse the SAME XMM. On SysV (FreeBSD,
-        // Linux, macOS) the pool is empty by safety policy — every XMM is
-        // caller-saved and would be clobbered across memory-hook callbacks —
-        // so each U128 lands in a fresh 16-byte-aligned stack slot instead.
         let mut b = fresh_block();
         let mut em = IrEmitter::new(&mut b, 0x1000);
         let q0 = em.get_v_q(0);
@@ -571,9 +504,6 @@ mod tests {
             assert!(matches!(loc_b, Loc::Xmm(_)), "second u128 should be Xmm, got {loc_b:?}");
             assert_eq!(loc_a, loc_b, "non-overlapping u128 ranges should reuse the same XMM");
         } else {
-            // SysV: both go to Spill slots; stack spills don't recycle, so
-            // each U128 gets a distinct slot. Both must still be 16-byte
-            // aligned because U128 stores require it.
             let (Loc::Spill(off_a), Loc::Spill(off_b)) = (loc_a, loc_b) else {
                 panic!("on SysV both u128 values must be Spill; got {loc_a:?} / {loc_b:?}");
             };
@@ -585,9 +515,6 @@ mod tests {
 
     #[test]
     fn overlapping_u128_values_take_different_xmms() {
-        // Overlapping lifetimes can NEVER share a location, regardless of
-        // platform. On Windows both go to distinct XMMs; on SysV both go to
-        // distinct (16-byte-aligned) stack slots.
         let mut b = fresh_block();
         let mut em = IrEmitter::new(&mut b, 0x1000);
         let a = em.get_v_q(0);

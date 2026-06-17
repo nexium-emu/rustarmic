@@ -1,9 +1,3 @@
-//! Floating-point compare — `FCMP` and `FCMPE`.
-//!
-//! `FCMPE` differs from `FCMP` only in raising the Invalid Operation
-//! exception on a Quiet NaN. We ignore that distinction for now and emit
-//! identical code for both.
-
 use disarm64::decoder::FLOATCMP;
 
 use crate::error::{Error, Result};

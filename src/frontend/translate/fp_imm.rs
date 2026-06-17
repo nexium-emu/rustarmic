@@ -1,6 +1,3 @@
-//! `FMOV Vd, #imm` — load an 8-bit packed FP immediate (`VFPExpandImm`) into
-//! the low lane of a V register, zeroing the rest. Single and double precision.
-
 use disarm64::decoder::FLOATIMM;
 
 use crate::error::{Error, Result};
@@ -35,9 +32,6 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: FLOATIMM) -> Result<InstStatus> {
     Ok(InstStatus::Continue)
 }
 
-/// `VFPExpandImm` for double precision (ARM ARM J1-7997).
-///
-/// imm8 = abcdefgh → imm64 = a : !b : Replicate(b, 8) : cdefgh : Zeros(48)
 fn expand_imm64(imm8: u8) -> u64 {
     let a = ((imm8 >> 7) & 1) as u64;
     let b = ((imm8 >> 6) & 1) as u64;
@@ -46,9 +40,6 @@ fn expand_imm64(imm8: u8) -> u64 {
     (a << 63) | ((b ^ 1) << 62) | (b_rep8 << 54) | (cdefgh << 48)
 }
 
-/// Same expansion at single precision.
-///
-/// imm8 = abcdefgh → imm32 = a : !b : Replicate(b, 5) : cdefgh : Zeros(19)
 fn expand_imm32(imm8: u8) -> u32 {
     let a = ((imm8 >> 7) & 1) as u32;
     let b = ((imm8 >> 6) & 1) as u32;

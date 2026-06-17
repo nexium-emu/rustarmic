@@ -1,15 +1,3 @@
-//! Regression for `MRS x, CNTPCT_EL0` / `CNTVCT_EL0` / `CNTFRQ_EL0`.
-//!
-//! Before M1.2:
-//!   - CNTPCT_EL0 raised `Error::Unsupported` (not in the sysreg table)
-//!   - CNTVCT_EL0 returned a hard-coded zero (`xor rax, rax`), so libnx's
-//!     `armGetSystemTick()` was stuck at 0 and any timing loop spun forever
-//!   - CNTFRQ_EL0 returned 1_000_000_000 (wrong for Switch)
-//!
-//! After M1.2:
-//!   - CNTPCT/CNTVCT call through `CpuContext.read_cntpct` (default = host rdtsc)
-//!   - CNTFRQ reads `CpuContext.cntfrq_el0` (default 19_200_000 = Switch rate)
-
 #[allow(dead_code)]
 mod common;
 
@@ -41,26 +29,14 @@ fn run_with(code: Vec<u8>, ctx: &mut CpuContext) -> ExitReason {
     jit.run(ctx, &mut mem).unwrap_or(ExitReason::Stopped)
 }
 
-// MRS Xt, sysreg encoding:
-//   bits[31:21] = 11010101001
-//   bit[20]     = 1 (read)
-//   bit[19]     = op0[0]   (op0 is 2 or 3, so this is its low bit; +2 in the decoder)
-//   bits[18:16] = op1
-//   bits[15:12] = CRn
-//   bits[11:8]  = CRm
-//   bits[7:5]   = op2
-//   bits[4:0]   = Rt
-const MRS_X0_CNTPCT_EL0: u32 = 0xD53B_E020; // op0=3 op1=3 CRn=14 CRm=0 op2=1 Rt=0
+const MRS_X0_CNTPCT_EL0: u32 = 0xD53B_E020;
 const MRS_X1_CNTPCT_EL0: u32 = 0xD53B_E021;
-const MRS_X0_CNTVCT_EL0: u32 = 0xD53B_E040; // op2=2
-const MRS_X0_CNTFRQ_EL0: u32 = 0xD53B_E000; // op2=0
+const MRS_X0_CNTVCT_EL0: u32 = 0xD53B_E040;
+const MRS_X0_CNTFRQ_EL0: u32 = 0xD53B_E000;
 const BRK_0:             u32 = 0xD420_0000;
 
 #[test]
 fn cntpct_default_is_nonzero_and_monotonic() {
-    // MRS x0, cntpct_el0
-    // MRS x1, cntpct_el0
-    // brk #0
     let code = build_code(&[MRS_X0_CNTPCT_EL0, MRS_X1_CNTPCT_EL0, BRK_0]);
     let mut ctx = CpuContext::default();
     ctx.pc = CODE_BASE;
@@ -72,7 +48,6 @@ fn cntpct_default_is_nonzero_and_monotonic() {
 
 #[test]
 fn cntvct_default_is_nonzero() {
-    // CNTVCT_EL0 routes through the same fn-ptr; should match CNTPCT semantics.
     let code = build_code(&[MRS_X0_CNTVCT_EL0, BRK_0]);
     let mut ctx = CpuContext::default();
     ctx.pc = CODE_BASE;
@@ -99,9 +74,6 @@ fn cntfrq_honors_embedder_override() {
     assert_eq!(ctx.x[0], 1_000_000_000, "embedder-set CNTFRQ_EL0 should be visible to MRS");
 }
 
-// Counter exposed to the JIT via a test-installed read_cntpct callback. Lets us
-// assert the indirect call actually went through the field (and not through some
-// constant-folded path).
 static mut TEST_COUNTER: u64 = 0xCAFE_F00D_0000_0000;
 
 unsafe extern "C" fn test_read_cntpct(_ctx: *mut CpuContext) -> u64 {

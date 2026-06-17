@@ -1,10 +1,3 @@
-//! Floating-point data-processing (3 source) — `FMADD`/`FMSUB`/`FNMADD`/
-//! `FNMSUB`. ARM defines these as fused with a single rounding step; this
-//! decomposition emits two roundings (mul then add/sub), which is correct on
-//! ARM revisions without FEAT_FMA but loses ~ulp on the strict ones. We can
-//! swap to VFMADD231SD (FMA3) later if we want bit-exact behavior on hosts
-//! that support it.
-
 use disarm64::decoder::FLOATDP3;
 
 use crate::error::{Error, Result};

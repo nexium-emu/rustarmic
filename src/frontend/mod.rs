@@ -1,5 +1,3 @@
-//! AArch64 → Armlet translation.
-
 pub mod translator;
 pub mod translate;
 

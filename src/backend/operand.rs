@@ -143,9 +143,6 @@ pub fn store32(
             asm.movd(xmm(x), src).map_err(into_err)?;
         }
         Loc::Spill(off) => {
-            // ARM W-form writes zero-extend to 64. Stack spills are full 8
-            // bytes; write low 4 then zero the upper 4 so a later `load64`
-            // on the same slot doesn't pick up stale bits.
             asm.mov(dword_ptr(rbp - off), src).map_err(into_err)?;
             asm.mov(dword_ptr(rbp - (off - 4)), 0i32).map_err(into_err)?;
         }
@@ -226,8 +223,6 @@ pub fn store_xmm_d(
     Ok(())
 }
 
-/// Load a full 128-bit value from any Loc into `dst`. Reg is not a legal
-/// source — 128-bit values never live in a GPR.
 pub fn load_xmm_q(
     asm: &mut CodeAssembler,
     alloc: &Allocation,
@@ -239,9 +234,6 @@ pub fn load_xmm_q(
             let src = xmm(x);
             if src != dst { asm.movdqa(dst, src).map_err(into_err)?; }
         }
-        // Stack spills for U128 are 16-byte aligned (see regalloc), so movdqa
-        // would be legal, but movdqu is no slower on modern CPUs when the
-        // address happens to be aligned and saves us from caring.
         Loc::Spill(off) => asm.movdqu(dst, xmmword_ptr(rbp - off)).map_err(into_err)?,
         Loc::Reg(_) | Loc::None =>
             return Err(Error::Backend(format!("load_xmm_q from invalid loc ({:?})", vr))),
@@ -268,11 +260,6 @@ pub fn store_xmm_q(
     Ok(())
 }
 
-/// Return an XMM register holding the full 128 bits of `vr`. If `vr`'s
-/// regalloc'd location is already an XMM, returns that register directly
-/// — no load is emitted. Otherwise loads from spill into `fallback` and
-/// returns `fallback`. Either way the caller can use the returned register
-/// as a source operand without worrying about where the value lives.
 pub fn get_xmm_q(
     asm: &mut CodeAssembler,
     alloc: &Allocation,
@@ -290,9 +277,6 @@ pub fn get_xmm_q(
     }
 }
 
-/// Materialize `vr` into `target`. If `vr` is already in `target`, emits
-/// nothing. Used when the emitter needs the value at a specific register
-/// (e.g. it's about to perform an in-place op on `target`).
 pub fn into_xmm_q(
     asm: &mut CodeAssembler,
     alloc: &Allocation,
@@ -311,10 +295,6 @@ pub fn into_xmm_q(
     Ok(())
 }
 
-/// Pick the working XMM for an operation whose result will be written to
-/// `dst_vr`. When dst is XMM-resident, returns dst's XMM so we can compute
-/// in place. Otherwise returns `scratch` and the caller is expected to
-/// store-back to dst after the op.
 pub fn working_xmm_for(alloc: &Allocation, dst_vr: ValueRef, scratch: AsmRegisterXmm) -> AsmRegisterXmm {
     match alloc.loc(dst_vr) {
         Loc::Xmm(x) => xmm(x),

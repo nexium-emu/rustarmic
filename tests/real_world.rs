@@ -1,6 +1,3 @@
-//! Real-world style integration tests modeled on dynarmic's
-//! `tests/A64/fibonacci.cpp` — full ARM64 programs run end-to-end.
-
 #[allow(dead_code)]
 mod common;
 
@@ -71,16 +68,16 @@ fn run(code: &[u32], ctx: &mut CpuContext) -> ExitReason {
 }
 
 const FIB_ITER: &[u32] = &[
-    0x2A0003E2, // mov w2, w0
-    0x52800000, // movz w0, #0
-    0x52800021, // movz w1, #1
-    0x340000C2, // cbz w2, +6 -> done
-    0x0B010003, // add w3, w0, w1
-    0x2A0103E0, // mov w0, w1
-    0x2A0303E1, // mov w1, w3
-    0x51000442, // sub w2, w2, #1
-    0x17FFFFFB, // b -5 -> loop
-    0xD4200000, // brk #0
+    0x2A0003E2,
+    0x52800000,
+    0x52800021,
+    0x340000C2,
+    0x0B010003,
+    0x2A0103E0,
+    0x2A0303E1,
+    0x51000442,
+    0x17FFFFFB,
+    0xD4200000,
 ];
 
 fn run_fib(n: u32) -> u64 {
@@ -110,15 +107,15 @@ fn fibonacci_iterative_larger() {
 }
 
 const SUM_ARRAY: &[u32] = &[
-    0xD2800002, // movz x2, #0
-    0xB40000C1, // cbz x1, +6 -> done
-    0xB9400003, // ldr w3, [x0]
-    0x8B030042, // add x2, x2, x3
-    0x91001000, // add x0, x0, #4
-    0xD1000421, // sub x1, x1, #1
-    0x17FFFFFB, // b -5 -> loop
-    0xAA0203E0, // mov x0, x2
-    0xD4200000, // brk #0
+    0xD2800002,
+    0xB40000C1,
+    0xB9400003,
+    0x8B030042,
+    0x91001000,
+    0xD1000421,
+    0x17FFFFFB,
+    0xAA0203E0,
+    0xD4200000,
 ];
 
 #[test]
@@ -167,19 +164,19 @@ fn sum_thousand_array() {
 }
 
 const FIB_TO_MEM: &[u32] = &[
-    0x2A0003E2, // mov w2, w0
-    0x52800000, // movz w0, #0
-    0x52800021, // movz w1, #1
-    0xAA0603E3, // mov x3, x6
-    0x34000102, // cbz w2, +8 -> done
-    0xB9000060, // str w0, [x3]
-    0x91001063, // add x3, x3, #4
-    0x0B010004, // add w4, w0, w1
-    0x2A0103E0, // mov w0, w1
-    0x2A0403E1, // mov w1, w4
-    0x51000442, // sub w2, w2, #1
-    0x17FFFFF9, // b -7 -> loop
-    0xD4200000, // brk #0
+    0x2A0003E2,
+    0x52800000,
+    0x52800021,
+    0xAA0603E3,
+    0x34000102,
+    0xB9000060,
+    0x91001063,
+    0x0B010004,
+    0x2A0103E0,
+    0x2A0403E1,
+    0x51000442,
+    0x17FFFFF9,
+    0xD4200000,
 ];
 
 #[test]

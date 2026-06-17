@@ -23,7 +23,7 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: LDSTPAIR_INDEXED) -> Result<InstS
     };
 
     let opc  = bits(raw, 30, 2);
-    let mode = bits(raw, 23, 3); // 001=post, 011=pre
+    let mode = bits(raw, 23, 3);
     let imm7 = bits(raw, 15, 7);
     let rt2  = bits(raw, 10, 5) as u8;
     let rn   = bits(raw, 5, 5) as u8;

@@ -1,15 +1,3 @@
-//! Conditional FP compare — `FCCMP`/`FCCMPE`.
-//!
-//! Semantics per ARM ARM:
-//!   - if cond holds (evaluated against the **current** NZCV): perform an
-//!     unconditional `FCMP Fn, Fm` (which itself overwrites NZCV).
-//!   - otherwise: load NZCV from the 4-bit immediate baked into the insn.
-//!
-//! We decompose into existing IR ops: snapshot the current NZCV, do an
-//! unconditional `FCMP` (which side-effects ctx.nzcv), read the post-FCMP
-//! NZCV, then `CSEL` between the new value and the immediate using the
-//! snapshot for cond evaluation, and write back via `SetNzcv`.
-
 use disarm64::decoder::FLOATCCMP;
 
 use crate::arch::Cond;

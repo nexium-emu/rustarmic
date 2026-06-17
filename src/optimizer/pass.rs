@@ -32,10 +32,6 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
     let mut reach_sp:   ValueRef = ValueRef::NONE;
     let mut reach_nzcv: ValueRef = ValueRef::NONE;
 
-    // Dead-store elimination state: for each register class, the ValueRef of
-    // the previous SetX/SetSp/SetNzcv that hasn't been read yet. A second
-    // write overwrites the first → drop it. Cleared by ops that could let an
-    // observer (callback, exception) see ctx before the next write.
     let mut last_setx:    [ValueRef; NUM_GPRS] = [ValueRef::NONE; NUM_GPRS];
     let mut last_set_sp:   ValueRef = ValueRef::NONE;
     let mut last_set_nzcv: ValueRef = ValueRef::NONE;
@@ -69,7 +65,6 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
                     if def.is_some() {
                         a.become_identity(def);
                     } else {
-                        // Real read of ctx.x[reg] — consumes any pending SetX.
                         last_setx[reg] = ValueRef::NONE;
                     }
                 }
@@ -129,8 +124,6 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
             | Op::SubsFlags32 | Op::SubsFlags64
             | Op::Fcmp32 | Op::Fcmp64 => {
                 reach_nzcv = ValueRef::NONE;
-                // Flag-setting op also writes ctx.nzcv, invalidating any
-                // pending SetNzcv (it would be overwritten).
                 let prev = last_set_nzcv;
                 if prev.is_some() { block.unlink(prev); }
                 last_set_nzcv = ValueRef::NONE;
@@ -177,10 +170,6 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
             }
 
             _ => {
-                // Any side-effect op we didn't recognise above — loads,
-                // stores, exceptions, etc. — may invoke a user callback that
-                // observes ctx state, so conservatively kill all pending
-                // register stores to preserve ordering.
                 if a.op.has_side_effects() {
                     for s in last_setx.iter_mut() { *s = ValueRef::NONE; }
                     last_set_sp = ValueRef::NONE;
@@ -189,10 +178,6 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
             }
         }
 
-        // Mul-fold peephole: collapse `a * K1 ± a * K2` (constructed from
-        // chains of Mul/Lsl over a common base) into a single `a * K_total`
-        // when the chain already contains a Mul. This shortens the critical
-        // path on the common `((c*a)<<b)+a` idiom.
         if matches!(a.op, Op::Add32 | Op::Add64 | Op::Sub32 | Op::Sub64) {
             if let Some((base, coeff)) = try_mul_fold(&a, block, &scratch.consts) {
                 let (const_op, mul_op) = if a.op.size_bits() == 32 {
@@ -234,8 +219,6 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
         cursor = next_cursor;
     }
 
-    // Fold conditional terminals to unconditional when the condition is now
-    // known statically (after our forward pass populated reaching constants).
     simplify_terminal(block, &scratch.consts);
     n = block.code.len();
 
@@ -298,10 +281,6 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
     }
 }
 
-/// If a block's terminal compares a value we now know statically (CBZ on a
-/// constant, B.cond on a known NZCV, AL/NV alias) collapse it to an
-/// unconditional `DirectBranch` and strip the now-dead terminator armlet
-/// so its operands fall to DCE.
 fn simplify_terminal(block: &mut Block, consts: &[Option<u64>]) {
     let const_of = |v: ValueRef| -> Option<u64> {
         if v.is_none() { None } else { consts.get(v.as_usize()).copied().flatten() }
@@ -320,8 +299,6 @@ fn simplify_terminal(block: &mut Block, consts: &[Option<u64>]) {
         Terminal::TestBranchBit { value, bit, inverse, taken_pc, not_taken_pc } => {
             const_of(value).map(|v| {
                 let bit_set = ((v >> bit) & 1) != 0;
-                // TBZ (inverse=false) branches when bit is CLEAR;
-                // TBNZ (inverse=true) branches when bit is SET.
                 let take = if inverse { bit_set } else { !bit_set };
                 Terminal::DirectBranch {
                     target_pc: if take { taken_pc } else { not_taken_pc },
@@ -348,8 +325,6 @@ fn simplify_terminal(block: &mut Block, consts: &[Option<u64>]) {
 
     if let Some(new_term) = new {
         block.terminal = new_term;
-        // The conditional terminator armlet is typically at the tail; drop
-        // it so liveness/DCE stops pinning its operand.
         if let Some(tail) = block.tail_vr() {
             let op = block.code[tail.as_usize()].op;
             if matches!(op, Op::CbZ | Op::CbNz | Op::TbZ | Op::TbNz | Op::BranchCond) {
@@ -359,10 +334,6 @@ fn simplify_terminal(block: &mut Block, consts: &[Option<u64>]) {
     }
 }
 
-/// Constant-combining peephole: `(base op c1) op c2` collapses to
-/// `base op (c1 ∘ c2)`. Outer's constant must be on RHS; inner must be the
-/// same op family (or Add/Sub paired) with a constant also on RHS. Returns
-/// `(base, combined_const, new_op)` if the pattern applies.
 fn try_combine_const(
     a: &Armlet,
     block: &Block,
@@ -383,11 +354,8 @@ fn try_combine_const(
 
     use Op::*;
     let (new_const, new_op): (u64, Op) = match (outer_op, inner.op) {
-        // Same op chains
         (Add32, Add32) => (inner_const.wrapping_add(outer_const) & mask, Add32),
         (Add64, Add64) => (inner_const.wrapping_add(outer_const), Add64),
-        // Canonicalise `(x - c1) - c2` to `x + (-(c1+c2))` so every
-        // additive chain ends up as Add — keeps later peepholes uniform.
         (Sub32, Sub32) => (
             0u64.wrapping_sub(inner_const.wrapping_add(outer_const)) & mask,
             Add32,
@@ -405,14 +373,11 @@ fn try_combine_const(
         (Mul32, Mul32) => (inner_const.wrapping_mul(outer_const) & mask, Mul32),
         (Mul64, Mul64) => (inner_const.wrapping_mul(outer_const), Mul64),
 
-        // Add/Sub crossovers — outer rewrites to a single Add or Sub
         (Add32, Sub32) => (outer_const.wrapping_sub(inner_const) & mask, Add32),
         (Add64, Sub64) => (outer_const.wrapping_sub(inner_const), Add64),
         (Sub32, Add32) => (inner_const.wrapping_sub(outer_const) & mask, Add32),
         (Sub64, Add64) => (inner_const.wrapping_sub(outer_const), Add64),
 
-        // Shifts: total amount must stay below word width to keep semantics
-        // simple; let strength-reduction or the existing fold handle overflow.
         (Lsl32, Lsl32) | (Lsl64, Lsl64)
         | (Lsr32, Lsr32) | (Lsr64, Lsr64)
         | (Asr32, Asr32) | (Asr64, Asr64) => {
@@ -431,15 +396,10 @@ fn try_combine_const(
 }
 
 enum Simplify {
-    /// Replace the result with a constant value (sized to the op's type).
     ToConst(u64),
-    /// Replace the result with `Identity(vr)` — the value is already computed.
     ToIdentity(ValueRef),
 }
 
-/// Algebraic identity strength-reductions for binops with at most one
-/// constant operand (or both operands identical). The full constant fold
-/// runs first; this catches the cases the fold misses.
 fn try_strength_reduce(
     op: Op,
     a: &Armlet,
@@ -515,11 +475,6 @@ struct Term {
     has_mul: bool,
 }
 
-/// Walk `vr` back through chains of `Mul/Lsl/Identity` to extract a `(base,
-/// coefficient)` pair such that the node represents `base * coefficient`
-/// (modulo the bit width). `has_mul` records whether a Mul was traversed —
-/// the peephole only fires when at least one side already has a Mul, since
-/// otherwise the existing shift+add sequence is faster than a 3-cycle imul.
 fn extract_term(block: &Block, vr: ValueRef, consts: &[Option<u64>], bits: u32) -> Term {
     let i = vr.as_usize();
     if i >= block.code.len() || vr.is_none() {
@@ -579,8 +534,6 @@ fn try_mul_fold(
         lhs.coeff.wrapping_add(rhs.coeff)
     } & mask;
 
-    // Skip degenerate cases that the rest of the optimizer (or DCE) handles
-    // better than emitting a Mul: 0 → const-fold to 0, 1 → identity.
     if combined == 0 || combined == 1 { return None; }
     Some((lhs.base, combined))
 }
@@ -632,7 +585,6 @@ mod tests {
 
     #[test]
     fn mul_fold_collapses_mul_shift_add_chain() {
-        // Build: r = ((c * a) << b) + a, with c = 3, b = 2 → coefficient 13.
         let mut block = Block::new(0x1000);
         let mut em = IrEmitter::new(&mut block, 0x1000);
         let a = em.get_x(0);
@@ -645,8 +597,6 @@ mod tests {
 
         optimize(&mut block);
 
-        // The original Add should now be Identity, pointing at a freshly
-        // inserted Mul whose other operand is a const equal to 13.
         let add_node = &block.code[added.as_usize()];
         assert_eq!(add_node.op, Op::Identity, "Add should be rewritten to Identity");
 
@@ -662,8 +612,6 @@ mod tests {
 
     #[test]
     fn mul_fold_skips_chain_without_mul() {
-        // (a << 2) + a — pure shift+add, no mul. Should NOT fold (folding into
-        // an imul would be slower than the 2-instruction shift+add).
         let mut block = Block::new(0x1000);
         let mut em = IrEmitter::new(&mut block, 0x1000);
         let a = em.get_x(0);
@@ -680,7 +628,6 @@ mod tests {
 
     #[test]
     fn mul_fold_handles_commutative_add() {
-        // a + (c * a) — same pattern, operands swapped.
         let mut block = Block::new(0x1000);
         let mut em = IrEmitter::new(&mut block, 0x1000);
         let a = em.get_x(0);
@@ -698,14 +645,9 @@ mod tests {
         assert_eq!(coeff_node.imm, 8, "7 + 1 = 8");
     }
 
-    // Suppress unused-warning for RegSize import (kept for symmetry with
-    // other tests if extended later).
     #[allow(dead_code)]
     fn _silence_unused(_: RegSize) {}
 
-    /// After optimization the `Identity` we synthesise gets chased away by
-    /// the forward pass and unlinked by DCE, so tests inspect the SetX user
-    /// instead. Returns the final SetX's `args[0]`'s `(op, imm)`.
     fn final_setx_source(block: &Block, set_idx: ValueRef) -> (Op, u64) {
         let set = &block.code[set_idx.as_usize()];
         assert_eq!(set.op, Op::SetX);
@@ -730,7 +672,6 @@ mod tests {
 
     #[test]
     fn strength_add_zero_propagates_to_setx() {
-        // Add(GetX(0), 0) → Identity(GetX(0)) → chased away; SetX reads GetX.
         let (op, _) = run_binop(Op::Add64, Some(0), Ty::U64);
         assert_eq!(op, Op::GetX, "x + 0 should reduce to x");
     }
@@ -830,8 +771,6 @@ mod tests {
         assert_eq!(op, Op::GetX, "x & x should reduce to x");
     }
 
-    /// Walks the (post-optimize) chain feeding into SetX, returning the final
-    /// `op(base_op, args[1] const value)` of the binop driving SetX.
     fn outer_binop_const(block: &Block, set_vr: ValueRef) -> (Op, u64) {
         let set = &block.code[set_vr.as_usize()];
         let outer = &block.code[set.args[0].as_usize()];
@@ -937,8 +876,6 @@ mod tests {
 
     #[test]
     fn terminal_tbz_with_clear_bit_becomes_direct_branch_taken() {
-        // TBZ takes the branch when the named bit is 0. Value = 0x10, bit 0
-        // is clear so we should take the branch to taken_pc.
         let mut block = Block::new(0x1000);
         let mut em = IrEmitter::new(&mut block, 0x1000);
         let v = em.const_u64(0x10);
@@ -974,7 +911,6 @@ mod tests {
 
     #[test]
     fn dse_drops_overwritten_setx() {
-        // SetX(0, 1); SetX(0, 2) — first SetX is dead.
         let mut block = Block::new(0x1000);
         let mut em = IrEmitter::new(&mut block, 0x1000);
         let v1 = em.const_u64(1);
@@ -990,8 +926,6 @@ mod tests {
 
     #[test]
     fn dse_preserves_setx_when_observed_by_store() {
-        // SetX(0, 1); Store(addr, val); SetX(0, 2) — the Store callback may
-        // read ctx.x[0], so the first SetX must be preserved.
         let mut block = Block::new(0x1000);
         let mut em = IrEmitter::new(&mut block, 0x1000);
         let v1 = em.const_u64(1);
@@ -1010,25 +944,15 @@ mod tests {
 
     #[test]
     fn dse_preserves_setx_when_consumed_by_getx() {
-        // SetX(0, 1); GetX(0) (no prior reach, treat as real read);
-        // SetX(0, 2). The first SetX shouldn't be dropped if no reach_x
-        // chase could rewrite the read.
-        //
-        // In practice, our optimizer DOES rewrite GetX(0) here via reach_x
-        // (since SetX(0, v1) populates reach_x[0]=v1), so the GetX becomes
-        // Identity(v1) and the first SetX is still dead. Test that the JIT
-        // result is correct regardless: x[0] = 2.
         let mut block = Block::new(0x1000);
         let mut em = IrEmitter::new(&mut block, 0x1000);
         let v1 = em.const_u64(1);
         em.set_x(0, v1);
         let read_back = em.get_x(0);
-        em.set_x(1, read_back);  // x[1] = 1
+        em.set_x(1, read_back);
         let v2 = em.const_u64(2);
         em.set_x(0, v2);
         optimize(&mut block);
-        // x[1] should ultimately read v1 (via Identity chase) — verify the
-        // SetX(1, ...) source ends up as ConstU64(1).
         let setx1 = block.iter_live()
             .find(|(_, a)| matches!(a.op, Op::SetX) && a.imm == 1)
             .expect("SetX(1) should remain");

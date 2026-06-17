@@ -1,15 +1,8 @@
-//! Convenience builder used by the AArch64 translator.
-//!
-//! Wraps a `&mut Block` and exposes a typed surface for each common opcode.
-//! The intent is to keep `frontend/translate/*` files readable while still
-//! producing the same flat `Vec<Armlet>` layout the optimizer expects.
-
 use crate::arch::{Cond, RegSize, ZR_ENCODING};
 use crate::ir::{Armlet, ArmletFlags, Block, Op, Terminal, Ty, ValueRef};
 
 pub struct IrEmitter<'b> {
     pub block: &'b mut Block,
-    /// PC of the guest instruction currently being translated.
     pub current_pc: u64,
 }
 
@@ -24,7 +17,6 @@ impl<'b> IrEmitter<'b> {
         self.block.push(armlet)
     }
 
-    // ─── Constants ──────────────────────────────────────────────────────────
     #[inline]
     pub fn const_u32(&mut self, v: u32) -> ValueRef {
         self.push(Armlet::new(Op::ConstU32, Ty::U32).with_imm(v as u64))
@@ -35,8 +27,6 @@ impl<'b> IrEmitter<'b> {
         self.push(Armlet::new(Op::ConstU64, Ty::U64).with_imm(v))
     }
 
-    // ─── GPR access ─────────────────────────────────────────────────────────
-    /// Read a 64-bit GPR. Encoding 31 reads as the zero register.
     pub fn get_x(&mut self, reg: u8) -> ValueRef {
         debug_assert!(reg < 32);
         if reg == ZR_ENCODING {
@@ -45,7 +35,6 @@ impl<'b> IrEmitter<'b> {
         self.push(Armlet::new(Op::GetX, Ty::U64).with_imm(reg as u64))
     }
 
-    /// Read a 32-bit GPR view. Encoding 31 reads as zero.
     pub fn get_w(&mut self, reg: u8) -> ValueRef {
         debug_assert!(reg < 32);
         if reg == ZR_ENCODING {
@@ -54,7 +43,6 @@ impl<'b> IrEmitter<'b> {
         self.push(Armlet::new(Op::GetW, Ty::U32).with_imm(reg as u64))
     }
 
-    /// Generic read sized by RegSize.
     pub fn get_gpr(&mut self, reg: u8, size: RegSize) -> ValueRef {
         match size {
             RegSize::W => self.get_w(reg),
@@ -62,7 +50,6 @@ impl<'b> IrEmitter<'b> {
         }
     }
 
-    /// Write 64-bit value to GPR. Encoding 31 silently discards (WZR/XZR).
     pub fn set_x(&mut self, reg: u8, value: ValueRef) {
         debug_assert!(reg < 32);
         if reg == ZR_ENCODING { return; }
@@ -71,7 +58,6 @@ impl<'b> IrEmitter<'b> {
             .with_imm(reg as u64));
     }
 
-    /// Write 32-bit value to GPR — top half of X register zero-extends.
     pub fn set_w(&mut self, reg: u8, value: ValueRef) {
         debug_assert!(reg < 32);
         if reg == ZR_ENCODING { return; }
@@ -88,13 +74,10 @@ impl<'b> IrEmitter<'b> {
         }
     }
 
-    /// Read SP.
     pub fn get_sp(&mut self) -> ValueRef {
         self.push(Armlet::new(Op::GetSp, Ty::U64))
     }
 
-    /// Read either SP or zero register depending on whether SP-encoding is allowed.
-    /// When `reg==31`, returns SP if `sp_form` is true, otherwise ZR (constant 0).
     pub fn get_x_or_sp(&mut self, reg: u8, sp_form: bool) -> ValueRef {
         if reg == ZR_ENCODING {
             if sp_form { self.get_sp() } else { self.const_u64(0) }
@@ -110,26 +93,21 @@ impl<'b> IrEmitter<'b> {
     pub fn set_x_or_sp(&mut self, reg: u8, value: ValueRef, sp_form: bool) {
         if reg == ZR_ENCODING {
             if sp_form { self.set_sp(value); }
-            // else discard (XZR)
         } else {
             self.set_x(reg, value);
         }
     }
 
-    // ─── V (SIMD/FP) register lanes ─────────────────────────────────────────
-    /// Read the low 32 bits of V[reg] (S-precision scalar view).
     pub fn get_v_s(&mut self, reg: u8) -> ValueRef {
         debug_assert!((reg as usize) < crate::arch::NUM_VREGS);
         self.push(Armlet::new(Op::GetV, Ty::U32).with_imm(reg as u64))
     }
 
-    /// Read the low 64 bits of V[reg] (D-precision scalar view).
     pub fn get_v_d(&mut self, reg: u8) -> ValueRef {
         debug_assert!((reg as usize) < crate::arch::NUM_VREGS);
         self.push(Armlet::new(Op::GetV, Ty::U64).with_imm(reg as u64))
     }
 
-    /// Write 32-bit lane to V[reg], zeroing the upper 96 bits.
     pub fn set_v_s(&mut self, reg: u8, value: ValueRef) {
         debug_assert!((reg as usize) < crate::arch::NUM_VREGS);
         self.push(Armlet::new(Op::SetV, Ty::Void)
@@ -138,7 +116,6 @@ impl<'b> IrEmitter<'b> {
             .with_flags(ArmletFlags::W_SIZED));
     }
 
-    /// Write 64-bit lane to V[reg], zeroing the upper 64 bits.
     pub fn set_v_d(&mut self, reg: u8, value: ValueRef) {
         debug_assert!((reg as usize) < crate::arch::NUM_VREGS);
         self.push(Armlet::new(Op::SetV, Ty::Void)
@@ -146,13 +123,11 @@ impl<'b> IrEmitter<'b> {
             .with_imm(reg as u64));
     }
 
-    /// Read the full 128 bits of V[reg] (Q-precision vector view).
     pub fn get_v_q(&mut self, reg: u8) -> ValueRef {
         debug_assert!((reg as usize) < crate::arch::NUM_VREGS);
         self.push(Armlet::new(Op::GetV, Ty::U128).with_imm(reg as u64))
     }
 
-    /// Write all 128 bits of V[reg]. `value` must be a Ty::U128 value.
     pub fn set_v_q(&mut self, reg: u8, value: ValueRef) {
         debug_assert!((reg as usize) < crate::arch::NUM_VREGS);
         self.push(Armlet::new(Op::SetV, Ty::Void)
@@ -160,42 +135,32 @@ impl<'b> IrEmitter<'b> {
             .with_imm(reg as u64));
     }
 
-    /// Combine two u64 halves into a u128 (lo = bits 0..63, hi = bits 64..127).
     pub fn vec_build_q(&mut self, lo: ValueRef, hi: ValueRef) -> ValueRef {
         self.push(Armlet::new(Op::VecBuildQ, Ty::U128).with_args(&[lo, hi]))
     }
 
-    /// Extract the low 64 bits of a u128.
     pub fn vec_extract_lo64(&mut self, q: ValueRef) -> ValueRef {
         self.push(Armlet::new(Op::VecExtractLo64, Ty::U64).with_args(&[q]))
     }
 
-    /// Extract the high 64 bits of a u128.
     pub fn vec_extract_hi64(&mut self, q: ValueRef) -> ValueRef {
         self.push(Armlet::new(Op::VecExtractHi64, Ty::U64).with_args(&[q]))
     }
 
-    /// Extract an 8-bit lane (lane 0..15) of a u128, zero-extended to U32.
     pub fn vec_extract_u8(&mut self, q: ValueRef, lane: u32) -> ValueRef {
         debug_assert!(lane < 16);
         self.push(Armlet::new(Op::VecExtract8, Ty::U32).with_args(&[q]).with_imm(lane as u64))
     }
 
-    /// Extract a 16-bit lane (lane 0..7) of a u128, zero-extended to U32.
     pub fn vec_extract_u16(&mut self, q: ValueRef, lane: u32) -> ValueRef {
         debug_assert!(lane < 8);
         self.push(Armlet::new(Op::VecExtract16, Ty::U32).with_args(&[q]).with_imm(lane as u64))
     }
 
-    /// Extract a 32-bit lane (lane 0..3) of a u128.
     pub fn vec_extract_u32(&mut self, q: ValueRef, lane: u32) -> ValueRef {
         debug_assert!(lane < 4);
         self.push(Armlet::new(Op::VecExtract32, Ty::U32).with_args(&[q]).with_imm(lane as u64))
     }
-
-    // ─── Per-lane vector ALU ────────────────────────────────────────────────
-    // `lane_log2` selects element width (0=B, 1=H, 2=S, 3=D). `q` selects the
-    // full 128-bit form (true) vs the half-width form (false, upper 64 zeroed).
 
     pub fn vec_add(&mut self, vn: ValueRef, vm: ValueRef, lane_log2: u32, q: bool) -> ValueRef {
         let op = match lane_log2 {
@@ -257,8 +222,6 @@ impl<'b> IrEmitter<'b> {
         self.push(Armlet::new(op, Ty::U128).with_args(&[vn, vm]).with_imm(q as u64))
     }
 
-    /// Immediate shift. `shift` is the shift amount (0..lane_bits); the
-    /// Q-flag lives in imm bit 0 with the shift amount in bits 1..8.
     pub fn vec_shl_imm(&mut self, vn: ValueRef, lane_log2: u32, shift: u32, q: bool) -> ValueRef {
         let op = match lane_log2 {
             0 => Op::VecShlImm8, 1 => Op::VecShlImm16, 2 => Op::VecShlImm32, 3 => Op::VecShlImm64,
@@ -284,7 +247,6 @@ impl<'b> IrEmitter<'b> {
         self.push(Armlet::new(op, Ty::U128).with_args(&[vn]).with_imm(imm))
     }
 
-    // ─── Per-lane compares ──────────────────────────────────────────────────
     pub fn vec_cmeq(&mut self, vn: ValueRef, vm: ValueRef, lane_log2: u32, q: bool) -> ValueRef {
         let op = match lane_log2 {
             0 => Op::VecCmEq8, 1 => Op::VecCmEq16, 2 => Op::VecCmEq32, 3 => Op::VecCmEq64,
@@ -321,8 +283,6 @@ impl<'b> IrEmitter<'b> {
         self.push(Armlet::new(op, Ty::U128).with_args(&[vn, vm]).with_imm(q as u64))
     }
 
-    /// Bit-select. ARM BIT/BIF/BSL all read Vd as one of the inputs, so the
-    /// IR op takes three sources: (vd_prev, vn, vm).
     pub fn vec_bit(&mut self, vd_prev: ValueRef, vn: ValueRef, vm: ValueRef, q: bool) -> ValueRef {
         self.push(Armlet::new(Op::VecBit, Ty::U128).with_args(&[vd_prev, vn, vm]).with_imm(q as u64))
     }
@@ -333,8 +293,6 @@ impl<'b> IrEmitter<'b> {
         self.push(Armlet::new(Op::VecBsl, Ty::U128).with_args(&[vd_prev, vn, vm]).with_imm(q as u64))
     }
 
-    /// Broadcast a scalar GPR value to all lanes of the result vector.
-    /// `gpr_val` must be a U32 (for 8/16/32-bit lanes) or U64 (for 64-bit).
     pub fn vec_dup_gpr(&mut self, gpr_val: ValueRef, lane_log2: u32, q: bool) -> ValueRef {
         let op = match lane_log2 {
             0 => Op::VecDupGpr8, 1 => Op::VecDupGpr16, 2 => Op::VecDupGpr32, 3 => Op::VecDupGpr64,
@@ -343,8 +301,6 @@ impl<'b> IrEmitter<'b> {
         self.push(Armlet::new(op, Ty::U128).with_args(&[gpr_val]).with_imm(q as u64))
     }
 
-    /// Insert a scalar GPR value into a specific lane of `vd_prev`.
-    /// The lane index lives in `imm` bits 1..8; the Q-flag is bit 0.
     pub fn vec_ins_gpr(&mut self, vd_prev: ValueRef, gpr_val: ValueRef, lane_log2: u32, lane: u32, q: bool) -> ValueRef {
         let op = match lane_log2 {
             0 => Op::VecInsGpr8, 1 => Op::VecInsGpr16, 2 => Op::VecInsGpr32, 3 => Op::VecInsGpr64,
@@ -354,7 +310,6 @@ impl<'b> IrEmitter<'b> {
         self.push(Armlet::new(op, Ty::U128).with_args(&[vd_prev, gpr_val]).with_imm(imm))
     }
 
-    /// EXT: concat(vm, vn) shifted right by `byte_off` bytes; low 16 written.
     pub fn vec_ext(&mut self, vn: ValueRef, vm: ValueRef, byte_off: u32, q: bool) -> ValueRef {
         let imm = (q as u64) | ((byte_off as u64) << 1);
         self.push(Armlet::new(Op::VecExt, Ty::U128).with_args(&[vn, vm]).with_imm(imm))
@@ -404,12 +359,10 @@ impl<'b> IrEmitter<'b> {
         self.push(Armlet::new(op, Ty::U128).with_args(&[vn, vm]).with_imm(q as u64))
     }
 
-    /// ADDV.4S: horizontal sum of 4 32-bit lanes; result is a U32 scalar.
     pub fn vec_addv32(&mut self, vn: ValueRef) -> ValueRef {
         self.push(Armlet::new(Op::VecAddv32, Ty::U32).with_args(&[vn]))
     }
 
-    // ─── Per-lane FP ────────────────────────────────────────────────────────
     fn vec_fbin(&mut self, op_s: Op, op_d: Op, double: bool, vn: ValueRef, vm: ValueRef, q: bool) -> ValueRef {
         let op = if double { op_d } else { op_s };
         self.push(Armlet::new(op, Ty::U128).with_args(&[vn, vm]).with_imm(q as u64))
@@ -443,7 +396,6 @@ impl<'b> IrEmitter<'b> {
         self.vec_fbin(Op::VecFCmGe_S, Op::VecFCmGe_D, double, vn, vm, q)
     }
 
-    /// FMLA: vd_prev + vn * vm (composed mul-add, not fused).
     pub fn vec_fmla(&mut self, vd_prev: ValueRef, vn: ValueRef, vm: ValueRef, double: bool, q: bool) -> ValueRef {
         let op = if double { Op::VecFmla_D } else { Op::VecFmla_S };
         self.push(Armlet::new(op, Ty::U128).with_args(&[vd_prev, vn, vm]).with_imm(q as u64))
@@ -490,8 +442,6 @@ impl<'b> IrEmitter<'b> {
         self.vec_funop(Op::VecFSqrt_S, Op::VecFSqrt_D, double, vn, q)
     }
 
-    /// Widening add. `src_lane_log2` is 0..=2 (B/H/S); result lane is one
-    /// wider (H/S/D). `high_half=true` reads bytes 8..16 of each source.
     pub fn vec_saddl(&mut self, vn: ValueRef, vm: ValueRef, src_lane_log2: u32, high_half: bool) -> ValueRef {
         let imm = ((high_half as u64) << 1) | ((src_lane_log2 as u64) << 2);
         self.push(Armlet::new(Op::VecSaddl, Ty::U128).with_args(&[vn, vm]).with_imm(imm))
@@ -517,43 +467,29 @@ impl<'b> IrEmitter<'b> {
         self.push(Armlet::new(Op::VecUmull, Ty::U128).with_args(&[vn, vm]).with_imm(imm))
     }
 
-    /// Narrowing truncate. `src_lane_log2` is 1..=3 (H/S/D); result lane is
-    /// one narrower (B/H/S). Result is packed in the low 64 bits; upper 64
-    /// is zeroed.
     pub fn vec_xtn(&mut self, vn: ValueRef, src_lane_log2: u32) -> ValueRef {
         let imm = (src_lane_log2 as u64) << 2;
         self.push(Armlet::new(Op::VecXtn, Ty::U128).with_args(&[vn]).with_imm(imm))
     }
-    /// XTN2: same narrowing as XTN but writes result to the UPPER 64 bits
-    /// and preserves the LOW 64 from `vd_prev`.
     pub fn vec_xtn2(&mut self, vd_prev: ValueRef, vn: ValueRef, src_lane_log2: u32) -> ValueRef {
         let imm = (src_lane_log2 as u64) << 2;
         self.push(Armlet::new(Op::VecXtn2, Ty::U128).with_args(&[vd_prev, vn]).with_imm(imm))
     }
 
-    /// TBL with a single-register table. Each byte of `indices` selects a
-    /// byte from `table`; values >= 16 produce zero.
     pub fn vec_tbl(&mut self, table: ValueRef, indices: ValueRef, q: bool) -> ValueRef {
         self.push(Armlet::new(Op::VecTbl, Ty::U128).with_args(&[table, indices]).with_imm(q as u64))
     }
-    /// TBL with a 2-register table. Each index in 0..32 selects from
-    /// table0||table1; values >= 32 produce zero.
     pub fn vec_tbl2(&mut self, table0: ValueRef, table1: ValueRef, indices: ValueRef, q: bool) -> ValueRef {
         self.push(Armlet::new(Op::VecTbl2, Ty::U128)
             .with_args(&[table0, table1, indices])
             .with_imm(q as u64))
     }
-    /// TBL with a 3-register table. Each index in 0..48 selects from
-    /// table0||table1||table2; values >= 48 produce zero.
     pub fn vec_tbl3(&mut self, table0: ValueRef, table1: ValueRef, table2: ValueRef, indices: ValueRef, q: bool) -> ValueRef {
         self.push(Armlet::new(Op::VecTbl3, Ty::U128)
             .with_args(&[table0, table1, table2, indices])
             .with_imm(q as u64))
     }
 
-    /// REV16/32/64 family. `src_lane_log2` is the byte-level reversal
-    /// granularity (0=B, 1=H, 2=S); `container_log2` selects which Rev op
-    /// to use (1=H container/Rev16, 2=S/Rev32, 3=D/Rev64).
     pub fn vec_rev(&mut self, vn: ValueRef, src_lane_log2: u32, container_log2: u32, q: bool) -> ValueRef {
         let op = match container_log2 {
             1 => Op::VecRev16,
@@ -582,7 +518,6 @@ impl<'b> IrEmitter<'b> {
         self.vec_perm(Op::VecTrn2, vn, vm, lane_log2, q)
     }
 
-    // ─── NZCV ───────────────────────────────────────────────────────────────
     pub fn get_nzcv(&mut self) -> ValueRef {
         self.push(Armlet::new(Op::GetNzcv, Ty::Nzcv))
     }
@@ -591,7 +526,6 @@ impl<'b> IrEmitter<'b> {
         self.push(Armlet::new(Op::SetNzcv, Ty::Void).with_args(&[value]));
     }
 
-    // ─── Integer ALU ────────────────────────────────────────────────────────
     pub fn add(&mut self, a: ValueRef, b: ValueRef, size: RegSize) -> ValueRef {
         let (op, ty) = match size {
             RegSize::W => (Op::Add32, Ty::U32),
@@ -684,7 +618,6 @@ impl<'b> IrEmitter<'b> {
         self.push(Armlet::new(op, ty).with_args(&[a, amt]))
     }
 
-    // ─── Memory ─────────────────────────────────────────────────────────────
     pub fn load(&mut self, addr: ValueRef, size_bytes: u32) -> ValueRef {
         let (op, ty) = match size_bytes {
             1  => (Op::Load8,   Ty::U8),
@@ -709,12 +642,9 @@ impl<'b> IrEmitter<'b> {
         self.push(Armlet::new(op, Ty::Void).with_args(&[addr, value]));
     }
 
-    // ─── Branches ───────────────────────────────────────────────────────────
-    /// Direct unconditional branch. Sets the block terminal.
     pub fn branch(&mut self, target_pc: u64, link: bool) {
         let op = if link { Op::BranchLink } else { Op::Branch };
         if link {
-            // BL: stash return address into X30.
             let ret_addr = self.const_u64(self.current_pc.wrapping_add(4));
             self.set_x(30, ret_addr);
         }
@@ -722,7 +652,6 @@ impl<'b> IrEmitter<'b> {
         self.block.terminal = Terminal::DirectBranch { target_pc, link };
     }
 
-    /// Conditional direct branch — falls through to `current_pc + 4` if cond fails.
     pub fn branch_cond(&mut self, cond: Cond, target_pc: u64) {
         let nzcv = self.get_nzcv();
         self.push(Armlet::new(Op::BranchCond, Ty::Void)

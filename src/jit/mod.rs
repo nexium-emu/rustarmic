@@ -18,11 +18,6 @@ use dispatcher::JitFn;
 pub struct JitConfig {
     pub translate: TranslateOptions,
     pub code_cache_bytes: usize,
-    /// Emit the bounds-checked direct-memory fast path for guest loads/stores.
-    /// When `true`, the emitter wraps every `Load*`/`Store*` in a
-    /// `(va - mem_base_va) + width <= mem_size`-check; in-range accesses hit
-    /// `[mem_base + offset]` directly, out-of-range fall back to the fn-ptr
-    /// handlers. Default `false` so the disabled case pays nothing.
     pub use_fastmem: bool,
 }
 
@@ -62,21 +57,13 @@ impl Jit {
         })
     }
 
-    /// Drop any cached blocks whose guest PC falls in `[start, start+len)`.
-    /// See [`CodeCache::invalidate_range`] for the SMC caveats.
     pub fn invalidate_range(&mut self, start: u64, len: u64) {
         self.cache.invalidate_range(start, len);
     }
 
     pub fn run(&mut self, ctx: &mut CpuContext, mem: &mut dyn Memory) -> Result<ExitReason> {
-        // Clear the cooperative halt flag on entry — callers expect each
-        // run() invocation to start fresh.
         ctx.should_halt = 0;
         loop {
-            // Cooperative halt point. A mem hook (or another thread sharing
-            // *ctx via raw pointer) can set should_halt=1 to bail at the next
-            // block boundary; this is what lets the embedder stop a runaway
-            // unmapped-write loop without modifying the JIT thunk.
             if ctx.should_halt != 0 {
                 ctx.should_halt = 0;
                 return Ok(ExitReason::Stopped);

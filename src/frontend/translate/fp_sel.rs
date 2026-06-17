@@ -1,7 +1,3 @@
-//! FCSEL — conditional select between two scalar FP registers. We reuse the
-//! existing integer `Op::Csel{32,64}` since the bits move through the IR as
-//! U32/U64 values regardless.
-
 use disarm64::decoder::FLOATSEL;
 
 use crate::arch::Cond;

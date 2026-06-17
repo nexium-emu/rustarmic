@@ -1,8 +1,3 @@
-//! Per-block prologue/epilogue are now empty — the shared host→JIT thunk
-//! (see [`crate::backend::thunk`]) does the callee-saved push/pop and the
-//! XMM6..XMM15 save/restore once per `Jit::run` iteration. Blocks just run
-//! the body, then `ret` (or `jmp` to the next block via a chain patch).
-
 use iced_x86::code_asm::*;
 
 use crate::backend::regalloc::Allocation;

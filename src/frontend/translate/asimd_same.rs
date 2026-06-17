@@ -1,10 +1,3 @@
-//! ASIMD "same"-form three-operand vector ops (Vd, Vn, Vm with matching shapes).
-//!
-//! Covered so far:
-//!   - bitwise: AND, ORR, EOR, BIC, ORN (also gives MOV V.16B via ORR Vd,Vn,Vn)
-//!   - integer add/sub: ADD, SUB across 8B/16B/4H/8H/2S/4S/2D lanes
-//! Compare, multiply, min/max, etc. come in later phases.
-
 use disarm64::decoder::ASIMDSAME;
 
 use crate::error::{Error, Result};
@@ -19,9 +12,6 @@ enum Kind {
     CmEq, CmGt, CmGe, CmHi, CmHs,
     Bit, Bif, Bsl,
     Smin, Smax, Umin, Umax,
-    // FP per-lane ops. disarm64 groups every FP vector form (2S/4S/2D) into a
-    // single `_V_2S_` enum variant, so we only need one `Kind` per op and
-    // decode the (q, sz) bits at translate time.
     FAdd, FSub, FMul, FDiv, FMax, FMin,
     FCmEq, FCmGt, FCmGe,
     FMla, FMls,
@@ -76,7 +66,7 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDSAME) -> Result<InstStatus> 
     };
 
     let q    = bit(raw, 30) == 1;
-    let size = bits(raw, 22, 2); // 00=B, 01=H, 10=S, 11=D
+    let size = bits(raw, 22, 2);
     let rm   = bits(raw, 16, 5) as u8;
     let rn   = bits(raw, 5,  5) as u8;
     let rd   = bits(raw, 0,  5) as u8;
@@ -88,9 +78,6 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDSAME) -> Result<InstStatus> 
         Kind::Add => em.vec_add(vn, vm, size, q),
         Kind::Sub => em.vec_sub(vn, vm, size, q),
         Kind::Mul => {
-            // 8-bit lane MUL still needs unpack/widen/pack decomposition;
-            // 16/32/64-bit lanes are all wired up (64-bit via PMULUDQ
-            // partial products — see backend emit).
             if size == 0 {
                 return Err(Error::Unsupported { pc: em.current_pc, opcode: raw });
             }
@@ -107,7 +94,6 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDSAME) -> Result<InstStatus> 
         Kind::CmHi => em.vec_cmhi(vn, vm, size, q),
         Kind::CmHs => em.vec_cmhs(vn, vm, size, q),
         Kind::Bit | Kind::Bif | Kind::Bsl => {
-            // These read Vd as their third source, so fetch it now.
             let vd_prev = em.get_v_q(rd);
             match kind {
                 Kind::Bit => em.vec_bit(vd_prev, vn, vm, q),
@@ -117,8 +103,6 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDSAME) -> Result<InstStatus> 
             }
         }
         Kind::Smin | Kind::Smax | Kind::Umin | Kind::Umax => {
-            // 64-bit lanes are synthesised via pcmpgtq + XOR-blend in the
-            // backend; all sizes valid.
             match kind {
                 Kind::Smin => em.vec_smin(vn, vm, size, q),
                 Kind::Smax => em.vec_smax(vn, vm, size, q),
@@ -129,7 +113,6 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDSAME) -> Result<InstStatus> 
         }
         Kind::FAdd | Kind::FSub | Kind::FMul | Kind::FDiv | Kind::FMax | Kind::FMin
         | Kind::FCmEq | Kind::FCmGt | Kind::FCmGe => {
-            // sz bit at 22 selects single (0) vs double (1).
             let double = bit(raw, 22) == 1;
             if double && !q {
                 return Err(Error::Decode { pc: em.current_pc, opcode: raw });

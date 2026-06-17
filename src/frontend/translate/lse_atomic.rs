@@ -1,11 +1,3 @@
-//! ARMv8.1-A LSE atomic instructions.
-//!
-//! We decompose each atomic into a `load → compute → store → writeback Rt`
-//! sequence built from existing IR ops. This is correct for single-threaded
-//! emulation; multi-threaded guests would need a dedicated atomic callback
-//! path on the host. Acquire/Release suffixes are no-ops here because x86 is
-//! TSO and we serialise within a single block anyway.
-
 use disarm64::decoder::LSE_ATOMIC;
 
 use crate::arch::{Cond, RegSize};

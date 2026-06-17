@@ -1,7 +1,3 @@
-//! ASIMD table lookup. Only the single-register TBL form is wired up so
-//! far — multi-register TBL/TBX (table spans 2..4 consecutive V regs) need
-//! contiguous-register tracking and will land in a follow-up.
-
 use disarm64::decoder::ASIMDTBL;
 
 use crate::error::{Error, Result};
@@ -17,12 +13,11 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDTBL) -> Result<InstStatus> {
     };
 
     let q     = bit(raw, 30) == 1;
-    let len   = bits(raw, 13, 2); // 00=1 reg, 01=2, 10=3, 11=4
+    let len   = bits(raw, 13, 2);
     let rm    = bits(raw, 16, 5) as u8;
     let rn    = bits(raw, 5, 5) as u8;
     let rd    = bits(raw, 0, 5) as u8;
 
-    // The table reg(s) are Vn, V(n+1), V(n+2), V(n+3) — wrapping at V31.
     let t0 = em.get_v_q(rn);
     let indices = em.get_v_q(rm);
     let result = match len {
@@ -36,9 +31,6 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDTBL) -> Result<InstStatus> {
             let t2 = em.get_v_q((rn + 2) & 31);
             em.vec_tbl3(t0, t1, t2, indices, q)
         }
-        // TBL4 needs 5 SSA args (4 tables + indices) which our 4-arg Armlet
-        // can't hold; deferred until we either split-emit at IR level or
-        // grow Armlet's arg count.
         _ => return Err(Error::Unsupported { pc: em.current_pc, opcode: raw }),
     };
     em.set_v_q(rd, result);

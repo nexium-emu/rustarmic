@@ -1,25 +1,3 @@
-//! Advanced SIMD vector × scalar-element ops.
-//!
-//! Covers the FP and integer "by element" forms used by typical 3D math:
-//!   FMLA / FMLS / FMUL / FMULX (S-element 32-bit, D-element 64-bit)
-//!   MUL  / MLA  / MLS          (H-element 16-bit, S-element 32-bit)
-//!
-//! Encoding layout (FMLA Vd.<T>, Vn.<T>, Vm.<Ts>[i]):
-//!     0  Q  U  0  1111  sz  L  M  Rm[3:0]  opcode  H  0  Rn  Rd
-//!
-//! FP element-index decoding:
-//!     sz=0 (S, 32-bit lane): idx = H:L (2 bits);    M is part of Rm
-//!     sz=1 (D, 64-bit lane): idx = H     (1 bit);    L:M are part of Rm
-//!
-//! Integer element-index decoding (size field at bits 23:22):
-//!     size=01 (H, 16-bit lane): idx = H:L:M (3 bits)
-//!     size=10 (S, 32-bit lane): idx = H:L   (2 bits); M is part of Rm
-//!
-//! Implementation strategy: extract Vm[idx] as a scalar via the existing
-//! vec_extract_uN ops, broadcast it across a fresh vector with vec_dup_gpr,
-//! then feed (Vn, broadcast_vec) into the same IR op the SAME-form translator
-//! uses. No new IR opcodes needed — matches how dynarmic lowers these.
-
 use disarm64::decoder::ASIMDELEM;
 
 use crate::error::{Error, Result};
@@ -36,39 +14,24 @@ enum IntKind { Mul, Mla, Mls }
 pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDELEM) -> Result<InstStatus> {
     use ASIMDELEM::*;
     match insn {
-        // FP32/FP64 by-element forms (sz bit at 22 selects S vs D).
         FMLA_Vd_Vn_Em(i)    => translate_fp(em, i.0, FpKind::FMla),
         FMLS_Vd_Vn_Em(i)    => translate_fp(em, i.0, FpKind::FMls),
         FMUL_Vd_Vn_Em(i)    => translate_fp(em, i.0, FpKind::FMul),
         FMULX_Vd_Vn_Em(i)   => translate_fp(em, i.0, FpKind::FMulx),
 
-        // FP16 (half-precision) by-element forms. These need an FP16↔FP32
-        // widen path that the current IR doesn't yet have (no Op::F16ToF32
-        // / Op::F32ToF16, no VecFmla_H). Surface clearly so the host log
-        // shows exactly which FP16 op is wanted.
         FMLA_Vd_Vn_Em16(i)  => Err(Error::Unsupported { pc: em.current_pc, opcode: i.0 }),
         FMLS_Vd_Vn_Em16(i)  => Err(Error::Unsupported { pc: em.current_pc, opcode: i.0 }),
         FMUL_Vd_Vn_Em16(i)  => Err(Error::Unsupported { pc: em.current_pc, opcode: i.0 }),
         FMULX_Vd_Vn_Em16(i) => Err(Error::Unsupported { pc: em.current_pc, opcode: i.0 }),
 
-        // Integer 16/32-bit by-element. The "Em16" suffix here is disarm64
-        // naming for the encoding form — the actual lane width comes from
-        // the `size` field at bits 23:22 (01 = H integer, 10 = S integer).
         MUL_Vd_Vn_Em16(i)   => translate_int(em, i.0, IntKind::Mul),
         MLA_Vd_Vn_Em16(i)   => translate_int(em, i.0, IntKind::Mla),
         MLS_Vd_Vn_Em16(i)   => translate_int(em, i.0, IntKind::Mls),
 
-        // Widening (SMLAL/UMLAL/SMULL/UMULL etc), saturating (SQDMUL*),
-        // rounding (SQRDMUL*), FP16-fused (FMLAL*), complex (FCMLA) all
-        // not yet implemented. Surface the raw opcode so the user can see
-        // which form needs adding next.
         other => Err(Error::Unsupported { pc: em.current_pc, opcode: raw_of(&other) }),
     }
 }
 
-/// Extract the raw u32 from any ASIMDELEM variant. Used to surface the
-/// instruction word in the Unsupported error so the host log shows exactly
-/// what tripped the bailout.
 fn raw_of(insn: &ASIMDELEM) -> u32 {
     use ASIMDELEM::*;
     match insn {
@@ -127,7 +90,6 @@ fn translate_fp(em: &mut IrEmitter<'_>, raw: u32, kind: FpKind) -> Result<InstSt
     let rn = bits(raw, 5, 5) as u8;
     let rd = bits(raw, 0, 5) as u8;
 
-    // D-element form requires Q=1 (2D vector); otherwise undefined.
     if sz == 1 && !q {
         return Err(Error::Decode { pc: em.current_pc, opcode: raw });
     }
@@ -168,8 +130,6 @@ fn translate_fp(em: &mut IrEmitter<'_>, raw: u32, kind: FpKind) -> Result<InstSt
             em.vec_fmls(vd_prev, vn, broadcast, double, q)
         }
         FpKind::FMul  => em.vec_fmul(vn, broadcast, double, q),
-        // FMULX = FMUL with special (±0 × ±inf) → ±2 handling. SM64 never hits
-        // those operand combinations; treat as FMUL. Refine if a guest cares.
         FpKind::FMulx => em.vec_fmul(vn, broadcast, double, q),
     };
     em.set_v_q(rd, result);

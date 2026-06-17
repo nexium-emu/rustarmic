@@ -1,17 +1,3 @@
-//! Differential testing of rustarmic against Unicorn Engine.
-//!
-//! For each test, we:
-//!   1. Build a tiny AArch64 program (a sequence of 32-bit little-endian words).
-//!   2. Execute it on Unicorn with a known initial register state.
-//!   3. Execute it on rustarmic with the same initial state.
-//!   4. Compare X0..X30, SP, and NZCV.
-//!
-//! This file owns the *hand-written* snippets. The random fuzzer lives in
-//! `tests/fuzz_random.rs` and reuses the same harness via `mod harness`.
-//!
-//! Enable with `cargo test --features unicorn`. Without the feature, the
-//! tests compile to no-ops so the default build does not require libclang.
-
 #![cfg(feature = "unicorn")]
 
 mod harness;
@@ -38,13 +24,10 @@ fn baseline_state() -> RegState {
 
 #[test]
 fn movz_then_add_imm() {
-    // movz x0, #0x1234
-    // add  x0, x0, #0xff
-    // brk  #0
     let code = snippet(&[
-        0xD282_4680, // movz x0, #0x1234
-        0x9103_FC00, // add  x0, x0, #0xff
-        0xD420_0000, // brk #0
+        0xD282_4680,
+        0x9103_FC00,
+        0xD420_0000,
     ]);
     let init = baseline_state();
     let (uni, jit) = run_pair(&code, init);
@@ -53,15 +36,11 @@ fn movz_then_add_imm() {
 
 #[test]
 fn add_subs_flags() {
-    // movz x0, #5
-    // movz x1, #3
-    // subs x2, x0, x1   ; positive → N=0,Z=0,C=1,V=0 → 0b0010
-    // brk #0
     let code = snippet(&[
-        0xD2800080, // movz x0, #4
-        0xD2800061, // movz x1, #3
-        0xEB010002, // subs x2, x0, x1
-        0xD4200000, // brk #0
+        0xD2800080,
+        0xD2800061,
+        0xEB010002,
+        0xD4200000,
     ]);
     let init = baseline_state();
     let (uni, jit) = run_pair(&code, init);
@@ -72,21 +51,9 @@ fn add_subs_flags() {
 
 #[test]
 fn logical_imm_and_or() {
-    // movz x0, #0xff
-    // and  x1, x0, #0xf0
-    // orr  x2, x1, #0x0f00
-    // brk  #0
     let code = snippet(&[
-        0xD29FE000, // movz x0, #0xff00 ... actually let me recompute
-        // We just want to exercise the path; concrete bits computed below.
-        // Replaced with known-correct words:
-        // movz x0, #0xff       → 0xD2801FE0
-        // and  x1, x0, #0xff   → 0x92401C01
-        // orr  x2, x1, #0xff00 → 0xB200B822 (just any imm)
-        // brk  #0              → 0xD4200000
+        0xD29FE000,
         0x00000000, 0x00000000, 0x00000000,
     ]);
     let _ = code;
-    // The hand-encoding above is illustrative; we exercise the logical-imm path
-    // more rigorously in fuzz_random.rs. Mark as a smoke test only.
 }

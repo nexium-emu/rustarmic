@@ -1,7 +1,3 @@
-//! ASIMD "different"-form widening ops. Coverage so far: SADDL/SADDL2 and
-//! UADDL/UADDL2 (widening signed/unsigned add). SSUBL/USUBL/MULL etc. share
-//! the same shape and can slot in here as needed.
-
 use disarm64::decoder::ASIMDDIFF;
 
 use crate::error::{Error, Result};
@@ -34,7 +30,7 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDDIFF) -> Result<InstStatus> 
 
 fn translate_with(em: &mut IrEmitter<'_>, raw: u32, kind: Kind) -> Result<InstStatus> {
     let high_half = bit(raw, 30) == 1;
-    let size = bits(raw, 22, 2);  // 00=B->H, 01=H->S, 10=S->D
+    let size = bits(raw, 22, 2);
     let rm   = bits(raw, 16, 5) as u8;
     let rn   = bits(raw, 5,  5) as u8;
     let rd   = bits(raw, 0,  5) as u8;

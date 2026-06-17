@@ -42,9 +42,6 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: IC_SYSTEM) -> Result<InstStatus> 
             let crm = bits(raw, 8, 4);
             let op2 = bits(raw, 5, 3);
             let rt  = bits(raw, 0, 5) as u8;
-            // DC ZVA: zero one 64-byte block at (Xt & ~63). Other cache/TLB
-            // maintenance variants (DC CVAU/CVAC/CIVAC, IC IVAU, TLBI, ...)
-            // are safe no-ops under our flat memory + no-modeled-cache setup.
             if (op1, crn, crm, op2) == (3, 7, 4, 1) {
                 let base = em.get_x_or_sp(rt, false);
                 let mask = em.const_u64(!63u64);

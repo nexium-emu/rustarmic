@@ -5,9 +5,6 @@ use region::{Allocation, Protection};
 use crate::backend::{emit_thunk_bytes, ChainSite};
 use crate::error::{Error, Result};
 
-/// The shared host→JIT thunk signature: `(block_fn, ctx) -> exit_token`.
-/// Blocks themselves no longer have a prologue, so the thunk does all the
-/// callee-saved push/pop and (on Windows) the XMM6..XMM15 save/restore.
 pub type ThunkFn = unsafe extern "C" fn(block_fn: u64, ctx: *mut crate::jit::context::CpuContext) -> u64;
 
 pub struct CodeCache {
@@ -40,30 +37,18 @@ impl CodeCache {
             pending: HashMap::new(),
             thunk: core::ptr::null(),
         };
-        // Install the shared thunk at the head of the cache so every later
-        // host→JIT call can route through it.
         let thunk_bytes = emit_thunk_bytes()?;
         let thunk_ptr = this.append_raw(&thunk_bytes)?;
         this.thunk = thunk_ptr;
         Ok(this)
     }
 
-    /// Address of the shared thunk. Cast to [`ThunkFn`] to invoke.
     pub fn thunk(&self) -> *const u8 { self.thunk }
 
     pub fn lookup(&self, pc: u64) -> Option<*const u8> {
         self.table.get(&pc).map(|e| e.host_ptr)
     }
 
-    /// Drop cache entries whose guest PC falls in `[start, start+len)`.
-    ///
-    /// Limitation: chain sites in OTHER (still-cached) blocks that were already
-    /// patched to JMP into a now-invalidated block remain pointing at the old
-    /// host bytes. The bump allocator never reclaims those bytes, so the JMP
-    /// is still a valid host address but executes stale guest code. This is
-    /// acceptable for NeXium's current usage pattern, where invalidation
-    /// happens at NRO load time before any callers exist; true mid-execution
-    /// SMC is deferred to a later phase.
     pub fn invalidate_range(&mut self, start: u64, len: u64) {
         let end = start.wrapping_add(len);
         let in_range = |pc: u64| pc >= start && pc < end;

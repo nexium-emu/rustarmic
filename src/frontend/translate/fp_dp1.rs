@@ -1,7 +1,3 @@
-//! Floating-point data-processing (1 source) — `FMOV`, `FNEG`, `FABS`,
-//! `FSQRT`, etc. Phase 1 covers `FMOV Vd, Vn` only; arithmetic unaries
-//! follow in later phases.
-
 use disarm64::decoder::FLOATDP1;
 
 use crate::error::{Error, Result};
@@ -31,8 +27,6 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: FLOATDP1) -> Result<InstStatus> {
     let rn = bits(raw, 5, 5) as u8;
     let rd = bits(raw, 0, 5) as u8;
 
-    // FCVT splits source-precision (`ptype`) from destination-precision (`opc`
-    // in bits 16:15), so handle it ahead of the shared `is_double` logic.
     if matches!(kind, Kind::Fcvt) {
         let opc = bits(raw, 15, 2);
         return translate_fcvt(em, ptype, opc, rn, rd);
@@ -76,13 +70,11 @@ fn translate_fcvt(
     rd: u8,
 ) -> Result<InstStatus> {
     match (src_ptype, dst_opc) {
-        // S → D
         (0b00, 0b01) => {
             let src = em.get_v_s(rn);
             let r = em.push(Armlet::new(Op::FcvtSD, Ty::U64).with_args(&[src]));
             em.set_v_d(rd, r);
         }
-        // D → S
         (0b01, 0b00) => {
             let src = em.get_v_d(rn);
             let r = em.push(Armlet::new(Op::FcvtDS, Ty::U32).with_args(&[src]));

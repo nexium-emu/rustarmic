@@ -1,10 +1,3 @@
-//! `ValueRef` — a 32-bit index that names every SSA value in a block.
-
-/// Reference to a value produced by an earlier `Armlet` in the same block.
-///
-/// Represented as `u32` so that four args + a result name fit in 20 bytes,
-/// leaving room for the opcode, type, flags, and a packed immediate inside
-/// a single 32-byte `Armlet`.
 #[repr(transparent)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ValueRef(pub u32);
@@ -29,7 +22,6 @@ impl Default for ValueRef {
     #[inline] fn default() -> Self { Self::NONE }
 }
 
-/// SSA value types. Kept as a 1-byte enum so it fits in the `Armlet` header.
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ty {
@@ -44,7 +36,6 @@ pub enum Ty {
 }
 
 impl Ty {
-    /// Width in bits, or 0 for Void.
     #[inline]
     pub const fn bits(self) -> u32 {
         match self {

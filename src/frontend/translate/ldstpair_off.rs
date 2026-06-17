@@ -24,7 +24,6 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: LDSTPAIR_OFF) -> Result<InstStatu
     let rt   = bits(raw, 0, 5) as u8;
 
     let (scale, size_bytes, size_kind) = if is_fp {
-        // FP: opc 00=S(4), 01=D(8), 10=Q(16).
         match opc {
             0b00 => (2u32, 4u32,  RegSize::W),
             0b01 => (3,    8,     RegSize::X),
@@ -48,7 +47,6 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: LDSTPAIR_OFF) -> Result<InstStatu
 
     if is_load {
         if is_fp && size_bytes == 16 {
-            // Decompose each Q into 2x u64 loads + assemble.
             fp_load_q(em, rt,  access_addr);
             fp_load_q(em, rt2, access_addr2);
         } else {

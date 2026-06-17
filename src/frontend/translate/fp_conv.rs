@@ -1,8 +1,3 @@
-//! Integer ↔ FP conversions and `FMOV` between GPR and V registers.
-//! Phase 9 covers truncating FP→signed-int (`FCVTZS`), signed-int→FP
-//! (`SCVTF`), and the FP↔GPR bit-move `FMOV` forms. Other rounding modes
-//! (FCVTAS/MS/NS/PS) and unsigned variants follow later.
-
 use disarm64::decoder::FLOAT2INT;
 
 use crate::arch::RegSize;
@@ -32,8 +27,8 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: FLOAT2INT) -> Result<InstStatus> 
     let rn     = bits(raw, 5, 5) as u8;
     let rd     = bits(raw, 0, 5) as u8;
 
-    let dst_is_x = sf == 1;          // GPR dst width (FCVTZS / FMOV→GPR)
-    let src_is_x = sf == 1;          // GPR src width (SCVTF / FMOV→FP)
+    let dst_is_x = sf == 1;
+    let src_is_x = sf == 1;
     let is_double = match ptype {
         0b00 => false,
         0b01 => true,
@@ -41,7 +36,6 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: FLOAT2INT) -> Result<InstStatus> 
     };
 
     match (rmode, opcode) {
-        // FCVTZS: rmode = 11, opcode = 000  → FP → signed-int truncate
         (0b11, 0b000) => {
             let src = if is_double { em.get_v_d(rn) } else { em.get_v_s(rn) };
             let (op, ty) = match (is_double, dst_is_x) {
@@ -55,7 +49,6 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: FLOAT2INT) -> Result<InstStatus> 
             em.set_gpr(rd, r, size);
         }
 
-        // SCVTF: rmode = 00, opcode = 010  → signed-int → FP
         (0b00, 0b010) => {
             let size = if src_is_x { RegSize::X } else { RegSize::W };
             let src = em.get_gpr(rn, size);
@@ -69,14 +62,12 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: FLOAT2INT) -> Result<InstStatus> 
             if is_double { em.set_v_d(rd, r); } else { em.set_v_s(rd, r); }
         }
 
-        // FMOV Fd, Rn (GPR → FP): rmode = 00, opcode = 111
         (0b00, 0b111) => {
             let size = if src_is_x { RegSize::X } else { RegSize::W };
             let src = em.get_gpr(rn, size);
             if is_double { em.set_v_d(rd, src); } else { em.set_v_s(rd, src); }
         }
 
-        // FMOV Rd, Fn (FP → GPR): rmode = 00, opcode = 110
         (0b00, 0b110) => {
             let src = if is_double { em.get_v_d(rn) } else { em.get_v_s(rn) };
             let size = if dst_is_x { RegSize::X } else { RegSize::W };

@@ -1,5 +1,3 @@
-//! ASIMD horizontal reductions: ADDV (more to come).
-
 use disarm64::decoder::ASIMDALL;
 
 use crate::error::{Error, Result};
@@ -21,12 +19,11 @@ fn translate_addv(em: &mut IrEmitter<'_>, raw: u32) -> Result<InstStatus> {
     let rn   = bits(raw, 5, 5) as u8;
     let rd   = bits(raw, 0, 5) as u8;
 
-    // Only 4S form (Q=1, size=10) is wired up at the moment.
     if !(q && size == 2) {
         return Err(Error::Unsupported { pc: em.current_pc, opcode: raw });
     }
     let vn = em.get_v_q(rn);
     let sum = em.vec_addv32(vn);
-    em.set_v_s(rd, sum); // ARM writes the sum to V[rd], zeroing the upper bits
+    em.set_v_s(rd, sum);
     Ok(InstStatus::Continue)
 }
