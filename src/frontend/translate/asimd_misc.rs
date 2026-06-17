@@ -9,6 +9,8 @@ use crate::util::bits::{bit, bits};
 enum Kind {
     Neg, Abs, Not, FNeg, FAbs, FSqrt, Xtn, Rev16, Rev32, Rev64,
     FRintN, FRintM, FRintP, FRintZ, FRintA, FRintX,
+    CmEq0, CmGt0, CmGe0, CmLe0, CmLt0,
+    FCmEq0, FCmGt0, FCmGe0, FCmLe0, FCmLt0,
 }
 
 pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDMISC) -> Result<InstStatus> {
@@ -32,6 +34,16 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDMISC) -> Result<InstStatus> 
         FRINTA_Vd_Vn(i) => (i.0, Kind::FRintA),
         FRINTX_Vd_Vn(i) => (i.0, Kind::FRintX),
         FRINTI_Vd_Vn(i) => (i.0, Kind::FRintX),
+        CMEQ_Vd_Vn_IMM0(i) => (i.0, Kind::CmEq0),
+        CMGT_Vd_Vn_IMM0(i) => (i.0, Kind::CmGt0),
+        CMGE_Vd_Vn_IMM0(i) => (i.0, Kind::CmGe0),
+        CMLE_Vd_Vn_IMM0(i) => (i.0, Kind::CmLe0),
+        CMLT_Vd_Vn_IMM0(i) => (i.0, Kind::CmLt0),
+        FCMEQ_Vd_Vn_FPIMM0(i) => (i.0, Kind::FCmEq0),
+        FCMGT_Vd_Vn_FPIMM0(i) => (i.0, Kind::FCmGt0),
+        FCMGE_Vd_Vn_FPIMM0(i) => (i.0, Kind::FCmGe0),
+        FCMLE_Vd_Vn_FPIMM0(i) => (i.0, Kind::FCmLe0),
+        FCMLT_Vd_Vn_FPIMM0(i) => (i.0, Kind::FCmLt0),
         _ => return Err(Error::Unsupported { pc: em.current_pc, opcode: 0 }),
     };
 
@@ -103,6 +115,36 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDMISC) -> Result<InstStatus> 
                 _ => unreachable!(),
             };
             em.vec_rev(vn, size, container_log2, q)
+        }
+        Kind::CmEq0 | Kind::CmGt0 | Kind::CmGe0 | Kind::CmLe0 | Kind::CmLt0 => {
+            let zlo = em.const_u64(0);
+            let zhi = em.const_u64(0);
+            let zero = em.vec_build_q(zlo, zhi);
+            match kind {
+                Kind::CmEq0 => em.vec_cmeq(vn, zero, size, q),
+                Kind::CmGt0 => em.vec_cmgt(vn, zero, size, q),
+                Kind::CmGe0 => em.vec_cmge(vn, zero, size, q),
+                Kind::CmLe0 => em.vec_cmge(zero, vn, size, q),
+                Kind::CmLt0 => em.vec_cmgt(zero, vn, size, q),
+                _ => unreachable!(),
+            }
+        }
+        Kind::FCmEq0 | Kind::FCmGt0 | Kind::FCmGe0 | Kind::FCmLe0 | Kind::FCmLt0 => {
+            let double = bit(raw, 22) == 1;
+            if double && !q {
+                return Err(Error::Decode { pc: em.current_pc, opcode: raw });
+            }
+            let zlo = em.const_u64(0);
+            let zhi = em.const_u64(0);
+            let zero = em.vec_build_q(zlo, zhi);
+            match kind {
+                Kind::FCmEq0 => em.vec_fcmeq(vn, zero, double, q),
+                Kind::FCmGt0 => em.vec_fcmgt(vn, zero, double, q),
+                Kind::FCmGe0 => em.vec_fcmge(vn, zero, double, q),
+                Kind::FCmLe0 => em.vec_fcmge(zero, vn, double, q),
+                Kind::FCmLt0 => em.vec_fcmgt(zero, vn, double, q),
+                _ => unreachable!(),
+            }
         }
     };
     em.set_v_q(rd, result);
