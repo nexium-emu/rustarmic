@@ -1,5 +1,6 @@
 #[repr(u16)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(non_camel_case_types)]
 pub enum Op {
     Void     = 0x000,
     Identity = 0x004,

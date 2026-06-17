@@ -69,7 +69,18 @@ impl Jit {
     }
 
     pub fn run(&mut self, ctx: &mut CpuContext, mem: &mut dyn Memory) -> Result<ExitReason> {
+        // Clear the cooperative halt flag on entry — callers expect each
+        // run() invocation to start fresh.
+        ctx.should_halt = 0;
         loop {
+            // Cooperative halt point. A mem hook (or another thread sharing
+            // *ctx via raw pointer) can set should_halt=1 to bail at the next
+            // block boundary; this is what lets the embedder stop a runaway
+            // unmapped-write loop without modifying the JIT thunk.
+            if ctx.should_halt != 0 {
+                ctx.should_halt = 0;
+                return Ok(ExitReason::Stopped);
+            }
             let pc = ctx.pc;
             let host_fn = if let Some(p) = self.cache.lookup(pc) {
                 p

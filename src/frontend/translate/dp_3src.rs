@@ -1,7 +1,7 @@
 use disarm64::decoder::DP_3SRC;
 
 use crate::arch::RegSize;
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::frontend::translator::InstStatus;
 use crate::ir::IrEmitter;
 use crate::util::bits::{bit, bits};
@@ -20,7 +20,6 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: DP_3SRC) -> Result<InstStatus> {
         UMSUBL_Rd_Rn_Rm_Ra(i) => (i.0, Kind::Umsubl),
         UMULH_Rd_Rn_Rm(i)     => (i.0, Kind::Umulh),
         SMULH_Rd_Rn_Rm(i)     => (i.0, Kind::Smulh),
-        _ => return Err(Error::Unsupported { pc: em.current_pc, opcode: 0 }),
     };
 
     let sf = bit(raw, 31);

@@ -22,7 +22,7 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: LDST_REGOFF) -> Result<InstStatus
         STRH_Rt_ADDR_REGOFF(i)  => (i.0, Kind::Store, false),
         LDR_Ft_ADDR_REGOFF(i)   => (i.0, Kind::FpLoad, false),
         STR_Ft_ADDR_REGOFF(i)   => (i.0, Kind::FpStore, false),
-        _ => return Err(Error::Unsupported { pc: em.current_pc, opcode: 0 }),
+        PRFM_PRFOP_ADDR_REGOFF(_) => return Ok(InstStatus::Continue),
     };
 
     let size    = bits(raw, 30, 2);

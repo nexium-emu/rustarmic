@@ -14,8 +14,8 @@ pub fn cpu_features() -> &'static CpuFeatures {
 
 #[cfg(target_arch = "x86_64")]
 fn detect() -> CpuFeatures {
-    let leaf7 = unsafe { std::arch::x86_64::__cpuid_count(7, 0) };
-    let leaf_ext = unsafe { std::arch::x86_64::__cpuid(0x80000001) };
+    let leaf7 = std::arch::x86_64::__cpuid_count(7, 0);
+    let leaf_ext = std::arch::x86_64::__cpuid(0x80000001);
     CpuFeatures {
         has_gfni:  (leaf7.ecx    & (1 << 8)) != 0,
         has_lzcnt: (leaf_ext.ecx & (1 << 5)) != 0,

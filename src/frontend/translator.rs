@@ -40,6 +40,7 @@ pub fn translate_instruction(em: &mut IrEmitter<'_>, inst: u32) -> Result<InstSt
         Operation::LDST_IMM9(insn)        => translate::ldst_imm9::translate(em, insn),
         Operation::LDST_UNSCALED(insn)    => translate::ldst_unscaled::translate(em, insn),
         Operation::LDST_REGOFF(insn)      => translate::ldst_regoff::translate(em, insn),
+        Operation::LOADLIT(insn)          => translate::loadlit::translate(em, insn),
         Operation::LDSTEXCL(insn)         => translate::ldstexcl::translate(em, insn),
         Operation::LSE_ATOMIC(insn)       => translate::lse_atomic::translate(em, insn),
         Operation::IC_SYSTEM(insn)        => translate::ic_system::translate(em, insn),
@@ -76,6 +77,8 @@ pub fn translate_instruction(em: &mut IrEmitter<'_>, inst: u32) -> Result<InstSt
         Operation::ASIMDALL(insn)         => translate::asimd_all::translate(em, insn),
         Operation::ASIMDDIFF(insn)        => translate::asimd_diff::translate(em, insn),
         Operation::ASIMDTBL(insn)         => translate::asimd_tbl::translate(em, insn),
+        Operation::ASIMDELEM(insn)        => translate::asimd_elem::translate(em, insn),
+        Operation::ASIMDIMM(insn)         => translate::asimd_imm::translate(em, insn),
         _ => Err(Error::Unsupported { pc: em.current_pc, opcode: inst }),
     }
 }

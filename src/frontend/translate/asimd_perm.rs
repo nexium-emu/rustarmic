@@ -8,7 +8,7 @@
 
 use disarm64::decoder::{ASIMDEXT, ASIMDPERM};
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::frontend::translator::InstStatus;
 use crate::ir::IrEmitter;
 use crate::util::bits::{bit, bits};

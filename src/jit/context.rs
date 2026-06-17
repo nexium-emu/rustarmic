@@ -58,7 +58,13 @@ pub struct CpuContext {
     pub fpsr: u32,
     pub nzcv: u8,
     pub exclusive_size: u8,
-    _pad0: [u8; 6],
+    /// Cooperative halt flag. Set non-zero from a memory hook or another
+    /// thread between blocks to make `Jit::run()` exit at the next block
+    /// boundary with `ExitReason::Stopped`. Cleared by `Jit::run()` on
+    /// entry. JIT-emitted code does not touch this field — it's polled by
+    /// the run-loop in Rust.
+    pub should_halt: u8,
+    _pad0: [u8; 5],
 }
 
 unsafe impl Send for CpuContext {}
@@ -99,7 +105,8 @@ impl Default for CpuContext {
             fpsr: 0,
             nzcv: 0,
             exclusive_size: 0,
-            _pad0: [0; 6],
+            should_halt: 0,
+            _pad0: [0; 5],
         }
     }
 }

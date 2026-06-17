@@ -2790,6 +2790,7 @@ fn scratch1_id() -> u8 {
 }
 
 #[inline]
+#[allow(dead_code)]
 fn scratch3_id() -> u8 {
     #[cfg(target_os = "windows")]
     { 8 }

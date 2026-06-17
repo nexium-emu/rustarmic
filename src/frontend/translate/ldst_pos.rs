@@ -28,7 +28,7 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: LDST_POS) -> Result<InstStatus> {
         STRH_Rt_ADDR_UIMM12(i)  => (i.0, Kind::Store, false),
         LDR_Ft_ADDR_UIMM12(i)   => (i.0, Kind::FpLoad, false),
         STR_Ft_ADDR_UIMM12(i)   => (i.0, Kind::FpStore, false),
-        _ => return Err(Error::Unsupported { pc: em.current_pc, opcode: 0 }),
+        PRFM_PRFOP_ADDR_UIMM12(_) => return Ok(InstStatus::Continue),
     };
 
     let size  = bits(raw, 30, 2);
@@ -36,7 +36,6 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: LDST_POS) -> Result<InstStatus> {
     let rn    = bits(raw, 5, 5) as u8;
     let rt    = bits(raw, 0, 5) as u8;
 
-    // FP SIMD with size=00 and opc[1] (bit 23) set is the Q-form (128-bit).
     let q_form = matches!(kind, Kind::FpLoad | Kind::FpStore) && size == 0 && bit(raw, 23) == 1;
     let bytes = if q_form { 16 } else { 1u32 << size };
     let offset = (imm12 as u64) * (bytes as u64);
