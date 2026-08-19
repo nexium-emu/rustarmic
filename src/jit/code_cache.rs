@@ -29,7 +29,7 @@ unsafe impl Send for CodeCache {}
 
 impl CodeCache {
     pub fn new(bytes: usize) -> Result<Self> {
-        let allocation = region::alloc(bytes, Protection::READ_WRITE_EXECUTE)
+        let allocation = region::alloc(bytes, Protection::READ_WRITE)
             .map_err(|e| Error::HostAlloc(e.to_string()))?;
         let capacity = allocation.len();
         let mut this = Self {
@@ -61,23 +61,41 @@ impl CodeCache {
         self.pending.retain(|&target_pc, _| !in_range(target_pc));
     }
 
+    /// Drop all translated blocks while retaining the executable allocation.
+    /// The dispatcher retries compilation after a cache rollover instead of
+    /// exposing CodeCacheFull to the guest.
+    pub fn reset(&mut self) -> Result<()> {
+        self.cursor = 0;
+        self.table.clear();
+        self.pending.clear();
+        let thunk_bytes = emit_thunk_bytes()?;
+        self.thunk = self.append_raw(&thunk_bytes)?;
+        Ok(())
+    }
+
     fn append_raw(&mut self, bytes: &[u8]) -> Result<*const u8> {
         let aligned_cursor = (self.cursor + 15) & !15;
         if aligned_cursor + bytes.len() > self.capacity {
             return Err(Error::CodeCacheFull);
         }
-        let ptr = unsafe {
-            let base = self.region.as_mut_ptr::<u8>();
+        let base = self.region.as_mut_ptr::<u8>();
+        unsafe {
+            // Keep the cache W^X: make the allocation writable only while a
+            // new block is being published, then return it to RX before any
+            // generated code can execute.
+            region::protect(base, self.capacity, Protection::READ_WRITE)
+                .map_err(|e| Error::HostAlloc(e.to_string()))?;
             let dst = base.add(aligned_cursor);
             core::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len());
             self.cursor = aligned_cursor + bytes.len();
+            region::protect(base, self.capacity, Protection::READ_EXECUTE)
+                .map_err(|e| Error::HostAlloc(e.to_string()))?;
             #[cfg(target_arch = "x86_64")]
             {
                 core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
             }
-            dst as *const u8
-        };
-        Ok(ptr)
+            Ok(dst as *const u8)
+        }
     }
 
     pub fn install(
