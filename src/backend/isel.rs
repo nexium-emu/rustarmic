@@ -3049,7 +3049,7 @@ fn emit_clz(
     dst: Option<ValueRef>,
     bits: u32,
 ) -> Result<()> {
-    let has_lzcnt = crate::backend::cpu_features::cpu_features().has_lzcnt;
+    let has_lzcnt = crate::backend::cpu_features::active_features().has_lzcnt;
     if bits == 64 {
         load64(asm, alloc, a.args[0], rax)?;
         if has_lzcnt {
@@ -3096,7 +3096,7 @@ fn emit_cls(
     dst: Option<ValueRef>,
     bits: u32,
 ) -> Result<()> {
-    let has_lzcnt = crate::backend::cpu_features::cpu_features().has_lzcnt;
+    let has_lzcnt = crate::backend::cpu_features::active_features().has_lzcnt;
     if bits == 64 {
         load64(asm, alloc, a.args[0], rax)?;
         asm.mov(rcx, rax)?;
@@ -3136,7 +3136,7 @@ fn emit_rbit(
     dst: Option<ValueRef>,
     bits: u32,
 ) -> Result<()> {
-    let has_gfni = crate::backend::cpu_features::cpu_features().has_gfni;
+    let has_gfni = crate::backend::cpu_features::active_features().has_gfni;
     if bits == 64 {
         load64(asm, alloc, a.args[0], rax)?;
         if has_gfni {

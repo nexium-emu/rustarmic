@@ -20,6 +20,9 @@ pub enum Error {
     #[error("host memory allocation failed: {0}")]
     HostAlloc(String),
 
+    #[error("unsupported host CPU: Rustarmic requires x86-64 SSE4.1")]
+    UnsupportedHost,
+
     #[error("translation block too large at PC {pc:#x}")]
     BlockTooLarge { pc: u64 },
 }

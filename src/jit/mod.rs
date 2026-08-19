@@ -14,11 +14,16 @@ use crate::optimizer::{Scratch, optimize_with_scratch};
 use code_cache::CodeCache;
 use dispatcher::JitFn;
 
+pub use crate::backend::cpu_features::CpuFeatures;
+
 #[derive(Clone, Debug)]
 pub struct JitConfig {
     pub translate: TranslateOptions,
     pub code_cache_bytes: usize,
     pub use_fastmem: bool,
+    /// `None` uses runtime CPUID.  Tests and embedders may provide a masked
+    /// feature set to exercise portable fallbacks deterministically.
+    pub host_features: Option<CpuFeatures>,
 }
 
 impl Default for JitConfig {
@@ -27,6 +32,7 @@ impl Default for JitConfig {
             translate: TranslateOptions::default(),
             code_cache_bytes: 16 * 1024 * 1024,
             use_fastmem: false,
+            host_features: None,
         }
     }
 }
@@ -45,15 +51,23 @@ pub struct Jit {
     pub scratch: Scratch,
     pub block: Block,
     pub config: JitConfig,
+    pub host_features: CpuFeatures,
 }
 
 impl Jit {
     pub fn new(config: JitConfig) -> Result<Self> {
+        let host_features = config
+            .host_features
+            .unwrap_or_else(crate::backend::cpu_features::detect_features);
+        if !host_features.has_sse41 {
+            return Err(Error::UnsupportedHost);
+        }
         Ok(Self {
             cache: CodeCache::new(config.code_cache_bytes)?,
             scratch: Scratch::new(),
             block: Block::new(0),
             config,
+            host_features,
         })
     }
 
@@ -80,7 +94,10 @@ impl Jit {
                 )?;
                 optimize_with_scratch(&mut self.block, &mut self.scratch);
                 self.block.use_fastmem = self.config.use_fastmem;
-                let emitted = crate::backend::emit_block(&self.block)?;
+                let emitted =
+                    crate::backend::cpu_features::with_features(self.host_features, || {
+                        crate::backend::emit_block(&self.block)
+                    })?;
                 #[cfg(feature = "tracing")]
                 {
                     let insns = self.block.cycles;
