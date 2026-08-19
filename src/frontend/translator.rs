@@ -32,7 +32,7 @@ pub fn translate_instruction(em: &mut IrEmitter<'_>, inst: u32) -> Result<InstSt
         opcode: inst,
     })?;
 
-    match opcode.operation {
+    let result = match opcode.operation {
         Operation::MOVEWIDE(insn) => translate::movewide::translate(em, insn),
         Operation::ADDSUB_IMM(insn) => translate::addsub_imm::translate(em, insn),
         Operation::ADDSUB_SHIFT(insn) => translate::addsub_shift::translate(em, insn),
@@ -88,6 +88,14 @@ pub fn translate_instruction(em: &mut IrEmitter<'_>, inst: u32) -> Result<InstSt
             pc: em.current_pc,
             opcode: inst,
         }),
+    };
+
+    // Some generated disarm64 family enums use `opcode: 0` for their
+    // catch-all arm. Preserve the fetched instruction so every unsupported
+    // stop remains actionable and exact.
+    match result {
+        Err(Error::Unsupported { pc, opcode: 0 }) => Err(Error::Unsupported { pc, opcode: inst }),
+        other => other,
     }
 }
 
