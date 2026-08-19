@@ -467,6 +467,35 @@ impl<'b> IrEmitter<'b> {
         )
     }
 
+    /// Count set bits in each byte lane (A64 CNT).  Keep this in Armlet
+    /// primitives so it works on the SSE4.1 baseline without requiring a
+    /// host POPCNT/AVX variant.  The SWAR sequence is lane-local:
+    ///
+    ///   x -= (x >> 1) & 0x55;
+    ///   x  = (x & 0x33) + ((x >> 2) & 0x33);
+    ///   x  = (x + (x >> 4)) & 0x0f;
+    pub fn vec_cnt(&mut self, vn: ValueRef, q: bool) -> ValueRef {
+        let c55 = self.const_u32(0x55);
+        let c33 = self.const_u32(0x33);
+        let c0f = self.const_u32(0x0f);
+        let mask55 = self.vec_dup_gpr(c55, 0, q);
+        let mask33 = self.vec_dup_gpr(c33, 0, q);
+        let mask0f = self.vec_dup_gpr(c0f, 0, q);
+
+        let shifted1 = self.vec_ushr_imm(vn, 0, 1, q);
+        let subtrahend = self.vec_and(shifted1, mask55, q);
+        let step1 = self.vec_sub(vn, subtrahend, 0, q);
+
+        let lo = self.vec_and(step1, mask33, q);
+        let shifted2 = self.vec_ushr_imm(step1, 0, 2, q);
+        let hi = self.vec_and(shifted2, mask33, q);
+        let step2 = self.vec_add(lo, hi, 0, q);
+
+        let shifted4 = self.vec_ushr_imm(step2, 0, 4, q);
+        let step3 = self.vec_add(step2, shifted4, 0, q);
+        self.vec_and(step3, mask0f, q)
+    }
+
     pub fn vec_ins_gpr(
         &mut self,
         vd_prev: ValueRef,

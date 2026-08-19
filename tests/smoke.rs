@@ -40,6 +40,30 @@ fn run(code: Vec<u8>, ctx: &mut CpuContext) -> ExitReason {
 }
 
 #[test]
+fn cnt_counts_bits_in_each_byte_lane() {
+    // CNT V0.8B, V1.8B; BRK #0
+    let code = build_code(&[0x0E20_5820, 0xD420_0000]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1][0] = 0x80FF_1020_0305_0709;
+    run(code, &mut ctx);
+    assert_eq!(ctx.v[0][0], 0x0108_0101_0202_0302);
+    assert_eq!(ctx.v[0][1], 0);
+}
+
+#[test]
+fn uaddlv_sums_byte_lanes_without_stalling() {
+    // UADDLV H0, V1.8B; BRK #0
+    let code = build_code(&[0x2E30_3820, 0xD420_0000]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.v[1][0] = 0x0807_0605_0403_0201;
+    run(code, &mut ctx);
+    assert_eq!(ctx.v[0][0] as u32, 36);
+    assert_eq!(ctx.v[0][1], 0);
+}
+
+#[test]
 fn movz_into_x0() {
     let code = build_code(&[0xD282_4680, 0xD420_0000]);
     let mut ctx = CpuContext::default();

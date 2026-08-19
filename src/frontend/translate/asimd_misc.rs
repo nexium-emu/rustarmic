@@ -33,6 +33,7 @@ enum Kind {
     FCmGe0,
     FCmLe0,
     FCmLt0,
+    Cnt,
 }
 
 pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDMISC) -> Result<InstStatus> {
@@ -66,6 +67,7 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDMISC) -> Result<InstStatus> 
         FCMGE_Vd_Vn_FPIMM0(i) => (i.0, Kind::FCmGe0),
         FCMLE_Vd_Vn_FPIMM0(i) => (i.0, Kind::FCmLe0),
         FCMLT_Vd_Vn_FPIMM0(i) => (i.0, Kind::FCmLt0),
+        CNT_Vd_Vn(i) => (i.0, Kind::Cnt),
         _ => {
             return Err(Error::Unsupported {
                 pc: em.current_pc,
@@ -187,6 +189,7 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDMISC) -> Result<InstStatus> 
                 _ => unreachable!(),
             }
         }
+        Kind::Cnt => em.vec_cnt(vn, q),
     };
     em.set_v_q(rd, result);
     Ok(InstStatus::Continue)
