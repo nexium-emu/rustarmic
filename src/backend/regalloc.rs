@@ -1,3 +1,5 @@
+#![allow(clippy::needless_range_loop)]
+
 use crate::backend::clobbers::{GprMask, XmmMask, clobbers_for_op};
 use crate::ir::{Block, Op, Terminal, Ty};
 

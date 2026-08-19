@@ -2147,7 +2147,7 @@ fn vec_frint_family_dynarmic_test() {
 fn vec_frinta_ties_away_from_zero() {
     let mut ctx = CpuContext::default();
     ctx.pc = CODE_BASE;
-    let pack = |a: f32, b: f32| ((a.to_bits() as u64) | ((b.to_bits() as u64) << 32));
+    let pack = |a: f32, b: f32| (a.to_bits() as u64) | ((b.to_bits() as u64) << 32);
     ctx.v[0] = [pack(0.5, 1.5), pack(2.5, -0.5)];
     let code = build_code(&[0x6E218801, 0xD4200000]);
     run(code, &mut ctx);

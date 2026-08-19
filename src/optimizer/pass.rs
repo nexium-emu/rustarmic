@@ -1,3 +1,5 @@
+#![allow(clippy::manual_flatten, clippy::collapsible_match)]
+
 use crate::arch::{Cond, NUM_GPRS, Nzcv};
 use crate::ir::{Armlet, Block, Op, Terminal, Ty, ValueRef};
 

@@ -51,7 +51,7 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: FLOATCCMP) -> Result<InstStatus> 
     );
 
     let fcmp_nzcv = em.get_nzcv();
-    let fallback = em.const_u32(nzcv4 as u32);
+    let fallback = em.const_u32(nzcv4);
 
     let chosen = em.push(
         Armlet::new(Op::Csel32, Ty::U32)

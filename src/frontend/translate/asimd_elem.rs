@@ -1,3 +1,5 @@
+#![allow(clippy::enum_variant_names)]
+
 use disarm64::decoder::ASIMDELEM;
 
 use crate::error::{Error, Result};

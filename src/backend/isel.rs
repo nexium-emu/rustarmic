@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 use iced_x86::code_asm::*;
 
 use crate::arch::{Cond, NUM_GPRS, ZR_ENCODING};
@@ -1266,7 +1268,7 @@ fn emit_unsigned_cmp(
     }
 
     asm.pcmpeqd(xmm2, xmm2)?;
-    let lane_bits_minus_1: i32 = ((8 << lane) - 1) as i32;
+    let lane_bits_minus_1: i32 = (8 << lane) - 1;
     match lane {
         1 => asm.psllw(xmm2, lane_bits_minus_1)?,
         2 => asm.pslld(xmm2, lane_bits_minus_1)?,

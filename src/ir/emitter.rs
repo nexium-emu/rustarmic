@@ -1019,7 +1019,7 @@ impl<'b> IrEmitter<'b> {
         self.push(
             Armlet::new(Op::BranchCond, Ty::Void)
                 .with_args(&[nzcv])
-                .with_imm(((target_pc as u64) << 8) | (cond as u64)),
+                .with_imm((target_pc << 8) | (cond as u64)),
         );
         self.block.terminal = Terminal::ConditionalBranch {
             cond_nzcv: nzcv,
