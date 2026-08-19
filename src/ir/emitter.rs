@@ -13,7 +13,8 @@ impl<'b> IrEmitter<'b> {
     }
 
     #[inline]
-    pub fn push(&mut self, armlet: Armlet) -> ValueRef {
+    pub fn push(&mut self, mut armlet: Armlet) -> ValueRef {
+        armlet.pc = self.current_pc;
         self.block.push(armlet)
     }
 

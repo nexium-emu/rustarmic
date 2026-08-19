@@ -20,12 +20,14 @@ pub struct Armlet {
     pub next: u32,
     pub args: [ValueRef; 4],
     pub imm: u64,
+    /// Guest instruction PC which produced this IR node.
+    pub pc: u64,
 }
 
 pub const LINK_NONE: u32 = 0;
 
 const _: () = {
-    assert!(core::mem::size_of::<Armlet>() == 40);
+    assert!(core::mem::size_of::<Armlet>() == 48);
     assert!(core::mem::align_of::<Armlet>() <= 8);
 };
 
@@ -40,6 +42,7 @@ impl Armlet {
             next: LINK_NONE,
             args: [ValueRef::NONE; 4],
             imm: 0,
+            pc: 0,
         }
     }
 
@@ -84,29 +87,35 @@ impl Armlet {
         let ty = self.ty;
         let prev = self.prev;
         let next = self.next;
+        let pc = self.pc;
         *self = Armlet::new(Op::Identity, ty);
         self.args[0] = src;
         self.prev = prev;
         self.next = next;
+        self.pc = pc;
     }
 
     #[inline]
     pub fn become_const_u32(&mut self, v: u32) {
         let prev = self.prev;
         let next = self.next;
+        let pc = self.pc;
         *self = Armlet::new(Op::ConstU32, Ty::U32).with_imm(v as u64);
         self.flags.insert(ArmletFlags::FOLDED);
         self.prev = prev;
         self.next = next;
+        self.pc = pc;
     }
 
     #[inline]
     pub fn become_const_u64(&mut self, v: u64) {
         let prev = self.prev;
         let next = self.next;
+        let pc = self.pc;
         *self = Armlet::new(Op::ConstU64, Ty::U64).with_imm(v);
         self.flags.insert(ArmletFlags::FOLDED);
         self.prev = prev;
         self.next = next;
+        self.pc = pc;
     }
 }

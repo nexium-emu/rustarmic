@@ -3410,10 +3410,10 @@ fn emit_load(
         }
         asm.jmp(lbl_done)?;
         asm.set_label(&mut lbl_slow)?;
-        emit_load_slow_path(asm, bytes)?;
+        emit_load_slow_path(asm, bytes, a.pc)?;
         asm.set_label(&mut lbl_done)?;
     } else {
-        emit_load_slow_path(asm, bytes)?;
+        emit_load_slow_path(asm, bytes, a.pc)?;
     }
 
     if let Some(d) = dst {
@@ -3459,10 +3459,10 @@ fn emit_store(
         }
         asm.jmp(lbl_done)?;
         asm.set_label(&mut lbl_slow)?;
-        emit_store_slow_path(asm, bytes)?;
+        emit_store_slow_path(asm, bytes, a.pc)?;
         asm.set_label(&mut lbl_done)?;
     } else {
-        emit_store_slow_path(asm, bytes)?;
+        emit_store_slow_path(asm, bytes, a.pc)?;
     }
     Ok(())
 }
@@ -3498,10 +3498,12 @@ fn emit_fastmem_bounds_check(
     Ok(())
 }
 
-fn emit_load_slow_path(asm: &mut CodeAssembler, bytes: u32) -> Result<()> {
+fn emit_load_slow_path(asm: &mut CodeAssembler, bytes: u32, guest_pc: u64) -> Result<()> {
     if !matches!(bytes, 1 | 2 | 4 | 8 | 16) {
         return Err(Error::Backend("unsupported load width".into()));
     }
+    asm.mov(SCRATCH0, guest_pc as i64)?;
+    asm.mov(qword_ptr(CTX_REG + cpu_offsets::pc() as i32), SCRATCH0)?;
     asm.mov(SCRATCH3, bytes as i64)?;
     asm.mov(ARG0_REG, CTX_REG)?;
     asm.sub(rsp, CALL_PRECALL_SUB)?;
@@ -3519,11 +3521,13 @@ fn emit_load_slow_path(asm: &mut CodeAssembler, bytes: u32) -> Result<()> {
     Ok(())
 }
 
-fn emit_store_slow_path(asm: &mut CodeAssembler, bytes: u32) -> Result<()> {
+fn emit_store_slow_path(asm: &mut CodeAssembler, bytes: u32, guest_pc: u64) -> Result<()> {
     if !matches!(bytes, 1 | 2 | 4 | 8 | 16) {
         return Err(Error::Backend("unsupported store width".into()));
     }
     let io_off = cpu_offsets::io_value() as i32;
+    asm.mov(SCRATCH0, guest_pc as i64)?;
+    asm.mov(qword_ptr(CTX_REG + cpu_offsets::pc() as i32), SCRATCH0)?;
     match bytes {
         1 => asm.mov(byte_ptr(CTX_REG + io_off), gpr8(arg3_reg_id()))?,
         2 => asm.mov(word_ptr(CTX_REG + io_off), gpr16(arg3_reg_id()))?,
@@ -3551,6 +3555,8 @@ fn emit_load_ex(
         return Err(Error::Backend("unsupported ldex width".into()));
     }
     load64(asm, alloc, a.args[0], SCRATCH1)?;
+    asm.mov(SCRATCH0, a.pc as i64)?;
+    asm.mov(qword_ptr(CTX_REG + cpu_offsets::pc() as i32), SCRATCH0)?;
     asm.mov(SCRATCH3, bytes as i64)?;
     asm.mov(ARG0_REG, CTX_REG)?;
     asm.sub(rsp, CALL_PRECALL_SUB)?;
@@ -3614,6 +3620,8 @@ fn emit_store_ex(
         load32(asm, alloc, a.args[1], gpr32(arg3_reg_id()))?;
     }
     let io_off = cpu_offsets::io_value() as i32;
+    asm.mov(SCRATCH0, a.pc as i64)?;
+    asm.mov(qword_ptr(CTX_REG + cpu_offsets::pc() as i32), SCRATCH0)?;
     match bytes {
         1 => asm.mov(byte_ptr(CTX_REG + io_off), gpr8(arg3_reg_id()))?,
         2 => asm.mov(word_ptr(CTX_REG + io_off), gpr16(arg3_reg_id()))?,
