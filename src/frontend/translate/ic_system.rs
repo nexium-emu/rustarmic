@@ -33,7 +33,11 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: IC_SYSTEM) -> Result<InstStatus> 
             let sysreg = encode_sysreg(raw);
             let rt = bits(raw, 0, 5) as u8;
             let val = em.get_gpr(rt, RegSize::X);
-            em.push(Armlet::new(Op::Msr, Ty::Void).with_args(&[val]).with_imm(sysreg as u64));
+            em.push(
+                Armlet::new(Op::Msr, Ty::Void)
+                    .with_args(&[val])
+                    .with_imm(sysreg as u64),
+            );
         }
         SYS_UIMM3_OP1_CRn_CRm_UIMM3_OP2_Rt(i) => {
             let raw = i.0;
@@ -41,7 +45,7 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: IC_SYSTEM) -> Result<InstStatus> 
             let crn = bits(raw, 12, 4);
             let crm = bits(raw, 8, 4);
             let op2 = bits(raw, 5, 3);
-            let rt  = bits(raw, 0, 5) as u8;
+            let rt = bits(raw, 0, 5) as u8;
             if (op1, crn, crm, op2) == (3, 7, 4, 1) {
                 let base = em.get_x_or_sp(rt, false);
                 let mask = em.const_u64(!63u64);
@@ -60,7 +64,12 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: IC_SYSTEM) -> Result<InstStatus> 
                 em.push(Armlet::new(Op::Hint, Ty::Void));
             }
         }
-        _ => return Err(Error::Unsupported { pc: em.current_pc, opcode: 0 }),
+        _ => {
+            return Err(Error::Unsupported {
+                pc: em.current_pc,
+                opcode: 0,
+            });
+        }
     }
     Ok(InstStatus::Continue)
 }

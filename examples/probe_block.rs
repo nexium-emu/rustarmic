@@ -1,6 +1,6 @@
 use disarm64::decoder;
 use rustarmic::error::Error;
-use rustarmic::frontend::{translate_block_into, TranslateOptions};
+use rustarmic::frontend::{TranslateOptions, translate_block_into};
 use rustarmic::ir::Block;
 
 fn word_at(bytes: &[u8], base: u64, addr: u64) -> Option<u32> {
@@ -8,7 +8,12 @@ fn word_at(bytes: &[u8], base: u64, addr: u64) -> Option<u32> {
     if off + 4 > bytes.len() {
         return None;
     }
-    Some(u32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]]))
+    Some(u32::from_le_bytes([
+        bytes[off],
+        bytes[off + 1],
+        bytes[off + 2],
+        bytes[off + 3],
+    ]))
 }
 
 fn main() {

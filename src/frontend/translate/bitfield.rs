@@ -7,25 +7,32 @@ use crate::ir::IrEmitter;
 use crate::util::bits::{bit, bits};
 
 #[derive(Clone, Copy)]
-enum Kind { Ubfm, Sbfm, Bfm }
+enum Kind {
+    Ubfm,
+    Sbfm,
+    Bfm,
+}
 
 pub fn translate(em: &mut IrEmitter<'_>, insn: BITFIELD) -> Result<InstStatus> {
     use BITFIELD::*;
     let (raw, kind) = match insn {
         UBFM_Rd_Rn_IMMR_IMMS(i) => (i.0, Kind::Ubfm),
         SBFM_Rd_Rn_IMMR_IMMS(i) => (i.0, Kind::Sbfm),
-        BFM_Rd_Rn_IMMR_IMMS(i)  => (i.0, Kind::Bfm),
+        BFM_Rd_Rn_IMMR_IMMS(i) => (i.0, Kind::Bfm),
     };
 
-    let sf   = bit(raw, 31);
-    let n    = bit(raw, 22);
+    let sf = bit(raw, 31);
+    let n = bit(raw, 22);
     let immr = bits(raw, 16, 6);
     let imms = bits(raw, 10, 6);
-    let rn   = bits(raw, 5, 5) as u8;
-    let rd   = bits(raw, 0, 5) as u8;
+    let rn = bits(raw, 5, 5) as u8;
+    let rd = bits(raw, 0, 5) as u8;
 
     if sf != n {
-        return Err(Error::Decode { pc: em.current_pc, opcode: raw });
+        return Err(Error::Decode {
+            pc: em.current_pc,
+            opcode: raw,
+        });
     }
     let size = if sf == 1 { RegSize::X } else { RegSize::W };
     let width = if sf == 1 { 64u32 } else { 32 };
@@ -36,8 +43,11 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: BITFIELD) -> Result<InstStatus> {
         let extract_bits = imms - immr + 1;
         let amt = em.const_u64(immr as u64);
         let shifted = em.lsr(src, amt, size);
-        let mask = if extract_bits >= width { (!0u64) >> (64 - width) }
-                   else { (1u64 << extract_bits) - 1 };
+        let mask = if extract_bits >= width {
+            (!0u64) >> (64 - width)
+        } else {
+            (1u64 << extract_bits) - 1
+        };
         let mask_c = em.const_u64(mask);
         (em.and(shifted, mask_c, size), extract_bits)
     } else {
@@ -64,15 +74,22 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: BITFIELD) -> Result<InstStatus> {
             let dst_prev = em.get_gpr(rd, size);
             let mask = if imms >= immr {
                 let bits_n = low_mask_bits;
-                if bits_n >= width { (!0u64) >> (64 - width) }
-                else { (1u64 << bits_n) - 1 }
+                if bits_n >= width {
+                    (!0u64) >> (64 - width)
+                } else {
+                    (1u64 << bits_n) - 1
+                }
             } else {
                 let bits_n = imms + 1;
                 let base_mask = (1u64 << bits_n) - 1;
                 base_mask.wrapping_shl(width - immr)
             };
             let clear_mask = !mask;
-            let clear_c = em.const_u64(if sf == 0 { clear_mask & 0xFFFF_FFFF } else { clear_mask });
+            let clear_c = em.const_u64(if sf == 0 {
+                clear_mask & 0xFFFF_FFFF
+            } else {
+                clear_mask
+            });
             let cleared = em.and(dst_prev, clear_c, size);
             em.or(cleared, bot, size)
         }

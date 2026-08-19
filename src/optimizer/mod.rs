@@ -1,3 +1,3 @@
 mod pass;
 
-pub use pass::{optimize, optimize_with_scratch, Scratch};
+pub use pass::{Scratch, optimize, optimize_with_scratch};

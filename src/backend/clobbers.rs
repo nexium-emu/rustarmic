@@ -47,16 +47,25 @@ bitflags! {
 }
 
 pub const CALLER_SAVED_GPRS: GprMask = GprMask::from_bits_retain(
-    GprMask::RAX.bits() | GprMask::RCX.bits() | GprMask::RDX.bits()
-    | GprMask::RSI.bits() | GprMask::RDI.bits()
-    | GprMask::R8.bits() | GprMask::R9.bits()
-    | GprMask::R10.bits() | GprMask::R11.bits(),
+    GprMask::RAX.bits()
+        | GprMask::RCX.bits()
+        | GprMask::RDX.bits()
+        | GprMask::RSI.bits()
+        | GprMask::RDI.bits()
+        | GprMask::R8.bits()
+        | GprMask::R9.bits()
+        | GprMask::R10.bits()
+        | GprMask::R11.bits(),
 );
 
 #[cfg(target_os = "windows")]
 pub const CALLER_SAVED_XMMS: XmmMask = XmmMask::from_bits_retain(
-    XmmMask::XMM0.bits() | XmmMask::XMM1.bits() | XmmMask::XMM2.bits()
-    | XmmMask::XMM3.bits() | XmmMask::XMM4.bits() | XmmMask::XMM5.bits(),
+    XmmMask::XMM0.bits()
+        | XmmMask::XMM1.bits()
+        | XmmMask::XMM2.bits()
+        | XmmMask::XMM3.bits()
+        | XmmMask::XMM4.bits()
+        | XmmMask::XMM5.bits(),
 );
 #[cfg(not(target_os = "windows"))]
 pub const CALLER_SAVED_XMMS: XmmMask = XmmMask::from_bits_retain(0xFFFF);
@@ -68,7 +77,7 @@ pub mod gpr_id {
     pub const RBX: u8 = 3;
     pub const RSI: u8 = 6;
     pub const RDI: u8 = 7;
-    pub const R8:  u8 = 8;
+    pub const R8: u8 = 8;
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -89,16 +98,19 @@ pub fn clobbers_for_op(op: Op) -> ClobberSet {
             c.result_pinned_to_gpr = Some(gpr_id::RAX);
         }
 
-        Lsl32 | Lsl64 | Lsr32 | Lsr64
-        | Asr32 | Asr64 | Ror32 | Ror64 => {
+        Lsl32 | Lsl64 | Lsr32 | Lsr64 | Asr32 | Asr64 | Ror32 | Ror64 => {
             c.gpr = GprMask::RAX | GprMask::RCX;
             c.result_pinned_to_gpr = Some(gpr_id::RAX);
         }
 
         AddsFlags32 | AddsFlags64 | SubsFlags32 | SubsFlags64 => {
-            c.gpr = GprMask::RAX | GprMask::RCX | GprMask::RSI
-                  | GprMask::R8  | GprMask::R9
-                  | GprMask::R10 | GprMask::R11;
+            c.gpr = GprMask::RAX
+                | GprMask::RCX
+                | GprMask::RSI
+                | GprMask::R8
+                | GprMask::R9
+                | GprMask::R10
+                | GprMask::R11;
             c.result_pinned_to_gpr = Some(gpr_id::RAX);
         }
 
@@ -124,21 +136,36 @@ pub fn clobbers_for_op(op: Op) -> ClobberSet {
         }
 
         Csel32 | Csel64 => {
-            c.gpr = GprMask::RAX | GprMask::RCX | GprMask::RDX
-                  | GprMask::RSI | GprMask::RDI | GprMask::R8 | GprMask::R9;
+            c.gpr = GprMask::RAX
+                | GprMask::RCX
+                | GprMask::RDX
+                | GprMask::RSI
+                | GprMask::RDI
+                | GprMask::R8
+                | GprMask::R9;
             c.result_pinned_to_gpr = Some(gpr_id::RAX);
         }
 
-        Load8 | Load16 | Load32 | Load64 | Load128
-        | Store8 | Store16 | Store32 | Store64 | Store128
-        | LoadEx8 | LoadEx16 | LoadEx32 | LoadEx64
-        | StoreEx8 | StoreEx16 | StoreEx32 | StoreEx64 => {
+        Load8 | Load16 | Load32 | Load64 | Load128 | Store8 | Store16 | Store32 | Store64
+        | Store128 | LoadEx8 | LoadEx16 | LoadEx32 | LoadEx64 | StoreEx8 | StoreEx16
+        | StoreEx32 | StoreEx64 => {
             c.gpr = CALLER_SAVED_GPRS;
             c.xmm = CALLER_SAVED_XMMS;
-            if matches!(op, Load8 | Load16 | Load32 | Load64
-                | LoadEx8 | LoadEx16 | LoadEx32 | LoadEx64
-                | StoreEx8 | StoreEx16 | StoreEx32 | StoreEx64)
-            {
+            if matches!(
+                op,
+                Load8
+                    | Load16
+                    | Load32
+                    | Load64
+                    | LoadEx8
+                    | LoadEx16
+                    | LoadEx32
+                    | LoadEx64
+                    | StoreEx8
+                    | StoreEx16
+                    | StoreEx32
+                    | StoreEx64
+            ) {
                 c.result_pinned_to_gpr = Some(gpr_id::RAX);
             }
         }
@@ -150,8 +177,12 @@ pub fn clobbers_for_op(op: Op) -> ClobberSet {
         }
 
         _ => {
-            c.gpr = GprMask::RAX | GprMask::RCX | GprMask::RDX
-                  | GprMask::RSI | GprMask::RDI | GprMask::R8;
+            c.gpr = GprMask::RAX
+                | GprMask::RCX
+                | GprMask::RDX
+                | GprMask::RSI
+                | GprMask::RDI
+                | GprMask::R8;
             c.result_pinned_to_gpr = Some(gpr_id::RAX);
         }
     }
@@ -175,8 +206,11 @@ mod tests {
     fn shifts_need_rcx_for_cl() {
         for op in [Op::Lsl64, Op::Lsr64, Op::Asr64, Op::Ror64] {
             let c = clobbers_for_op(op);
-            assert!(c.gpr.contains(GprMask::RCX),
-                "{:?} should declare RCX clobber (used as CL for shift count)", op);
+            assert!(
+                c.gpr.contains(GprMask::RCX),
+                "{:?} should declare RCX clobber (used as CL for shift count)",
+                op
+            );
         }
     }
 
@@ -184,15 +218,20 @@ mod tests {
     fn flag_setting_addsub_clobbers_r8_r11_for_setcc_dest() {
         let c = clobbers_for_op(Op::AddsFlags64);
         for reg in [GprMask::R8, GprMask::R9, GprMask::R10, GprMask::R11] {
-            assert!(c.gpr.contains(reg),
-                "AddsFlags must declare {:?} (used as setcc destination)", reg);
+            assert!(
+                c.gpr.contains(reg),
+                "AddsFlags must declare {:?} (used as setcc destination)",
+                reg
+            );
         }
     }
 
     #[test]
     fn loads_clobber_all_caller_saved_for_callback() {
         let c = clobbers_for_op(Op::Load64);
-        assert!(c.gpr.contains(CALLER_SAVED_GPRS),
-            "memory callbacks may clobber any caller-saved GPR");
+        assert!(
+            c.gpr.contains(CALLER_SAVED_GPRS),
+            "memory callbacks may clobber any caller-saved GPR"
+        );
     }
 }

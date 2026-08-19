@@ -4,12 +4,15 @@ pub trait Memory {
 
 pub struct FlatMemory {
     pub bytes: Vec<u8>,
-    pub base:  u64,
+    pub base: u64,
 }
 
 impl FlatMemory {
     pub fn new(base: u64, size: usize) -> Self {
-        Self { bytes: vec![0; size], base }
+        Self {
+            bytes: vec![0; size],
+            base,
+        }
     }
 
     pub fn write(&mut self, addr: u64, data: &[u8]) {
@@ -30,11 +33,11 @@ impl FlatMemory {
 impl Memory for FlatMemory {
     fn fetch_inst(&mut self, addr: u64) -> Option<u32> {
         let off = addr.checked_sub(self.base)? as usize;
-        if off + 4 > self.bytes.len() { return None; }
+        if off + 4 > self.bytes.len() {
+            return None;
+        }
         let mut buf = [0u8; 4];
         buf.copy_from_slice(&self.bytes[off..off + 4]);
         Some(u32::from_le_bytes(buf))
     }
 }
-
-

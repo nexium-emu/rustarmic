@@ -22,41 +22,58 @@ fn decode_smoke_test_instructions() {
         let opcode = decoder::decode(word)
             .unwrap_or_else(|| panic!("failed to decode {label} ({word:#010x})"));
         let class_name = match &opcode.operation {
-            Operation::ADDSUB_IMM(_)   => "ADDSUB_IMM",
+            Operation::ADDSUB_IMM(_) => "ADDSUB_IMM",
             Operation::ADDSUB_SHIFT(_) => "ADDSUB_SHIFT",
-            Operation::MOVEWIDE(_)     => "MOVEWIDE",
-            Operation::LOG_IMM(_)      => "LOG_IMM",
-            Operation::LOG_SHIFT(_)    => "LOG_SHIFT",
-            Operation::EXCEPTION(_)    => "EXCEPTION",
-            Operation::LDST_POS(_)     => "LDST_POS",
-            Operation::LDST_UNSCALED(_)=> "LDST_UNSCALED",
-            Operation::BRANCH_IMM(_)   => "BRANCH_IMM",
-            Operation::BRANCH_REG(_)   => "BRANCH_REG",
-            Operation::CONDBRANCH(_)   => "CONDBRANCH",
+            Operation::MOVEWIDE(_) => "MOVEWIDE",
+            Operation::LOG_IMM(_) => "LOG_IMM",
+            Operation::LOG_SHIFT(_) => "LOG_SHIFT",
+            Operation::EXCEPTION(_) => "EXCEPTION",
+            Operation::LDST_POS(_) => "LDST_POS",
+            Operation::LDST_UNSCALED(_) => "LDST_UNSCALED",
+            Operation::BRANCH_IMM(_) => "BRANCH_IMM",
+            Operation::BRANCH_REG(_) => "BRANCH_REG",
+            Operation::CONDBRANCH(_) => "CONDBRANCH",
             other => {
                 eprintln!("{label}: decoded as unexpected class {:?}", other);
                 "OTHER"
             }
         };
-        eprintln!("{label:<22} {word:#010x} -> mnemonic={:?} class={class_name}",
-            opcode.mnemonic);
+        eprintln!(
+            "{label:<22} {word:#010x} -> mnemonic={:?} class={class_name}",
+            opcode.mnemonic
+        );
     }
 }
 
-
 #[test]
 fn debug_inst_0e263cac() {
-    eprintln!("0x0e263cac -> {:?}", disarm64::decoder::decode(0x0e263cac).unwrap().operation);
+    eprintln!(
+        "0x0e263cac -> {:?}",
+        disarm64::decoder::decode(0x0e263cac).unwrap().operation
+    );
 }
 
 #[test]
 fn debug_case12_v6_writers() {
-    for w in &[0x4ea9cd46u32, 0x6e228dc3, 0x0e0c4164, 0x2e21898d, 0x6e21e509] {
-        eprintln!("0x{:08x} -> {:?}", w, disarm64::decoder::decode(*w).unwrap().operation);
+    for w in &[
+        0x4ea9cd46u32,
+        0x6e228dc3,
+        0x0e0c4164,
+        0x2e21898d,
+        0x6e21e509,
+    ] {
+        eprintln!(
+            "0x{:08x} -> {:?}",
+            w,
+            disarm64::decoder::decode(*w).unwrap().operation
+        );
     }
 }
 
 #[test]
 fn debug_stress_seed_001122() {
-    eprintln!("0x4eae9d60 -> {:?}", disarm64::decoder::decode(0x4eae9d60).unwrap().operation);
+    eprintln!(
+        "0x4eae9d60 -> {:?}",
+        disarm64::decoder::decode(0x4eae9d60).unwrap().operation
+    );
 }

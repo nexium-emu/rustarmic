@@ -2,8 +2,8 @@
 mod common;
 
 use rustarmic::{CpuContext, ExitReason, Jit, JitConfig, Memory};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 static SERIALIZE: Mutex<()> = Mutex::new(());
 
@@ -12,23 +12,30 @@ const DATA_BASE: u64 = 0x10_0000;
 
 fn build_code(words: &[u32]) -> Vec<u8> {
     let mut v = Vec::with_capacity(words.len() * 4);
-    for w in words { v.extend_from_slice(&w.to_le_bytes()); }
+    for w in words {
+        v.extend_from_slice(&w.to_le_bytes());
+    }
     v
 }
 
-struct CodeMem { bytes: Vec<u8>, base: u64 }
+struct CodeMem {
+    bytes: Vec<u8>,
+    base: u64,
+}
 
 impl Memory for CodeMem {
     fn fetch_inst(&mut self, addr: u64) -> Option<u32> {
         let off = addr.checked_sub(self.base)? as usize;
-        if off + 4 > self.bytes.len() { return None; }
+        if off + 4 > self.bytes.len() {
+            return None;
+        }
         let mut buf = [0u8; 4];
         buf.copy_from_slice(&self.bytes[off..off + 4]);
         Some(u32::from_le_bytes(buf))
     }
 }
 
-static FALLBACK_READS:  AtomicU64 = AtomicU64::new(0);
+static FALLBACK_READS: AtomicU64 = AtomicU64::new(0);
 static FALLBACK_WRITES: AtomicU64 = AtomicU64::new(0);
 
 unsafe extern "C" fn hk_read(ctx: *mut CpuContext, _addr: u64, size: u8) {
@@ -38,21 +45,26 @@ unsafe extern "C" fn hk_read(ctx: *mut CpuContext, _addr: u64, size: u8) {
         8 => 0xCAFE_BABE_DEAD_BEEF,
         _ => 0,
     };
-    unsafe { (*ctx).io_value = [lo, 0]; }
+    unsafe {
+        (*ctx).io_value = [lo, 0];
+    }
 }
 unsafe extern "C" fn hk_write(_ctx: *mut CpuContext, _addr: u64, _size: u8) {
     FALLBACK_WRITES.fetch_add(1, Ordering::Relaxed);
 }
 
 fn install_counting_hooks(ctx: &mut CpuContext) {
-    ctx.mem_read  = hk_read;
+    ctx.mem_read = hk_read;
     ctx.mem_write = hk_write;
 }
 
 const BRK_0: u32 = 0xD420_0000;
 
 fn run_with_cfg(code: Vec<u8>, ctx: &mut CpuContext, cfg: JitConfig) -> ExitReason {
-    let mut mem = CodeMem { bytes: code, base: CODE_BASE };
+    let mut mem = CodeMem {
+        bytes: code,
+        base: CODE_BASE,
+    };
     let mut jit = Jit::new(cfg).expect("jit init");
     jit.run(ctx, &mut mem).unwrap_or(ExitReason::Stopped)
 }
@@ -72,14 +84,17 @@ fn fastmem_disabled_routes_through_fn_ptrs() {
     ctx.pc = CODE_BASE;
     ctx.x[0] = DATA_BASE;
 
-    let code = build_code(&[
-        0xF9400001,
-        BRK_0,
-    ]);
+    let code = build_code(&[0xF9400001, BRK_0]);
     run_with_cfg(code, &mut ctx, JitConfig::default());
-    assert_eq!(FALLBACK_READS.load(Ordering::Relaxed), 1,
-               "fastmem disabled → slow path must run");
-    assert_eq!(ctx.x[1], 0xCAFE_BABE_DEAD_BEEF, "X1 must hold fn-ptr result");
+    assert_eq!(
+        FALLBACK_READS.load(Ordering::Relaxed),
+        1,
+        "fastmem disabled → slow path must run"
+    );
+    assert_eq!(
+        ctx.x[1], 0xCAFE_BABE_DEAD_BEEF,
+        "X1 must hold fn-ptr result"
+    );
 }
 
 #[test]
@@ -97,15 +112,21 @@ fn fastmem_in_range_load_bypasses_fn_ptr() {
     ctx.pc = CODE_BASE;
     ctx.x[0] = DATA_BASE + 0x100;
 
-    let code = build_code(&[
-        0xF9400001,
-        BRK_0,
-    ]);
-    let cfg = JitConfig { use_fastmem: true, ..JitConfig::default() };
+    let code = build_code(&[0xF9400001, BRK_0]);
+    let cfg = JitConfig {
+        use_fastmem: true,
+        ..JitConfig::default()
+    };
     run_with_cfg(code, &mut ctx, cfg);
-    assert_eq!(ctx.x[1], 0xAAAA_BBBB_CCCC_DDDD, "fast path must load from backing");
-    assert_eq!(FALLBACK_READS.load(Ordering::Relaxed), 0,
-               "in-range fastmem must NOT invoke fn-ptr");
+    assert_eq!(
+        ctx.x[1], 0xAAAA_BBBB_CCCC_DDDD,
+        "fast path must load from backing"
+    );
+    assert_eq!(
+        FALLBACK_READS.load(Ordering::Relaxed),
+        0,
+        "in-range fastmem must NOT invoke fn-ptr"
+    );
 }
 
 #[test]
@@ -123,18 +144,24 @@ fn fastmem_in_range_store_bypasses_fn_ptr() {
     ctx.x[0] = DATA_BASE + 0x200;
     ctx.x[1] = 0x1234_5678_9ABC_DEF0;
 
-    let code = build_code(&[
-        0xF9000001,
-        BRK_0,
-    ]);
-    let cfg = JitConfig { use_fastmem: true, ..JitConfig::default() };
+    let code = build_code(&[0xF9000001, BRK_0]);
+    let cfg = JitConfig {
+        use_fastmem: true,
+        ..JitConfig::default()
+    };
     run_with_cfg(code, &mut ctx, cfg);
-    assert_eq!(FALLBACK_WRITES.load(Ordering::Relaxed), 0,
-               "in-range fastmem store must NOT invoke fn-ptr");
+    assert_eq!(
+        FALLBACK_WRITES.load(Ordering::Relaxed),
+        0,
+        "in-range fastmem store must NOT invoke fn-ptr"
+    );
     let mut buf = [0u8; 8];
     buf.copy_from_slice(&backing[0x200..0x208]);
-    assert_eq!(u64::from_le_bytes(buf), 0x1234_5678_9ABC_DEF0,
-               "fast path must have written directly to backing");
+    assert_eq!(
+        u64::from_le_bytes(buf),
+        0x1234_5678_9ABC_DEF0,
+        "fast path must have written directly to backing"
+    );
 }
 
 #[test]
@@ -151,15 +178,21 @@ fn fastmem_out_of_range_falls_through_to_fn_ptr() {
     ctx.pc = CODE_BASE;
     ctx.x[0] = DATA_BASE + 0x2000;
 
-    let code = build_code(&[
-        0xF9400001,
-        BRK_0,
-    ]);
-    let cfg = JitConfig { use_fastmem: true, ..JitConfig::default() };
+    let code = build_code(&[0xF9400001, BRK_0]);
+    let cfg = JitConfig {
+        use_fastmem: true,
+        ..JitConfig::default()
+    };
     run_with_cfg(code, &mut ctx, cfg);
-    assert_eq!(FALLBACK_READS.load(Ordering::Relaxed), 1,
-               "out-of-range access must fall to fn-ptr");
-    assert_eq!(ctx.x[1], 0xCAFE_BABE_DEAD_BEEF, "X1 must hold slow-path result");
+    assert_eq!(
+        FALLBACK_READS.load(Ordering::Relaxed),
+        1,
+        "out-of-range access must fall to fn-ptr"
+    );
+    assert_eq!(
+        ctx.x[1], 0xCAFE_BABE_DEAD_BEEF,
+        "X1 must hold slow-path result"
+    );
 }
 
 #[test]
@@ -176,14 +209,17 @@ fn fastmem_before_range_falls_through_to_fn_ptr() {
     ctx.pc = CODE_BASE;
     ctx.x[0] = DATA_BASE - 0x10;
 
-    let code = build_code(&[
-        0xF9400001,
-        BRK_0,
-    ]);
-    let cfg = JitConfig { use_fastmem: true, ..JitConfig::default() };
+    let code = build_code(&[0xF9400001, BRK_0]);
+    let cfg = JitConfig {
+        use_fastmem: true,
+        ..JitConfig::default()
+    };
     run_with_cfg(code, &mut ctx, cfg);
-    assert_eq!(FALLBACK_READS.load(Ordering::Relaxed), 1,
-               "wrap-around access must fall to fn-ptr");
+    assert_eq!(
+        FALLBACK_READS.load(Ordering::Relaxed),
+        1,
+        "wrap-around access must fall to fn-ptr"
+    );
 }
 
 #[test]
@@ -200,14 +236,17 @@ fn fastmem_zero_size_disables_path() {
     ctx.pc = CODE_BASE;
     ctx.x[0] = DATA_BASE;
 
-    let code = build_code(&[
-        0xF9400001,
-        BRK_0,
-    ]);
-    let cfg = JitConfig { use_fastmem: true, ..JitConfig::default() };
+    let code = build_code(&[0xF9400001, BRK_0]);
+    let cfg = JitConfig {
+        use_fastmem: true,
+        ..JitConfig::default()
+    };
     run_with_cfg(code, &mut ctx, cfg);
-    assert_eq!(FALLBACK_READS.load(Ordering::Relaxed), 1,
-               "mem_size=0 must disable the fast path");
+    assert_eq!(
+        FALLBACK_READS.load(Ordering::Relaxed),
+        1,
+        "mem_size=0 must disable the fast path"
+    );
 }
 
 #[test]
@@ -225,11 +264,11 @@ fn fastmem_word_load_in_range() {
     ctx.pc = CODE_BASE;
     ctx.x[0] = DATA_BASE + 0x40;
 
-    let code = build_code(&[
-        0xB9400001,
-        BRK_0,
-    ]);
-    let cfg = JitConfig { use_fastmem: true, ..JitConfig::default() };
+    let code = build_code(&[0xB9400001, BRK_0]);
+    let cfg = JitConfig {
+        use_fastmem: true,
+        ..JitConfig::default()
+    };
     run_with_cfg(code, &mut ctx, cfg);
     assert_eq!(ctx.x[1], 0xDEAD_BEEF, "W1 must equal the 32-bit value");
     assert_eq!(FALLBACK_READS.load(Ordering::Relaxed), 0);

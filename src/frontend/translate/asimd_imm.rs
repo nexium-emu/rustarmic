@@ -6,51 +6,62 @@ use crate::ir::IrEmitter;
 use crate::util::bits::{bit, bits};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Action { Movi, Mvni, BicImm, OrrImm, FmovS, FmovD, FmovH }
+enum Action {
+    Movi,
+    Mvni,
+    BicImm,
+    OrrImm,
+    FmovS,
+    FmovD,
+    FmovH,
+}
 
 pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDIMM) -> Result<InstStatus> {
     use ASIMDIMM::*;
     let (raw, action) = match insn {
-        MOVI_Vd_SIMD_IMM(i)               => (i.0, Action::Movi),
-        MOVI_Vd_SIMD_IMM_SFT(i)           => (i.0, Action::Movi),
-        MOVI_Vd_V_8B_SIMD_IMM_SFT_LSL(i)  => (i.0, Action::Movi),
-        MOVI_Vd_V_4H_SIMD_IMM_SFT_LSL(i)  => (i.0, Action::Movi),
-        MOVI_Vd_V_2S_SIMD_IMM_SFT_MSL(i)  => (i.0, Action::Movi),
+        MOVI_Vd_SIMD_IMM(i) => (i.0, Action::Movi),
+        MOVI_Vd_SIMD_IMM_SFT(i) => (i.0, Action::Movi),
+        MOVI_Vd_V_8B_SIMD_IMM_SFT_LSL(i) => (i.0, Action::Movi),
+        MOVI_Vd_V_4H_SIMD_IMM_SFT_LSL(i) => (i.0, Action::Movi),
+        MOVI_Vd_V_2S_SIMD_IMM_SFT_MSL(i) => (i.0, Action::Movi),
 
-        MVNI_Vd_SIMD_IMM_SFT(i)           => (i.0, Action::Mvni),
-        MVNI_Vd_V_4H_SIMD_IMM_SFT_LSL(i)  => (i.0, Action::Mvni),
-        MVNI_Vd_V_2S_SIMD_IMM_SFT_MSL(i)  => (i.0, Action::Mvni),
+        MVNI_Vd_SIMD_IMM_SFT(i) => (i.0, Action::Mvni),
+        MVNI_Vd_V_4H_SIMD_IMM_SFT_LSL(i) => (i.0, Action::Mvni),
+        MVNI_Vd_V_2S_SIMD_IMM_SFT_MSL(i) => (i.0, Action::Mvni),
 
-        BIC_Vd_SIMD_IMM_SFT(i)            => (i.0, Action::BicImm),
-        BIC_Vd_V_4H_SIMD_IMM_SFT_LSL(i)   => (i.0, Action::BicImm),
+        BIC_Vd_SIMD_IMM_SFT(i) => (i.0, Action::BicImm),
+        BIC_Vd_V_4H_SIMD_IMM_SFT_LSL(i) => (i.0, Action::BicImm),
 
-        ORR_Vd_SIMD_IMM_SFT(i)            => (i.0, Action::OrrImm),
-        ORR_Vd_V_4H_SIMD_IMM_SFT_LSL(i)   => (i.0, Action::OrrImm),
+        ORR_Vd_SIMD_IMM_SFT(i) => (i.0, Action::OrrImm),
+        ORR_Vd_V_4H_SIMD_IMM_SFT_LSL(i) => (i.0, Action::OrrImm),
 
-        FMOV_Vd_SIMD_FPIMM(i)             => (i.0, Action::FmovS),
-        FMOV_Vd_V_2D_SIMD_FPIMM(i)        => (i.0, Action::FmovD),
-        FMOV_Vd_V_4H_SIMD_FPIMM(i)        => (i.0, Action::FmovH),
+        FMOV_Vd_SIMD_FPIMM(i) => (i.0, Action::FmovS),
+        FMOV_Vd_V_2D_SIMD_FPIMM(i) => (i.0, Action::FmovD),
+        FMOV_Vd_V_4H_SIMD_FPIMM(i) => (i.0, Action::FmovH),
 
-        MOVI_Sd_SIMD_IMM(i)               => (i.0, Action::Movi),
+        MOVI_Sd_SIMD_IMM(i) => (i.0, Action::Movi),
     };
 
-    let q     = bit(raw, 30) == 1;
-    let op    = bit(raw, 29);
-    let abc   = bits(raw, 16, 3);
+    let q = bit(raw, 30) == 1;
+    let op = bit(raw, 29);
+    let abc = bits(raw, 16, 3);
     let cmode = bits(raw, 12, 4);
     let defgh = bits(raw, 5, 5);
-    let rd    = bits(raw, 0, 5) as u8;
-    let imm8  = (abc << 5) | defgh;
+    let rd = bits(raw, 0, 5) as u8;
+    let imm8 = (abc << 5) | defgh;
 
     let lane64 = match action {
-        Action::Movi   => adv_simd_expand_imm(imm8, cmode, op)?,
-        Action::Mvni   => !adv_simd_expand_imm(imm8, cmode, op)?,
+        Action::Movi => adv_simd_expand_imm(imm8, cmode, op)?,
+        Action::Mvni => !adv_simd_expand_imm(imm8, cmode, op)?,
         Action::BicImm | Action::OrrImm => adv_simd_expand_imm(imm8, cmode, op)?,
 
         Action::FmovS => vfp_expand_imm32(imm8) as u64 | ((vfp_expand_imm32(imm8) as u64) << 32),
         Action::FmovD => vfp_expand_imm64(imm8),
         Action::FmovH => {
-            return Err(Error::Unsupported { pc: em.current_pc, opcode: raw });
+            return Err(Error::Unsupported {
+                pc: em.current_pc,
+                opcode: raw,
+            });
         }
     };
 
@@ -89,9 +100,9 @@ fn adv_simd_expand_imm(imm8: u32, cmode: u32, op: u32) -> Result<u64> {
 
         0b110 => {
             if cmode & 1 == 0 {
-                replicate_lane((imm8 << 8)  | 0xFF,    32)
+                replicate_lane((imm8 << 8) | 0xFF, 32)
             } else {
-                replicate_lane((imm8 << 16) | 0xFFFF,  32)
+                replicate_lane((imm8 << 16) | 0xFFFF, 32)
             }
         }
 
@@ -123,7 +134,11 @@ fn adv_simd_expand_imm(imm8: u32, cmode: u32, op: u32) -> Result<u64> {
 }
 
 fn replicate_lane(value: u64, lane_bits: u32) -> u64 {
-    let mask = if lane_bits >= 64 { !0 } else { (1u64 << lane_bits) - 1 };
+    let mask = if lane_bits >= 64 {
+        !0
+    } else {
+        (1u64 << lane_bits) - 1
+    };
     let v = value & mask;
     let mut out: u64 = 0;
     let mut shift = 0;

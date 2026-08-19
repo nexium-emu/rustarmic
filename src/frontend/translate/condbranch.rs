@@ -9,7 +9,7 @@ use crate::util::bits::{bits, sign_extend};
 pub fn translate(em: &mut IrEmitter<'_>, insn: CONDBRANCH) -> Result<InstStatus> {
     use CONDBRANCH::*;
     let raw = match insn {
-        B__ADDR_PCREL19(i)  => i.0,
+        B__ADDR_PCREL19(i) => i.0,
         BC__ADDR_PCREL19(i) => i.0,
     };
     let cond = Cond::from_bits(bits(raw, 0, 4) as u8);

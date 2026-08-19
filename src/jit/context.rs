@@ -1,6 +1,6 @@
 use crate::arch::{NUM_GPRS, NUM_VREGS};
 
-pub type MemReadFn  = unsafe extern "C" fn(*mut CpuContext, addr: u64, size: u8);
+pub type MemReadFn = unsafe extern "C" fn(*mut CpuContext, addr: u64, size: u8);
 pub type MemWriteFn = unsafe extern "C" fn(*mut CpuContext, addr: u64, size: u8);
 
 #[repr(C, align(64))]
@@ -17,7 +17,7 @@ pub struct CpuContext {
     pub tpidrro_el0: u64,
     pub cntfrq_el0: u64,
     pub read_cntpct: unsafe extern "C" fn(*mut CpuContext) -> u64,
-    pub mem_read:  MemReadFn,
+    pub mem_read: MemReadFn,
     pub mem_write: MemWriteFn,
     pub io_value: [u64; 2],
     pub fpcr: u32,
@@ -32,16 +32,26 @@ unsafe impl Send for CpuContext {}
 
 unsafe extern "C" fn default_read_cntpct(_ctx: *mut CpuContext) -> u64 {
     #[cfg(target_arch = "x86_64")]
-    unsafe { core::arch::x86_64::_rdtsc() }
+    unsafe {
+        core::arch::x86_64::_rdtsc()
+    }
     #[cfg(not(target_arch = "x86_64"))]
-    { 0 }
+    {
+        0
+    }
 }
 
 unsafe extern "C" fn default_mem_read(_: *mut CpuContext, addr: u64, size: u8) {
-    panic!("rustarmic: CpuContext.mem_read not installed (addr={:#x}, size={})", addr, size)
+    panic!(
+        "rustarmic: CpuContext.mem_read not installed (addr={:#x}, size={})",
+        addr, size
+    )
 }
 unsafe extern "C" fn default_mem_write(_: *mut CpuContext, addr: u64, size: u8) {
-    panic!("rustarmic: CpuContext.mem_write not installed (addr={:#x}, size={})", addr, size)
+    panic!(
+        "rustarmic: CpuContext.mem_write not installed (addr={:#x}, size={})",
+        addr, size
+    )
 }
 
 impl Default for CpuContext {
@@ -59,9 +69,9 @@ impl Default for CpuContext {
             tpidrro_el0: 0,
             cntfrq_el0: 19_200_000,
             read_cntpct: default_read_cntpct,
-            mem_read:  default_mem_read,
+            mem_read: default_mem_read,
             mem_write: default_mem_write,
-            io_value:  [0; 2],
+            io_value: [0; 2],
             fpcr: 0,
             fpsr: 0,
             nzcv: 0,
@@ -76,27 +86,80 @@ pub mod cpu_offsets {
     use super::*;
     use core::mem::offset_of;
 
-    #[inline] pub const fn xreg(i: usize) -> usize {
+    #[inline]
+    pub const fn xreg(i: usize) -> usize {
         offset_of!(CpuContext, x) + i * core::mem::size_of::<u64>()
     }
-    #[inline] pub const fn sp()        -> usize { offset_of!(CpuContext, sp) }
-    #[inline] pub const fn pc()        -> usize { offset_of!(CpuContext, pc) }
-    #[inline] pub const fn nzcv()      -> usize { offset_of!(CpuContext, nzcv) }
-    #[inline] pub const fn vreg(i: usize) -> usize {
+    #[inline]
+    pub const fn sp() -> usize {
+        offset_of!(CpuContext, sp)
+    }
+    #[inline]
+    pub const fn pc() -> usize {
+        offset_of!(CpuContext, pc)
+    }
+    #[inline]
+    pub const fn nzcv() -> usize {
+        offset_of!(CpuContext, nzcv)
+    }
+    #[inline]
+    pub const fn vreg(i: usize) -> usize {
         offset_of!(CpuContext, v) + i * 16
     }
-    #[inline] pub const fn mem_base() -> usize { offset_of!(CpuContext, mem_base) }
-    #[inline] pub const fn mem_base_va() -> usize { offset_of!(CpuContext, mem_base_va) }
-    #[inline] pub const fn mem_size() -> usize { offset_of!(CpuContext, mem_size) }
-    #[inline] pub const fn exclusive_addr() -> usize { offset_of!(CpuContext, exclusive_addr) }
-    #[inline] pub const fn exclusive_size() -> usize { offset_of!(CpuContext, exclusive_size) }
-    #[inline] pub const fn tpidr_el0() -> usize { offset_of!(CpuContext, tpidr_el0) }
-    #[inline] pub const fn tpidrro_el0() -> usize { offset_of!(CpuContext, tpidrro_el0) }
-    #[inline] pub const fn cntfrq_el0() -> usize { offset_of!(CpuContext, cntfrq_el0) }
-    #[inline] pub const fn read_cntpct() -> usize { offset_of!(CpuContext, read_cntpct) }
-    #[inline] pub const fn mem_read()  -> usize { offset_of!(CpuContext, mem_read) }
-    #[inline] pub const fn mem_write() -> usize { offset_of!(CpuContext, mem_write) }
-    #[inline] pub const fn io_value()  -> usize { offset_of!(CpuContext, io_value) }
-    #[inline] pub const fn fpcr() -> usize { offset_of!(CpuContext, fpcr) }
-    #[inline] pub const fn fpsr() -> usize { offset_of!(CpuContext, fpsr) }
+    #[inline]
+    pub const fn mem_base() -> usize {
+        offset_of!(CpuContext, mem_base)
+    }
+    #[inline]
+    pub const fn mem_base_va() -> usize {
+        offset_of!(CpuContext, mem_base_va)
+    }
+    #[inline]
+    pub const fn mem_size() -> usize {
+        offset_of!(CpuContext, mem_size)
+    }
+    #[inline]
+    pub const fn exclusive_addr() -> usize {
+        offset_of!(CpuContext, exclusive_addr)
+    }
+    #[inline]
+    pub const fn exclusive_size() -> usize {
+        offset_of!(CpuContext, exclusive_size)
+    }
+    #[inline]
+    pub const fn tpidr_el0() -> usize {
+        offset_of!(CpuContext, tpidr_el0)
+    }
+    #[inline]
+    pub const fn tpidrro_el0() -> usize {
+        offset_of!(CpuContext, tpidrro_el0)
+    }
+    #[inline]
+    pub const fn cntfrq_el0() -> usize {
+        offset_of!(CpuContext, cntfrq_el0)
+    }
+    #[inline]
+    pub const fn read_cntpct() -> usize {
+        offset_of!(CpuContext, read_cntpct)
+    }
+    #[inline]
+    pub const fn mem_read() -> usize {
+        offset_of!(CpuContext, mem_read)
+    }
+    #[inline]
+    pub const fn mem_write() -> usize {
+        offset_of!(CpuContext, mem_write)
+    }
+    #[inline]
+    pub const fn io_value() -> usize {
+        offset_of!(CpuContext, io_value)
+    }
+    #[inline]
+    pub const fn fpcr() -> usize {
+        offset_of!(CpuContext, fpcr)
+    }
+    #[inline]
+    pub const fn fpsr() -> usize {
+        offset_of!(CpuContext, fpsr)
+    }
 }

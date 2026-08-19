@@ -14,13 +14,16 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: MOVEWIDE) -> Result<InstStatus> {
         MOVK_Rd_HALF(i) => (Kind::K, i.0),
     };
 
-    let sf  = bit(raw, 31);
-    let hw  = bits(raw, 21, 2);
+    let sf = bit(raw, 31);
+    let hw = bits(raw, 21, 2);
     let imm16 = bits(raw, 5, 16);
-    let rd  = bits(raw, 0, 5) as u8;
+    let rd = bits(raw, 0, 5) as u8;
 
     if sf == 0 && hw >= 2 {
-        return Err(Error::Decode { pc: em.current_pc, opcode: raw });
+        return Err(Error::Decode {
+            pc: em.current_pc,
+            opcode: raw,
+        });
     }
     let size = if sf == 1 { RegSize::X } else { RegSize::W };
     let shift = hw * 16;
@@ -33,7 +36,9 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: MOVEWIDE) -> Result<InstStatus> {
         }
         Kind::N => {
             let mut value = !imm_shifted;
-            if sf == 0 { value &= 0xFFFF_FFFF; }
+            if sf == 0 {
+                value &= 0xFFFF_FFFF;
+            }
             let c = em.const_u64(value);
             em.set_gpr(rd, c, size);
         }
@@ -50,4 +55,8 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: MOVEWIDE) -> Result<InstStatus> {
     Ok(InstStatus::Continue)
 }
 
-enum Kind { Z, N, K }
+enum Kind {
+    Z,
+    N,
+    K,
+}

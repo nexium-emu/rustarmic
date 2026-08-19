@@ -1,4 +1,4 @@
-use crate::backend::clobbers::{clobbers_for_op, GprMask, XmmMask};
+use crate::backend::clobbers::{GprMask, XmmMask, clobbers_for_op};
 use crate::ir::{Block, Op, Terminal, Ty};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -20,7 +20,10 @@ impl LiveRange {
 
     #[inline]
     pub const fn point(idx: u16) -> LiveRange {
-        LiveRange { start: idx, count: 1 }
+        LiveRange {
+            start: idx,
+            count: 1,
+        }
     }
 
     #[inline]
@@ -54,9 +57,9 @@ impl LiveRange {
 }
 
 pub struct Allocation {
-    pub locs:        Vec<Loc>,
+    pub locs: Vec<Loc>,
     pub spill_bytes: i32,
-    pub used_xmms:   u16,
+    pub used_xmms: u16,
 }
 
 impl Allocation {
@@ -66,14 +69,18 @@ impl Allocation {
     }
 
     #[inline]
-    pub fn xmm_save_bytes(&self) -> i32 { 0 }
+    pub fn xmm_save_bytes(&self) -> i32 {
+        0
+    }
 
     pub fn iter_used_xmms(&self) -> impl Iterator<Item = u8> + '_ {
         (0..16u8).filter(move |i| (self.used_xmms >> i) & 1 != 0)
     }
 
     #[inline]
-    pub fn frame_bytes(&self) -> i32 { 0 }
+    pub fn frame_bytes(&self) -> i32 {
+        0
+    }
 }
 
 pub fn compute_live_ranges(block: &Block) -> Vec<LiveRange> {
@@ -135,10 +142,20 @@ pub fn op_clobbers(op: Op) -> GprMask {
 }
 
 pub fn op_prefers_two_address(op: Op) -> bool {
-    matches!(op,
-        Op::Add32 | Op::Add64 | Op::Sub32 | Op::Sub64
-        | Op::And32 | Op::And64 | Op::Or32 | Op::Or64
-        | Op::Eor32 | Op::Eor64 | Op::Mul32 | Op::Mul64
+    matches!(
+        op,
+        Op::Add32
+            | Op::Add64
+            | Op::Sub32
+            | Op::Sub64
+            | Op::And32
+            | Op::And64
+            | Op::Or32
+            | Op::Or64
+            | Op::Eor32
+            | Op::Eor64
+            | Op::Mul32
+            | Op::Mul64
     )
 }
 
@@ -225,13 +242,13 @@ pub fn linear_scan(block: &Block, ranges: &[LiveRange], pool: &[u8]) -> Allocati
             let src = block.code[vr_idx].args[0];
             if src.is_some() {
                 let src_idx = src.as_usize();
-                if src_idx < n
-                    && !ranges[src_idx].is_dead()
-                    && ranges[src_idx].end() == start
-                {
+                if src_idx < n && !ranges[src_idx].is_dead() && ranges[src_idx].end() == start {
                     if let Loc::Reg(reg) = locs[src_idx] {
                         locs[vr_idx] = Loc::Reg(reg);
-                        if let Some(slot) = active.iter_mut().find(|(_, r, vi)| *r == reg && *vi == src_idx) {
+                        if let Some(slot) = active
+                            .iter_mut()
+                            .find(|(_, r, vi)| *r == reg && *vi == src_idx)
+                        {
                             *slot = (end, reg, vr_idx);
                         }
                         continue;
@@ -252,7 +269,11 @@ pub fn linear_scan(block: &Block, ranges: &[LiveRange], pool: &[u8]) -> Allocati
             locs[vr_idx] = Loc::Reg(reg);
             active.push((end, reg, vr_idx));
         } else if active.is_empty() {
-            locs[vr_idx] = take_spill(&mut spill_cursor, &mut xmm_free, !interior_xmm_clobber_mask(&xmm_clobber_masks, range).bits());
+            locs[vr_idx] = take_spill(
+                &mut spill_cursor,
+                &mut xmm_free,
+                !interior_xmm_clobber_mask(&xmm_clobber_masks, range).bits(),
+            );
         } else {
             let candidate = active
                 .iter()
@@ -262,16 +283,25 @@ pub fn linear_scan(block: &Block, ranges: &[LiveRange], pool: &[u8]) -> Allocati
 
             if let Some((spill_pos, &(victim_end, victim_reg, victim_vr))) = candidate {
                 if victim_end > end {
-                    let victim_safe = !interior_xmm_clobber_mask(&xmm_clobber_masks, ranges[victim_vr]).bits();
+                    let victim_safe =
+                        !interior_xmm_clobber_mask(&xmm_clobber_masks, ranges[victim_vr]).bits();
                     let spilled = take_spill(&mut spill_cursor, &mut xmm_free, victim_safe);
                     locs[victim_vr] = spilled;
-                    locs[vr_idx]    = Loc::Reg(victim_reg);
+                    locs[vr_idx] = Loc::Reg(victim_reg);
                     active[spill_pos] = (end, victim_reg, vr_idx);
                 } else {
-                    locs[vr_idx] = take_spill(&mut spill_cursor, &mut xmm_free, !interior_xmm_clobber_mask(&xmm_clobber_masks, range).bits());
+                    locs[vr_idx] = take_spill(
+                        &mut spill_cursor,
+                        &mut xmm_free,
+                        !interior_xmm_clobber_mask(&xmm_clobber_masks, range).bits(),
+                    );
                 }
             } else {
-                locs[vr_idx] = take_spill(&mut spill_cursor, &mut xmm_free, !interior_xmm_clobber_mask(&xmm_clobber_masks, range).bits());
+                locs[vr_idx] = take_spill(
+                    &mut spill_cursor,
+                    &mut xmm_free,
+                    !interior_xmm_clobber_mask(&xmm_clobber_masks, range).bits(),
+                );
             }
         }
     }
@@ -290,7 +320,9 @@ fn mask_contains_gpr(mask: GprMask, gpr: u8) -> bool {
 
 fn interior_clobber_mask(clobber_masks: &[GprMask], range: LiveRange) -> GprMask {
     let mut mask = GprMask::empty();
-    if range.is_dead() { return mask; }
+    if range.is_dead() {
+        return mask;
+    }
     let start = range.start as usize;
     let end = range.end() as usize;
     if end > start + 1 {
@@ -303,7 +335,9 @@ fn interior_clobber_mask(clobber_masks: &[GprMask], range: LiveRange) -> GprMask
 
 fn interior_xmm_clobber_mask(clobber_masks: &[XmmMask], range: LiveRange) -> XmmMask {
     let mut mask = XmmMask::empty();
-    if range.is_dead() { return mask; }
+    if range.is_dead() {
+        return mask;
+    }
     let start = range.start as usize;
     let end = range.end() as usize;
     if end > start + 1 {
@@ -360,7 +394,11 @@ mod tests {
         let val = em.const_u64(0);
         let _filler = em.const_u64(7);
         let _filler2 = em.const_u64(8);
-        em.push(Armlet::new(Op::CbZ, Ty::Void).with_args(&[val]).with_imm(0x2000));
+        em.push(
+            Armlet::new(Op::CbZ, Ty::Void)
+                .with_args(&[val])
+                .with_imm(0x2000),
+        );
         b.terminal = Terminal::CompareBranchZero {
             value: val,
             inverse: false,
@@ -412,7 +450,9 @@ mod tests {
         let mut assigned_regs = std::collections::HashSet::new();
         for &vr in &vrs {
             match alloc.locs[vr.as_usize()] {
-                Loc::Reg(r) => { assigned_regs.insert(r); }
+                Loc::Reg(r) => {
+                    assigned_regs.insert(r);
+                }
                 other => panic!("expected Reg, got {:?}", other),
             }
         }
@@ -463,7 +503,10 @@ mod tests {
         let ranges = compute_live_ranges(&b);
         let alloc = linear_scan(&b, &ranges, ALLOCATABLE_GPRS);
 
-        let any_spill = alloc.locs.iter().any(|l| matches!(l, Loc::Spill(_) | Loc::Xmm(_)));
+        let any_spill = alloc
+            .locs
+            .iter()
+            .any(|l| matches!(l, Loc::Spill(_) | Loc::Xmm(_)));
         assert!(!any_spill);
         assert_eq!(alloc.spill_bytes, 0);
         assert_eq!(alloc.used_xmms, 0);
@@ -500,15 +543,32 @@ mod tests {
         let loc_b = alloc.loc(q2);
 
         if !SPILL_XMMS.is_empty() {
-            assert!(matches!(loc_a, Loc::Xmm(_)), "first u128 should be Xmm, got {loc_a:?}");
-            assert!(matches!(loc_b, Loc::Xmm(_)), "second u128 should be Xmm, got {loc_b:?}");
-            assert_eq!(loc_a, loc_b, "non-overlapping u128 ranges should reuse the same XMM");
+            assert!(
+                matches!(loc_a, Loc::Xmm(_)),
+                "first u128 should be Xmm, got {loc_a:?}"
+            );
+            assert!(
+                matches!(loc_b, Loc::Xmm(_)),
+                "second u128 should be Xmm, got {loc_b:?}"
+            );
+            assert_eq!(
+                loc_a, loc_b,
+                "non-overlapping u128 ranges should reuse the same XMM"
+            );
         } else {
             let (Loc::Spill(off_a), Loc::Spill(off_b)) = (loc_a, loc_b) else {
                 panic!("on SysV both u128 values must be Spill; got {loc_a:?} / {loc_b:?}");
             };
-            assert_eq!(off_a % 16, 0, "first u128 spill slot must be 16-byte aligned (off={off_a})");
-            assert_eq!(off_b % 16, 0, "second u128 spill slot must be 16-byte aligned (off={off_b})");
+            assert_eq!(
+                off_a % 16,
+                0,
+                "first u128 spill slot must be 16-byte aligned (off={off_a})"
+            );
+            assert_eq!(
+                off_b % 16,
+                0,
+                "second u128 spill slot must be 16-byte aligned (off={off_b})"
+            );
             assert_ne!(off_a, off_b, "fresh u128 spill slots are not recycled");
         }
     }
@@ -526,12 +586,19 @@ mod tests {
         let alloc = linear_scan(&b, &ranges, ALLOCATABLE_GPRS);
         let loc_a = alloc.loc(a);
         let loc_c = alloc.loc(c);
-        assert_ne!(loc_a, loc_c, "overlapping u128 lifetimes must not share a slot");
+        assert_ne!(
+            loc_a, loc_c,
+            "overlapping u128 lifetimes must not share a slot"
+        );
         if SPILL_XMMS.is_empty() {
-            assert!(matches!(loc_a, Loc::Spill(off) if off % 16 == 0),
-                    "SysV overlapping u128 must be aligned Spill, got {loc_a:?}");
-            assert!(matches!(loc_c, Loc::Spill(off) if off % 16 == 0),
-                    "SysV overlapping u128 must be aligned Spill, got {loc_c:?}");
+            assert!(
+                matches!(loc_a, Loc::Spill(off) if off % 16 == 0),
+                "SysV overlapping u128 must be aligned Spill, got {loc_a:?}"
+            );
+            assert!(
+                matches!(loc_c, Loc::Spill(off) if off % 16 == 0),
+                "SysV overlapping u128 must be aligned Spill, got {loc_c:?}"
+            );
         }
     }
 

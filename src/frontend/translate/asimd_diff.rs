@@ -6,24 +6,36 @@ use crate::ir::IrEmitter;
 use crate::util::bits::{bit, bits};
 
 #[derive(Clone, Copy)]
-enum Kind { Saddl, Uaddl, Ssubl, Usubl, Smull, Umull }
+enum Kind {
+    Saddl,
+    Uaddl,
+    Ssubl,
+    Usubl,
+    Smull,
+    Umull,
+}
 
 pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDDIFF) -> Result<InstStatus> {
     use ASIMDDIFF::*;
     let (raw, kind) = match insn {
-        SADDL_Vd_Vn_Vm(i)  => (i.0, Kind::Saddl),
+        SADDL_Vd_Vn_Vm(i) => (i.0, Kind::Saddl),
         SADDL2_Vd_Vn_Vm(i) => (i.0, Kind::Saddl),
-        UADDL_Vd_Vn_Vm(i)  => (i.0, Kind::Uaddl),
+        UADDL_Vd_Vn_Vm(i) => (i.0, Kind::Uaddl),
         UADDL2_Vd_Vn_Vm(i) => (i.0, Kind::Uaddl),
-        SSUBL_Vd_Vn_Vm(i)  => (i.0, Kind::Ssubl),
+        SSUBL_Vd_Vn_Vm(i) => (i.0, Kind::Ssubl),
         SSUBL2_Vd_Vn_Vm(i) => (i.0, Kind::Ssubl),
-        USUBL_Vd_Vn_Vm(i)  => (i.0, Kind::Usubl),
+        USUBL_Vd_Vn_Vm(i) => (i.0, Kind::Usubl),
         USUBL2_Vd_Vn_Vm(i) => (i.0, Kind::Usubl),
-        SMULL_Vd_Vn_Vm(i)  => (i.0, Kind::Smull),
+        SMULL_Vd_Vn_Vm(i) => (i.0, Kind::Smull),
         SMULL2_Vd_Vn_Vm(i) => (i.0, Kind::Smull),
-        UMULL_Vd_Vn_Vm(i)  => (i.0, Kind::Umull),
+        UMULL_Vd_Vn_Vm(i) => (i.0, Kind::Umull),
         UMULL2_Vd_Vn_Vm(i) => (i.0, Kind::Umull),
-        _ => return Err(Error::Unsupported { pc: em.current_pc, opcode: 0 }),
+        _ => {
+            return Err(Error::Unsupported {
+                pc: em.current_pc,
+                opcode: 0,
+            });
+        }
     };
     translate_with(em, raw, kind)
 }
@@ -31,11 +43,14 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDDIFF) -> Result<InstStatus> 
 fn translate_with(em: &mut IrEmitter<'_>, raw: u32, kind: Kind) -> Result<InstStatus> {
     let high_half = bit(raw, 30) == 1;
     let size = bits(raw, 22, 2);
-    let rm   = bits(raw, 16, 5) as u8;
-    let rn   = bits(raw, 5,  5) as u8;
-    let rd   = bits(raw, 0,  5) as u8;
+    let rm = bits(raw, 16, 5) as u8;
+    let rn = bits(raw, 5, 5) as u8;
+    let rd = bits(raw, 0, 5) as u8;
     if size > 2 {
-        return Err(Error::Decode { pc: em.current_pc, opcode: raw });
+        return Err(Error::Decode {
+            pc: em.current_pc,
+            opcode: raw,
+        });
     }
     let vn = em.get_v_q(rn);
     let vm = em.get_v_q(rm);

@@ -2,7 +2,7 @@
 
 mod harness;
 
-use harness::{run_pair, RegState};
+use harness::{RegState, run_pair};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
@@ -42,16 +42,16 @@ fn gen_inst(rng: &mut ChaCha8Rng) -> u32 {
     let imm12: u32 = rng.r#gen_range(0..0x1000);
     let shift_amt: u32 = rng.r#gen_range(0..63);
     match pick {
-        0  => 0x9100_0000 | (imm12 << 10) | (rn << 5) | rd,
-        1  => 0xD100_0000 | (imm12 << 10) | (rn << 5) | rd,
-        2  => 0x8B00_0000 | (rm << 16) | (rn << 5) | rd,
-        3  => 0xCB00_0000 | (rm << 16) | (rn << 5) | rd,
-        4  => 0xAA00_0000 | (rm << 16) | (rn << 5) | rd,
-        5  => 0x4A00_0000 | (rm << 16) | (rn << 5) | rd,
-        6  => 0x8A00_0000 | (rm << 16) | (rn << 5) | rd,
-        7  => 0xCA00_0000 | (rm << 16) | (rn << 5) | rd,
-        8  => 0x9B00_7C00 | (rm << 16) | (rn << 5) | rd,
-        9  => {
+        0 => 0x9100_0000 | (imm12 << 10) | (rn << 5) | rd,
+        1 => 0xD100_0000 | (imm12 << 10) | (rn << 5) | rd,
+        2 => 0x8B00_0000 | (rm << 16) | (rn << 5) | rd,
+        3 => 0xCB00_0000 | (rm << 16) | (rn << 5) | rd,
+        4 => 0xAA00_0000 | (rm << 16) | (rn << 5) | rd,
+        5 => 0x4A00_0000 | (rm << 16) | (rn << 5) | rd,
+        6 => 0x8A00_0000 | (rm << 16) | (rn << 5) | rd,
+        7 => 0xCA00_0000 | (rm << 16) | (rn << 5) | rd,
+        8 => 0x9B00_7C00 | (rm << 16) | (rn << 5) | rd,
+        9 => {
             let s = shift_amt & 63;
             let immr = (64u32 - s) & 63;
             let imms = 63 - s;
@@ -67,7 +67,7 @@ fn gen_inst(rng: &mut ChaCha8Rng) -> u32 {
         }
         12 => 0xB100_0000 | (imm12 << 10) | (rn << 5) | rd,
         13 => 0xF100_0000 | (imm12 << 10) | (rn << 5) | rd,
-        _  => unreachable!(),
+        _ => unreachable!(),
     }
 }
 
@@ -112,26 +112,51 @@ fn gen_neon_block(rng: &mut ChaCha8Rng, n: usize) -> Vec<u8> {
 
 fn gen_neon_inst(rng: &mut ChaCha8Rng) -> u32 {
     let max_pick: u32 = std::env::var("FUZZ_NEON_MAX")
-        .ok().and_then(|s| s.parse().ok()).unwrap_or(37);
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(37);
     let pick: u32 = rng.r#gen_range(0..max_pick);
     let vd: u32 = rng.r#gen_range(0..16);
     let vn: u32 = rng.r#gen_range(0..16);
     let vm: u32 = rng.r#gen_range(0..16);
 
     fn enc_same(q: u32, u: u32, size: u32, rm: u32, opcode: u32, rn: u32, rd: u32) -> u32 {
-        (0 << 31) | (q << 30) | (u << 29) | (0b01110 << 24)
-            | (size << 22) | (1 << 21) | (rm << 16)
-            | (opcode << 11) | (1 << 10) | (rn << 5) | rd
+        (0 << 31)
+            | (q << 30)
+            | (u << 29)
+            | (0b01110 << 24)
+            | (size << 22)
+            | (1 << 21)
+            | (rm << 16)
+            | (opcode << 11)
+            | (1 << 10)
+            | (rn << 5)
+            | rd
     }
     fn enc_misc(q: u32, u: u32, size: u32, opcode: u32, rn: u32, rd: u32) -> u32 {
-        (0 << 31) | (q << 30) | (u << 29) | (0b01110 << 24)
-            | (size << 22) | (1 << 21) | (0 << 17)
-            | (opcode << 12) | (0b10 << 10) | (rn << 5) | rd
+        (0 << 31)
+            | (q << 30)
+            | (u << 29)
+            | (0b01110 << 24)
+            | (size << 22)
+            | (1 << 21)
+            | (0 << 17)
+            | (opcode << 12)
+            | (0b10 << 10)
+            | (rn << 5)
+            | rd
     }
     fn enc_diff(q: u32, u: u32, size: u32, rm: u32, opcode4: u32, rn: u32, rd: u32) -> u32 {
-        (0 << 31) | (q << 30) | (u << 29) | (0b01110 << 24)
-            | (size << 22) | (1 << 21) | (rm << 16)
-            | (opcode4 << 12) | (rn << 5) | rd
+        (0 << 31)
+            | (q << 30)
+            | (u << 29)
+            | (0b01110 << 24)
+            | (size << 22)
+            | (1 << 21)
+            | (rm << 16)
+            | (opcode4 << 12)
+            | (rn << 5)
+            | rd
     }
     fn pick_q_size(rng: &mut ChaCha8Rng, max_size: u32) -> (u32, u32) {
         let q = rng.r#gen_range(0..2);
@@ -144,90 +169,266 @@ fn gen_neon_inst(rng: &mut ChaCha8Rng) -> u32 {
     }
 
     match pick {
-        0 => { let (q, s) = pick_q_size(rng, 4); enc_same(q, 0, s, vm, 0b10000, vn, vd) }
-        1 => { let (q, s) = pick_q_size(rng, 4); enc_same(q, 1, s, vm, 0b10000, vn, vd) }
+        0 => {
+            let (q, s) = pick_q_size(rng, 4);
+            enc_same(q, 0, s, vm, 0b10000, vn, vd)
+        }
+        1 => {
+            let (q, s) = pick_q_size(rng, 4);
+            enc_same(q, 1, s, vm, 0b10000, vn, vd)
+        }
         2 => enc_same(rng.r#gen_range(0..2), 0, 0b00, vm, 0b00011, vn, vd),
         3 => enc_same(rng.r#gen_range(0..2), 0, 0b10, vm, 0b00011, vn, vd),
         4 => enc_same(rng.r#gen_range(0..2), 1, 0b00, vm, 0b00011, vn, vd),
         5 => enc_same(rng.r#gen_range(0..2), 0, 0b01, vm, 0b00011, vn, vd),
         6 => enc_same(rng.r#gen_range(0..2), 0, 0b11, vm, 0b00011, vn, vd),
-        7 => enc_same(rng.r#gen_range(0..2), 0, [1u32, 2].choose_rng(rng), vm, 0b10011, vn, vd),
-        8  => enc_same(rng.r#gen_range(0..2), 0, rng.r#gen_range(0..3), vm, 0b01100, vn, vd),
-        9  => enc_same(rng.r#gen_range(0..2), 0, rng.r#gen_range(0..3), vm, 0b01101, vn, vd),
-        10 => enc_same(rng.r#gen_range(0..2), 1, rng.r#gen_range(0..3), vm, 0b01100, vn, vd),
-        11 => enc_same(rng.r#gen_range(0..2), 1, rng.r#gen_range(0..3), vm, 0b01101, vn, vd),
-        12 => { let (q, s) = pick_q_size(rng, 4); enc_same(q, 1, s, vm, 0b10001, vn, vd) }
-        13 => { let (q, s) = pick_q_size(rng, 4); enc_same(q, 0, s, vm, 0b00110, vn, vd) }
-        14 => { let (q, s) = pick_q_size(rng, 4); enc_same(q, 0, s, vm, 0b00111, vn, vd) }
-        15 => { let (q, s) = pick_q_size(rng, 3); enc_same(q, 1, s, vm, 0b00110, vn, vd) }
-        16 => { let (q, s) = pick_q_size(rng, 3); enc_same(q, 1, s, vm, 0b00111, vn, vd) }
+        7 => enc_same(
+            rng.r#gen_range(0..2),
+            0,
+            [1u32, 2].choose_rng(rng),
+            vm,
+            0b10011,
+            vn,
+            vd,
+        ),
+        8 => enc_same(
+            rng.r#gen_range(0..2),
+            0,
+            rng.r#gen_range(0..3),
+            vm,
+            0b01100,
+            vn,
+            vd,
+        ),
+        9 => enc_same(
+            rng.r#gen_range(0..2),
+            0,
+            rng.r#gen_range(0..3),
+            vm,
+            0b01101,
+            vn,
+            vd,
+        ),
+        10 => enc_same(
+            rng.r#gen_range(0..2),
+            1,
+            rng.r#gen_range(0..3),
+            vm,
+            0b01100,
+            vn,
+            vd,
+        ),
+        11 => enc_same(
+            rng.r#gen_range(0..2),
+            1,
+            rng.r#gen_range(0..3),
+            vm,
+            0b01101,
+            vn,
+            vd,
+        ),
+        12 => {
+            let (q, s) = pick_q_size(rng, 4);
+            enc_same(q, 1, s, vm, 0b10001, vn, vd)
+        }
+        13 => {
+            let (q, s) = pick_q_size(rng, 4);
+            enc_same(q, 0, s, vm, 0b00110, vn, vd)
+        }
+        14 => {
+            let (q, s) = pick_q_size(rng, 4);
+            enc_same(q, 0, s, vm, 0b00111, vn, vd)
+        }
+        15 => {
+            let (q, s) = pick_q_size(rng, 3);
+            enc_same(q, 1, s, vm, 0b00110, vn, vd)
+        }
+        16 => {
+            let (q, s) = pick_q_size(rng, 3);
+            enc_same(q, 1, s, vm, 0b00111, vn, vd)
+        }
         17 => enc_same(1, 1, 0b10, vm, 0b00011, vn, vd),
         18 => enc_same(1, 1, 0b11, vm, 0b00011, vn, vd),
         19 => enc_same(1, 1, 0b01, vm, 0b00011, vn, vd),
-        20 => { let (q, s) = pick_q_size(rng, 4); enc_misc(q, 1, s, 0b01011, vn, vd) }
-        21 => { let (q, s) = pick_q_size(rng, 3); enc_misc(q, 0, s, 0b01011, vn, vd) }
+        20 => {
+            let (q, s) = pick_q_size(rng, 4);
+            enc_misc(q, 1, s, 0b01011, vn, vd)
+        }
+        21 => {
+            let (q, s) = pick_q_size(rng, 3);
+            enc_misc(q, 0, s, 0b01011, vn, vd)
+        }
         22 => enc_misc(rng.r#gen_range(0..2), 1, 0b00, 0b00101, vn, vd),
         23 => {
             let q = rng.r#gen_range(0..2);
-            let size = if q == 1 { rng.r#gen_range(0..4) } else { rng.r#gen_range(0..3) };
+            let size = if q == 1 {
+                rng.r#gen_range(0..4)
+            } else {
+                rng.r#gen_range(0..3)
+            };
             let zip2 = rng.r#gen_range(0..2) == 1;
             let opcode_high = if zip2 { 0b111 } else { 0b011 };
-            (0 << 31) | (q << 30) | (0 << 29) | (0b01110 << 24)
-                | (size << 22) | (0 << 21) | (vm << 16)
-                | (0 << 15) | (opcode_high << 12) | (1 << 11) | (0 << 10)
-                | (vn << 5) | vd
+            (0 << 31)
+                | (q << 30)
+                | (0 << 29)
+                | (0b01110 << 24)
+                | (size << 22)
+                | (0 << 21)
+                | (vm << 16)
+                | (0 << 15)
+                | (opcode_high << 12)
+                | (1 << 11)
+                | (0 << 10)
+                | (vn << 5)
+                | vd
         }
         24 => enc_misc(rng.r#gen_range(0..2), 0, 0b00, 0b00001, vn, vd),
-        25 => { let s = rng.r#gen_range(0..2); enc_misc(rng.r#gen_range(0..2), 1, s, 0b00000, vn, vd) }
-        26 => { let s = rng.r#gen_range(0..3); enc_misc(rng.r#gen_range(0..2), 0, s, 0b00000, vn, vd) }
-        28 => enc_diff(rng.r#gen_range(0..2), 0, rng.r#gen_range(0..3), vm, 0b0010, vn, vd),
-        29 => enc_diff(rng.r#gen_range(0..2), 1, rng.r#gen_range(0..3), vm, 0b0010, vn, vd),
-        30 => enc_diff(rng.r#gen_range(0..2), 0, rng.r#gen_range(0..2), vm, 0b1100, vn, vd),
-        31 => enc_diff(rng.r#gen_range(0..2), 1, rng.r#gen_range(0..2), vm, 0b1100, vn, vd),
-        32 => enc_misc(rng.r#gen_range(0..2), 0, rng.r#gen_range(0..3), 0b10010, vn, vd),
+        25 => {
+            let s = rng.r#gen_range(0..2);
+            enc_misc(rng.r#gen_range(0..2), 1, s, 0b00000, vn, vd)
+        }
+        26 => {
+            let s = rng.r#gen_range(0..3);
+            enc_misc(rng.r#gen_range(0..2), 0, s, 0b00000, vn, vd)
+        }
+        28 => enc_diff(
+            rng.r#gen_range(0..2),
+            0,
+            rng.r#gen_range(0..3),
+            vm,
+            0b0010,
+            vn,
+            vd,
+        ),
+        29 => enc_diff(
+            rng.r#gen_range(0..2),
+            1,
+            rng.r#gen_range(0..3),
+            vm,
+            0b0010,
+            vn,
+            vd,
+        ),
+        30 => enc_diff(
+            rng.r#gen_range(0..2),
+            0,
+            rng.r#gen_range(0..2),
+            vm,
+            0b1100,
+            vn,
+            vd,
+        ),
+        31 => enc_diff(
+            rng.r#gen_range(0..2),
+            1,
+            rng.r#gen_range(0..2),
+            vm,
+            0b1100,
+            vn,
+            vd,
+        ),
+        32 => enc_misc(
+            rng.r#gen_range(0..2),
+            0,
+            rng.r#gen_range(0..3),
+            0b10010,
+            vn,
+            vd,
+        ),
         33 => {
-            let (q, sz) = if rng.r#gen_range(0..2) == 0 { (rng.r#gen_range(0..2), 0u32) } else { (1, 1u32) };
+            let (q, sz) = if rng.r#gen_range(0..2) == 0 {
+                (rng.r#gen_range(0..2), 0u32)
+            } else {
+                (1, 1u32)
+            };
             let (u, bit23) = match rng.r#gen_range(0..3) {
                 0 => (0u32, 0u32),
                 1 => (1, 0),
                 _ => (1, 1),
             };
-            (0 << 31) | (q << 30) | (u << 29) | (0b01110 << 24)
-                | (bit23 << 23) | (sz << 22) | (1 << 21) | (vm << 16)
-                | (0b11100 << 11) | (1 << 10) | (vn << 5) | vd
+            (0 << 31)
+                | (q << 30)
+                | (u << 29)
+                | (0b01110 << 24)
+                | (bit23 << 23)
+                | (sz << 22)
+                | (1 << 21)
+                | (vm << 16)
+                | (0b11100 << 11)
+                | (1 << 10)
+                | (vn << 5)
+                | vd
         }
         34 => {
             let q = rng.r#gen_range(0..2);
             let len = rng.r#gen_range(1..3);
-            (0 << 31) | (q << 30) | (0 << 29) | (0b01110 << 24)
-                | (0 << 21) | (vm << 16) | (0 << 15) | (len << 13)
-                | (0 << 12) | (vn << 5) | vd
+            (0 << 31)
+                | (q << 30)
+                | (0 << 29)
+                | (0b01110 << 24)
+                | (0 << 21)
+                | (vm << 16)
+                | (0 << 15)
+                | (len << 13)
+                | (0 << 12)
+                | (vn << 5)
+                | vd
         }
         36 => {
             let pick = rng.r#gen_range(0..6);
             let (u, bit23, op_low) = match pick {
                 0 => (0u32, 0u32, 0b11000u32),
-                1 => (0,    0,    0b11001),
-                2 => (0,    1,    0b11000),
-                3 => (0,    1,    0b11001),
-                4 => (1,    0,    0b11000),
-                _ => (1,    0,    0b11001),
+                1 => (0, 0, 0b11001),
+                2 => (0, 1, 0b11000),
+                3 => (0, 1, 0b11001),
+                4 => (1, 0, 0b11000),
+                _ => (1, 0, 0b11001),
             };
-            let (q, sz) = if rng.r#gen_range(0..2) == 0 { (rng.r#gen_range(0..2), 0u32) } else { (1, 1u32) };
-            (0 << 31) | (q << 30) | (u << 29) | (0b01110 << 24)
-                | (bit23 << 23) | (sz << 22) | (1 << 21) | (0 << 17)
-                | (op_low << 12) | (0b10 << 10) | (vn << 5) | vd
+            let (q, sz) = if rng.r#gen_range(0..2) == 0 {
+                (rng.r#gen_range(0..2), 0u32)
+            } else {
+                (1, 1u32)
+            };
+            (0 << 31)
+                | (q << 30)
+                | (u << 29)
+                | (0b01110 << 24)
+                | (bit23 << 23)
+                | (sz << 22)
+                | (1 << 21)
+                | (0 << 17)
+                | (op_low << 12)
+                | (0b10 << 10)
+                | (vn << 5)
+                | vd
         }
         35 => {
-            let (q, sz) = if rng.r#gen_range(0..2) == 0 { (rng.r#gen_range(0..2), 0u32) } else { (1, 1u32) };
+            let (q, sz) = if rng.r#gen_range(0..2) == 0 {
+                (rng.r#gen_range(0..2), 0u32)
+            } else {
+                (1, 1u32)
+            };
             let bit23 = rng.r#gen_range(0..2);
-            (0 << 31) | (q << 30) | (0 << 29) | (0b01110 << 24)
-                | (bit23 << 23) | (sz << 22) | (1 << 21) | (vm << 16)
-                | (0b11001 << 11) | (1 << 10) | (vn << 5) | vd
+            (0 << 31)
+                | (q << 30)
+                | (0 << 29)
+                | (0b01110 << 24)
+                | (bit23 << 23)
+                | (sz << 22)
+                | (1 << 21)
+                | (vm << 16)
+                | (0b11001 << 11)
+                | (1 << 10)
+                | (vn << 5)
+                | vd
         }
         27 => {
             let q = rng.r#gen_range(0..2);
-            let size = if q == 1 { rng.r#gen_range(0..4) } else { rng.r#gen_range(0..3) };
+            let size = if q == 1 {
+                rng.r#gen_range(0..4)
+            } else {
+                rng.r#gen_range(0..3)
+            };
             let op_pick = rng.r#gen_range(0..4);
             let opcode_high = match op_pick {
                 0 => 0b001,
@@ -235,16 +436,27 @@ fn gen_neon_inst(rng: &mut ChaCha8Rng) -> u32 {
                 2 => 0b010,
                 _ => 0b110,
             };
-            (0 << 31) | (q << 30) | (0 << 29) | (0b01110 << 24)
-                | (size << 22) | (0 << 21) | (vm << 16)
-                | (0 << 15) | (opcode_high << 12) | (1 << 11) | (0 << 10)
-                | (vn << 5) | vd
+            (0 << 31)
+                | (q << 30)
+                | (0 << 29)
+                | (0b01110 << 24)
+                | (size << 22)
+                | (0 << 21)
+                | (vm << 16)
+                | (0 << 15)
+                | (opcode_high << 12)
+                | (1 << 11)
+                | (0 << 10)
+                | (vn << 5)
+                | vd
         }
         _ => unreachable!(),
     }
 }
 
-trait ChooseRng<T> { fn choose_rng(&self, rng: &mut ChaCha8Rng) -> T; }
+trait ChooseRng<T> {
+    fn choose_rng(&self, rng: &mut ChaCha8Rng) -> T;
+}
 impl<T: Copy> ChooseRng<T> for [T] {
     fn choose_rng(&self, rng: &mut ChaCha8Rng) -> T {
         self[rng.r#gen_range(0..self.len())]
@@ -252,16 +464,18 @@ impl<T: Copy> ChooseRng<T> for [T] {
 }
 
 fn v_regs_match_with_nan(a: [u64; 2], b: [u64; 2]) -> bool {
-    if a == b { return true; }
+    if a == b {
+        return true;
+    }
     let s_match = (0..4).all(|i| {
         let av = ((a[i / 2] >> ((i % 2) * 32)) & 0xFFFF_FFFF) as u32;
         let bv = ((b[i / 2] >> ((i % 2) * 32)) & 0xFFFF_FFFF) as u32;
         av == bv || (f32::from_bits(av).is_nan() && f32::from_bits(bv).is_nan())
     });
-    if s_match { return true; }
-    (0..2).all(|i| {
-        a[i] == b[i] || (f64::from_bits(a[i]).is_nan() && f64::from_bits(b[i]).is_nan())
-    })
+    if s_match {
+        return true;
+    }
+    (0..2).all(|i| a[i] == b[i] || (f64::from_bits(a[i]).is_nan() && f64::from_bits(b[i]).is_nan()))
 }
 
 fn fuzz_neon_with_seed(seed: u64, cases: u32, min_len: usize, max_len: usize, label: &str) {
@@ -338,8 +552,16 @@ fn fuzz_neon_large() {
 
 #[test]
 fn fuzz_neon_stress_multiseed() {
-    if std::env::var("FUZZ_STRESS").is_err() { return; }
-    let seeds: &[u64] = &[0x0011_2233, 0xDEAD_BEEF, 0xCAFE_BABE_u64, 0x1357_9BDF, 0x2468_ACE0];
+    if std::env::var("FUZZ_STRESS").is_err() {
+        return;
+    }
+    let seeds: &[u64] = &[
+        0x0011_2233,
+        0xDEAD_BEEF,
+        0xCAFE_BABE_u64,
+        0x1357_9BDF,
+        0x2468_ACE0,
+    ];
     for &s in seeds {
         fuzz_neon_with_seed(s, 32, 24, 64, "neon-stress");
     }
@@ -360,14 +582,27 @@ fn bisect_frint_large_case12() {
     let init = baseline_state(seed ^ case_idx);
     for k in 1..=words.len() {
         let mut code = Vec::with_capacity((k + 1) * 4);
-        for &w in &words[..k] { code.extend_from_slice(&w.to_le_bytes()); }
+        for &w in &words[..k] {
+            code.extend_from_slice(&w.to_le_bytes());
+        }
         code.extend_from_slice(&0xD420_0000u32.to_le_bytes());
         let (uni, jit) = run_pair(&code, init);
         for vidx in &[12usize, 15] {
             if uni.v[*vidx] != jit.v[*vidx] {
-                eprintln!("k={:3} V{} FAIL  last instr 0x{:08x}", k, vidx, words[k - 1]);
-                eprintln!("  uni V{} = [{:016x}, {:016x}]", vidx, uni.v[*vidx][1], uni.v[*vidx][0]);
-                eprintln!("  jit V{} = [{:016x}, {:016x}]", vidx, jit.v[*vidx][1], jit.v[*vidx][0]);
+                eprintln!(
+                    "k={:3} V{} FAIL  last instr 0x{:08x}",
+                    k,
+                    vidx,
+                    words[k - 1]
+                );
+                eprintln!(
+                    "  uni V{} = [{:016x}, {:016x}]",
+                    vidx, uni.v[*vidx][1], uni.v[*vidx][0]
+                );
+                eprintln!(
+                    "  jit V{} = [{:016x}, {:016x}]",
+                    vidx, jit.v[*vidx][1], jit.v[*vidx][0]
+                );
                 return;
             }
         }
@@ -392,11 +627,13 @@ fn bisect_stress_seed_001122() {
     let init = baseline_state(seed ^ case_idx);
     for k in 1..=words.len() {
         let mut code = Vec::with_capacity((k + 1) * 4);
-        for &w in &words[..k] { code.extend_from_slice(&w.to_le_bytes()); }
+        for &w in &words[..k] {
+            code.extend_from_slice(&w.to_le_bytes());
+        }
         code.extend_from_slice(&0xD420_0000u32.to_le_bytes());
         let (uni, jit) = run_pair(&code, init);
         if uni.v[0] != jit.v[0] {
-            eprintln!("k={:3} FAIL  last instr 0x{:08x}", k, words[k-1]);
+            eprintln!("k={:3} FAIL  last instr 0x{:08x}", k, words[k - 1]);
             eprintln!("  uni V0=[{:016x},{:016x}]", uni.v[0][1], uni.v[0][0]);
             eprintln!("  jit V0=[{:016x},{:016x}]", jit.v[0][1], jit.v[0][0]);
             return;
@@ -424,12 +661,21 @@ fn bisect_neon_large_case9_v13() {
 
     for k in 1..=words.len() {
         let mut code = Vec::with_capacity((k + 1) * 4);
-        for &w in &words[..k] { code.extend_from_slice(&w.to_le_bytes()); }
+        for &w in &words[..k] {
+            code.extend_from_slice(&w.to_le_bytes());
+        }
         code.extend_from_slice(&0xD420_0000u32.to_le_bytes());
         let (uni, jit) = run_pair(&code, init);
         if uni.v[13] != jit.v[13] {
-            eprintln!("k={:3} FAIL  last instr 0x{:08x}  uni V13=[{:016x},{:016x}] jit V13=[{:016x},{:016x}]",
-                k, words[k-1], uni.v[13][1], uni.v[13][0], jit.v[13][1], jit.v[13][0]);
+            eprintln!(
+                "k={:3} FAIL  last instr 0x{:08x}  uni V13=[{:016x},{:016x}] jit V13=[{:016x},{:016x}]",
+                k,
+                words[k - 1],
+                uni.v[13][1],
+                uni.v[13][0],
+                jit.v[13][1],
+                jit.v[13][0]
+            );
             return;
         }
     }
@@ -456,12 +702,21 @@ fn bisect_neon_large_case9_v14() {
     let init = baseline_state(seed ^ case_idx);
     for k in 1..=words.len() {
         let mut code = Vec::with_capacity((k + 1) * 4);
-        for &w in &words[..k] { code.extend_from_slice(&w.to_le_bytes()); }
+        for &w in &words[..k] {
+            code.extend_from_slice(&w.to_le_bytes());
+        }
         code.extend_from_slice(&0xD420_0000u32.to_le_bytes());
         let (uni, jit) = run_pair(&code, init);
         if uni.v[14] != jit.v[14] {
-            eprintln!("k={:3} FAIL  last instr 0x{:08x}  uni V14=[{:016x},{:016x}] jit V14=[{:016x},{:016x}]",
-                k, words[k-1], uni.v[14][1], uni.v[14][0], jit.v[14][1], jit.v[14][0]);
+            eprintln!(
+                "k={:3} FAIL  last instr 0x{:08x}  uni V14=[{:016x},{:016x}] jit V14=[{:016x},{:016x}]",
+                k,
+                words[k - 1],
+                uni.v[14][1],
+                uni.v[14][0],
+                jit.v[14][1],
+                jit.v[14][0]
+            );
             return;
         }
     }
@@ -490,26 +745,44 @@ fn bisect_neon_large_case9_v1() {
     let mut last_failing = None;
     for k in 1..=words.len() {
         let mut code = Vec::with_capacity((k + 1) * 4);
-        for &w in &words[..k] { code.extend_from_slice(&w.to_le_bytes()); }
+        for &w in &words[..k] {
+            code.extend_from_slice(&w.to_le_bytes());
+        }
         code.extend_from_slice(&0xD420_0000u32.to_le_bytes());
         let (uni, jit) = run_pair(&code, init);
         if uni.v[1] != jit.v[1] {
             last_failing = Some(k);
-            eprintln!("k={:3} FAIL  last instr 0x{:08x}  uni V1=[{:016x},{:016x}] jit V1=[{:016x},{:016x}]",
-                k, words[k-1], uni.v[1][1], uni.v[1][0], jit.v[1][1], jit.v[1][0]);
+            eprintln!(
+                "k={:3} FAIL  last instr 0x{:08x}  uni V1=[{:016x},{:016x}] jit V1=[{:016x},{:016x}]",
+                k,
+                words[k - 1],
+                uni.v[1][1],
+                uni.v[1][0],
+                jit.v[1][1],
+                jit.v[1][0]
+            );
             break;
         }
     }
     if let Some(k) = last_failing {
         for start in (0..k).rev() {
             let mut code = Vec::with_capacity((k - start + 1) * 4);
-            for &w in &words[start..k] { code.extend_from_slice(&w.to_le_bytes()); }
+            for &w in &words[start..k] {
+                code.extend_from_slice(&w.to_le_bytes());
+            }
             code.extend_from_slice(&0xD420_0000u32.to_le_bytes());
             let (uni, jit) = run_pair(&code, init);
             let m = uni.v[1] == jit.v[1];
-            eprintln!("range [{:3}..{:3}] {}: uni V1=[{:016x},{:016x}] jit V1=[{:016x},{:016x}]",
-                start, k, if m { "OK  " } else { "FAIL" },
-                uni.v[1][1], uni.v[1][0], jit.v[1][1], jit.v[1][0]);
+            eprintln!(
+                "range [{:3}..{:3}] {}: uni V1=[{:016x},{:016x}] jit V1=[{:016x},{:016x}]",
+                start,
+                k,
+                if m { "OK  " } else { "FAIL" },
+                uni.v[1][1],
+                uni.v[1][0],
+                jit.v[1][1],
+                jit.v[1][0]
+            );
         }
     }
 }
@@ -525,13 +798,17 @@ fn dump_case12_fmls_inputs() {
     ];
     let init = baseline_state(seed ^ case_idx);
     let mut code = Vec::with_capacity((words.len() + 1) * 4);
-    for &w in words { code.extend_from_slice(&w.to_le_bytes()); }
+    for &w in words {
+        code.extend_from_slice(&w.to_le_bytes());
+    }
     code.extend_from_slice(&0xD420_0000u32.to_le_bytes());
     let (uni, jit) = run_pair(&code, init);
     eprintln!("inputs to FMLS V6.4S, V10.4S, V9.4S (k=9, init xor):");
     for i in &[9usize, 10, 6] {
-        eprintln!("  V{:<2} uni=[{:016x},{:016x}] jit=[{:016x},{:016x}]",
-            i, uni.v[*i][1], uni.v[*i][0], jit.v[*i][1], jit.v[*i][0]);
+        eprintln!(
+            "  V{:<2} uni=[{:016x},{:016x}] jit=[{:016x},{:016x}]",
+            i, uni.v[*i][1], uni.v[*i][0], jit.v[*i][1], jit.v[*i][0]
+        );
     }
 }
 
@@ -549,18 +826,20 @@ fn bisect_frint_case12_v5_v6() {
     let init = baseline_state(seed ^ case_idx);
     for k in 1..=words.len() {
         let mut code = Vec::with_capacity((k + 1) * 4);
-        for &w in &words[..k] { code.extend_from_slice(&w.to_le_bytes()); }
+        for &w in &words[..k] {
+            code.extend_from_slice(&w.to_le_bytes());
+        }
         code.extend_from_slice(&0xD420_0000u32.to_le_bytes());
         let (uni, jit) = run_pair(&code, init);
         let d5 = uni.v[5] != jit.v[5];
         let d6 = uni.v[6] != jit.v[6];
         let mark = match (d5, d6) {
             (false, false) => "    ",
-            (true,  false) => "V5  ",
-            (false, true ) => " V6 ",
-            (true,  true ) => "V5V6",
+            (true, false) => "V5  ",
+            (false, true) => " V6 ",
+            (true, true) => "V5V6",
         };
-        eprintln!("k={:3} {} instr=0x{:08x}", k, mark, words[k-1]);
+        eprintln!("k={:3} {} instr=0x{:08x}", k, mark, words[k - 1]);
         if d5 {
             eprintln!("    uni V5 = [{:016x},{:016x}]", uni.v[5][1], uni.v[5][0]);
             eprintln!("    jit V5 = [{:016x},{:016x}]", jit.v[5][1], jit.v[5][0]);

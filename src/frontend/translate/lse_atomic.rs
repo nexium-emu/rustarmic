@@ -8,8 +8,14 @@ use crate::util::bits::bits;
 
 #[derive(Clone, Copy)]
 enum AtomicKind {
-    Add, Clr, Eor, Set,
-    Smax, Smin, Umax, Umin,
+    Add,
+    Clr,
+    Eor,
+    Set,
+    Smax,
+    Smin,
+    Umax,
+    Umin,
     Swp,
     Cas,
 }
@@ -250,7 +256,9 @@ fn csel(em: &mut IrEmitter<'_>, a: ValueRef, b: ValueRef, cond: Cond, size: RegS
         RegSize::X => (Op::Csel64, Ty::U64),
     };
     let nzcv = em.get_nzcv();
-    em.push(Armlet::new(op, ty)
-        .with_args(&[a, b, nzcv])
-        .with_imm(cond as u64))
+    em.push(
+        Armlet::new(op, ty)
+            .with_args(&[a, b, nzcv])
+            .with_imm(cond as u64),
+    )
 }

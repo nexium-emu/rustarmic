@@ -6,29 +6,37 @@ use crate::ir::{Armlet, IrEmitter, Op, Ty, ValueRef};
 use crate::util::bits::bits;
 
 #[derive(Clone, Copy)]
-enum Kind { Add, Sub, Mul, Div, Max, Min, Nmul }
+enum Kind {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Max,
+    Min,
+    Nmul,
+}
 
 pub fn translate(em: &mut IrEmitter<'_>, insn: FLOATDP2) -> Result<InstStatus> {
     use FLOATDP2::*;
     let (raw, kind) = match insn {
-        FADD_Fd_Fn_Fm(i)               => (i.0, Kind::Add),
-        FADD_Fd_S_S_Fn_S_S_Fm_S_S(i)   => (i.0, Kind::Add),
-        FSUB_Fd_Fn_Fm(i)               => (i.0, Kind::Sub),
-        FSUB_Fd_S_S_Fn_S_S_Fm_S_S(i)   => (i.0, Kind::Sub),
-        FMUL_Fd_Fn_Fm(i)               => (i.0, Kind::Mul),
-        FMUL_Fd_S_S_Fn_S_S_Fm_S_S(i)   => (i.0, Kind::Mul),
-        FDIV_Fd_Fn_Fm(i)               => (i.0, Kind::Div),
-        FDIV_Fd_S_S_Fn_S_S_Fm_S_S(i)   => (i.0, Kind::Div),
-        FMAX_Fd_Fn_Fm(i)               => (i.0, Kind::Max),
-        FMAX_Fd_S_S_Fn_S_S_Fm_S_S(i)   => (i.0, Kind::Max),
-        FMAXNM_Fd_Fn_Fm(i)             => (i.0, Kind::Max),
+        FADD_Fd_Fn_Fm(i) => (i.0, Kind::Add),
+        FADD_Fd_S_S_Fn_S_S_Fm_S_S(i) => (i.0, Kind::Add),
+        FSUB_Fd_Fn_Fm(i) => (i.0, Kind::Sub),
+        FSUB_Fd_S_S_Fn_S_S_Fm_S_S(i) => (i.0, Kind::Sub),
+        FMUL_Fd_Fn_Fm(i) => (i.0, Kind::Mul),
+        FMUL_Fd_S_S_Fn_S_S_Fm_S_S(i) => (i.0, Kind::Mul),
+        FDIV_Fd_Fn_Fm(i) => (i.0, Kind::Div),
+        FDIV_Fd_S_S_Fn_S_S_Fm_S_S(i) => (i.0, Kind::Div),
+        FMAX_Fd_Fn_Fm(i) => (i.0, Kind::Max),
+        FMAX_Fd_S_S_Fn_S_S_Fm_S_S(i) => (i.0, Kind::Max),
+        FMAXNM_Fd_Fn_Fm(i) => (i.0, Kind::Max),
         FMAXNM_Fd_S_S_Fn_S_S_Fm_S_S(i) => (i.0, Kind::Max),
-        FMIN_Fd_Fn_Fm(i)               => (i.0, Kind::Min),
-        FMIN_Fd_S_S_Fn_S_S_Fm_S_S(i)   => (i.0, Kind::Min),
-        FMINNM_Fd_Fn_Fm(i)             => (i.0, Kind::Min),
+        FMIN_Fd_Fn_Fm(i) => (i.0, Kind::Min),
+        FMIN_Fd_S_S_Fn_S_S_Fm_S_S(i) => (i.0, Kind::Min),
+        FMINNM_Fd_Fn_Fm(i) => (i.0, Kind::Min),
         FMINNM_Fd_S_S_Fn_S_S_Fm_S_S(i) => (i.0, Kind::Min),
-        FNMUL_Fd_Fn_Fm(i)              => (i.0, Kind::Nmul),
-        FNMUL_Fd_S_S_Fn_S_S_Fm_S_S(i)  => (i.0, Kind::Nmul),
+        FNMUL_Fd_Fn_Fm(i) => (i.0, Kind::Nmul),
+        FNMUL_Fd_S_S_Fn_S_S_Fm_S_S(i) => (i.0, Kind::Nmul),
     };
 
     let ptype = bits(raw, 22, 2);
@@ -49,7 +57,12 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: FLOATDP2) -> Result<InstStatus> {
             let r = fbin(em, a, b, kind, true);
             em.set_v_d(rd, r);
         }
-        _ => return Err(Error::Unsupported { pc: em.current_pc, opcode: raw }),
+        _ => {
+            return Err(Error::Unsupported {
+                pc: em.current_pc,
+                opcode: raw,
+            });
+        }
     }
     Ok(InstStatus::Continue)
 }
@@ -57,23 +70,27 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: FLOATDP2) -> Result<InstStatus> {
 fn fbin(em: &mut IrEmitter<'_>, a: ValueRef, b: ValueRef, k: Kind, is_double: bool) -> ValueRef {
     if matches!(k, Kind::Nmul) {
         let prod = fbin(em, a, b, Kind::Mul, is_double);
-        let (op, ty) = if is_double { (Op::Fneg64, Ty::U64) } else { (Op::Fneg32, Ty::U32) };
+        let (op, ty) = if is_double {
+            (Op::Fneg64, Ty::U64)
+        } else {
+            (Op::Fneg32, Ty::U32)
+        };
         return em.push(Armlet::new(op, ty).with_args(&[prod]));
     }
     let (op, ty) = match (k, is_double) {
         (Kind::Add, false) => (Op::Fadd32, Ty::U32),
-        (Kind::Add, true)  => (Op::Fadd64, Ty::U64),
+        (Kind::Add, true) => (Op::Fadd64, Ty::U64),
         (Kind::Sub, false) => (Op::Fsub32, Ty::U32),
-        (Kind::Sub, true)  => (Op::Fsub64, Ty::U64),
+        (Kind::Sub, true) => (Op::Fsub64, Ty::U64),
         (Kind::Mul, false) => (Op::Fmul32, Ty::U32),
-        (Kind::Mul, true)  => (Op::Fmul64, Ty::U64),
+        (Kind::Mul, true) => (Op::Fmul64, Ty::U64),
         (Kind::Div, false) => (Op::Fdiv32, Ty::U32),
-        (Kind::Div, true)  => (Op::Fdiv64, Ty::U64),
+        (Kind::Div, true) => (Op::Fdiv64, Ty::U64),
         (Kind::Max, false) => (Op::Fmax32, Ty::U32),
-        (Kind::Max, true)  => (Op::Fmax64, Ty::U64),
+        (Kind::Max, true) => (Op::Fmax64, Ty::U64),
         (Kind::Min, false) => (Op::Fmin32, Ty::U32),
-        (Kind::Min, true)  => (Op::Fmin64, Ty::U64),
-        (Kind::Nmul, _)    => unreachable!("handled above"),
+        (Kind::Min, true) => (Op::Fmin64, Ty::U64),
+        (Kind::Nmul, _) => unreachable!("handled above"),
     };
     em.push(Armlet::new(op, ty).with_args(&[a, b]))
 }

@@ -17,31 +17,31 @@ enum Kind {
 pub fn translate(em: &mut IrEmitter<'_>, insn: LDST_POS) -> Result<InstStatus> {
     use LDST_POS::*;
     let (raw, kind, target_x) = match insn {
-        LDR_Rt_ADDR_UIMM12(i)   => (i.0, Kind::LoadU, true),
-        LDRB_Rt_ADDR_UIMM12(i)  => (i.0, Kind::LoadU, false),
-        LDRH_Rt_ADDR_UIMM12(i)  => (i.0, Kind::LoadU, false),
+        LDR_Rt_ADDR_UIMM12(i) => (i.0, Kind::LoadU, true),
+        LDRB_Rt_ADDR_UIMM12(i) => (i.0, Kind::LoadU, false),
+        LDRH_Rt_ADDR_UIMM12(i) => (i.0, Kind::LoadU, false),
         LDRSB_Rt_ADDR_UIMM12(i) => (i.0, Kind::LoadS, true),
         LDRSH_Rt_ADDR_UIMM12(i) => (i.0, Kind::LoadS, true),
         LDRSW_Rt_ADDR_UIMM12(i) => (i.0, Kind::LoadS, true),
-        STR_Rt_ADDR_UIMM12(i)   => (i.0, Kind::Store, true),
-        STRB_Rt_ADDR_UIMM12(i)  => (i.0, Kind::Store, false),
-        STRH_Rt_ADDR_UIMM12(i)  => (i.0, Kind::Store, false),
-        LDR_Ft_ADDR_UIMM12(i)   => (i.0, Kind::FpLoad, false),
-        STR_Ft_ADDR_UIMM12(i)   => (i.0, Kind::FpStore, false),
+        STR_Rt_ADDR_UIMM12(i) => (i.0, Kind::Store, true),
+        STRB_Rt_ADDR_UIMM12(i) => (i.0, Kind::Store, false),
+        STRH_Rt_ADDR_UIMM12(i) => (i.0, Kind::Store, false),
+        LDR_Ft_ADDR_UIMM12(i) => (i.0, Kind::FpLoad, false),
+        STR_Ft_ADDR_UIMM12(i) => (i.0, Kind::FpStore, false),
         PRFM_PRFOP_ADDR_UIMM12(_) => return Ok(InstStatus::Continue),
     };
 
-    let size  = bits(raw, 30, 2);
+    let size = bits(raw, 30, 2);
     let imm12 = bits(raw, 10, 12);
-    let rn    = bits(raw, 5, 5) as u8;
-    let rt    = bits(raw, 0, 5) as u8;
+    let rn = bits(raw, 5, 5) as u8;
+    let rt = bits(raw, 0, 5) as u8;
 
     let q_form = matches!(kind, Kind::FpLoad | Kind::FpStore) && size == 0 && bit(raw, 23) == 1;
     let bytes = if q_form { 16 } else { 1u32 << size };
     let offset = (imm12 as u64) * (bytes as u64);
 
     let base = em.get_x_or_sp(rn, true);
-    let off  = em.const_u64(offset);
+    let off = em.const_u64(offset);
     let addr = em.add(base, off, RegSize::X);
 
     match kind {
@@ -81,10 +81,17 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: LDST_POS) -> Result<InstStatus> {
                 let hi = em.load(addr_hi, 8);
                 let q = em.vec_build_q(lo, hi);
                 em.set_v_q(rt, q);
-            } else if bytes == 8 { let v = em.load(addr, bytes); em.set_v_d(rt, v); }
-            else if bytes == 4 { let v = em.load(addr, bytes); em.set_v_s(rt, v); }
-            else {
-                return Err(Error::Unsupported { pc: em.current_pc, opcode: raw });
+            } else if bytes == 8 {
+                let v = em.load(addr, bytes);
+                em.set_v_d(rt, v);
+            } else if bytes == 4 {
+                let v = em.load(addr, bytes);
+                em.set_v_s(rt, v);
+            } else {
+                return Err(Error::Unsupported {
+                    pc: em.current_pc,
+                    opcode: raw,
+                });
             }
         }
         Kind::FpStore => {
@@ -97,11 +104,16 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: LDST_POS) -> Result<InstStatus> {
                 let addr_hi = em.add(addr, eight, RegSize::X);
                 em.store(addr_hi, hi, 8);
             } else {
-                let v = if bytes == 8 { em.get_v_d(rt) }
-                        else if bytes == 4 { em.get_v_s(rt) }
-                        else {
-                            return Err(Error::Unsupported { pc: em.current_pc, opcode: raw });
-                        };
+                let v = if bytes == 8 {
+                    em.get_v_d(rt)
+                } else if bytes == 4 {
+                    em.get_v_s(rt)
+                } else {
+                    return Err(Error::Unsupported {
+                        pc: em.current_pc,
+                        opcode: raw,
+                    });
+                };
                 em.store(addr, v, bytes);
             }
         }

@@ -11,20 +11,26 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: EXTRACT) -> Result<InstStatus> {
     let raw = match insn {
         EXTR_Rd_Rn_Rm_IMMS(i) => i.0,
     };
-    let sf   = bit(raw, 31);
-    let n    = bit(raw, 22);
-    let rm   = bits(raw, 16, 5) as u8;
+    let sf = bit(raw, 31);
+    let n = bit(raw, 22);
+    let rm = bits(raw, 16, 5) as u8;
     let imms = bits(raw, 10, 6);
-    let rn   = bits(raw, 5, 5) as u8;
-    let rd   = bits(raw, 0, 5) as u8;
+    let rn = bits(raw, 5, 5) as u8;
+    let rd = bits(raw, 0, 5) as u8;
 
     if sf != n {
-        return Err(Error::Decode { pc: em.current_pc, opcode: raw });
+        return Err(Error::Decode {
+            pc: em.current_pc,
+            opcode: raw,
+        });
     }
     let size = if sf == 1 { RegSize::X } else { RegSize::W };
     let width = if sf == 1 { 64u32 } else { 32 };
     if imms >= width {
-        return Err(Error::Decode { pc: em.current_pc, opcode: raw });
+        return Err(Error::Decode {
+            pc: em.current_pc,
+            opcode: raw,
+        });
     }
 
     let result = if rn == rm {

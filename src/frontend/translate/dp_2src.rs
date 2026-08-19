@@ -6,7 +6,14 @@ use crate::frontend::translator::InstStatus;
 use crate::ir::{Armlet, IrEmitter, Op, Ty};
 use crate::util::bits::{bit, bits};
 
-enum Kind { Lslv, Lsrv, Asrv, Rorv, Udiv, Sdiv }
+enum Kind {
+    Lslv,
+    Lsrv,
+    Asrv,
+    Rorv,
+    Udiv,
+    Sdiv,
+}
 
 pub fn translate(em: &mut IrEmitter<'_>, insn: DP_2SRC) -> Result<InstStatus> {
     use DP_2SRC::*;
@@ -17,7 +24,12 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: DP_2SRC) -> Result<InstStatus> {
         RORV_Rd_Rn_Rm(i) => (i.0, Kind::Rorv),
         UDIV_Rd_Rn_Rm(i) => (i.0, Kind::Udiv),
         SDIV_Rd_Rn_Rm(i) => (i.0, Kind::Sdiv),
-        _ => return Err(Error::Unsupported { pc: em.current_pc, opcode: 0 }),
+        _ => {
+            return Err(Error::Unsupported {
+                pc: em.current_pc,
+                opcode: 0,
+            });
+        }
     };
 
     let sf = bit(raw, 31);
@@ -25,7 +37,7 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: DP_2SRC) -> Result<InstStatus> {
     let rn = bits(raw, 5, 5) as u8;
     let rd = bits(raw, 0, 5) as u8;
     let size = if sf == 1 { RegSize::X } else { RegSize::W };
-    let ty   = if sf == 1 { Ty::U64 } else { Ty::U32 };
+    let ty = if sf == 1 { Ty::U64 } else { Ty::U32 };
 
     let n = em.get_gpr(rn, size);
     let m = em.get_gpr(rm, size);

@@ -2,173 +2,371 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(non_camel_case_types)]
 pub enum Op {
-    Void     = 0x000,
+    Void = 0x000,
     Identity = 0x004,
 
     ConstU32 = 0x012,
     ConstU64 = 0x013,
     ConstU128 = 0x014,
 
-    GetX     = 0x020,
-    SetX     = 0x024,
-    GetW     = 0x028,
-    SetW     = 0x02C,
-    GetSp    = 0x030,
-    SetSp    = 0x034,
-    GetNzcv  = 0x038,
-    SetNzcv  = 0x03C,
-    GetPc    = 0x040,
-    GetV     = 0x044,
-    SetV     = 0x048,
+    GetX = 0x020,
+    SetX = 0x024,
+    GetW = 0x028,
+    SetW = 0x02C,
+    GetSp = 0x030,
+    SetSp = 0x034,
+    GetNzcv = 0x038,
+    SetNzcv = 0x03C,
+    GetPc = 0x040,
+    GetV = 0x044,
+    SetV = 0x048,
 
-    Add8  = 0x100, Add16 = 0x101, Add32 = 0x102, Add64 = 0x103,
-    Sub8  = 0x104, Sub16 = 0x105, Sub32 = 0x106, Sub64 = 0x107,
-    Adc8  = 0x108, Adc16 = 0x109, Adc32 = 0x10A, Adc64 = 0x10B,
-    Sbc8  = 0x10C, Sbc16 = 0x10D, Sbc32 = 0x10E, Sbc64 = 0x10F,
+    Add8 = 0x100,
+    Add16 = 0x101,
+    Add32 = 0x102,
+    Add64 = 0x103,
+    Sub8 = 0x104,
+    Sub16 = 0x105,
+    Sub32 = 0x106,
+    Sub64 = 0x107,
+    Adc8 = 0x108,
+    Adc16 = 0x109,
+    Adc32 = 0x10A,
+    Adc64 = 0x10B,
+    Sbc8 = 0x10C,
+    Sbc16 = 0x10D,
+    Sbc32 = 0x10E,
+    Sbc64 = 0x10F,
 
-    AddsFlags8  = 0x110, AddsFlags16 = 0x111, AddsFlags32 = 0x112, AddsFlags64 = 0x113,
-    SubsFlags8  = 0x114, SubsFlags16 = 0x115, SubsFlags32 = 0x116, SubsFlags64 = 0x117,
+    AddsFlags8 = 0x110,
+    AddsFlags16 = 0x111,
+    AddsFlags32 = 0x112,
+    AddsFlags64 = 0x113,
+    SubsFlags8 = 0x114,
+    SubsFlags16 = 0x115,
+    SubsFlags32 = 0x116,
+    SubsFlags64 = 0x117,
 
-    And8 = 0x118, And16 = 0x119, And32 = 0x11A, And64 = 0x11B,
-    Or8  = 0x11C, Or16  = 0x11D, Or32  = 0x11E, Or64  = 0x11F,
-    Eor8 = 0x120, Eor16 = 0x121, Eor32 = 0x122, Eor64 = 0x123,
-    Bic8 = 0x124, Bic16 = 0x125, Bic32 = 0x126, Bic64 = 0x127,
-    Orn8 = 0x128, Orn16 = 0x129, Orn32 = 0x12A, Orn64 = 0x12B,
-    Eon8 = 0x12C, Eon16 = 0x12D, Eon32 = 0x12E, Eon64 = 0x12F,
+    And8 = 0x118,
+    And16 = 0x119,
+    And32 = 0x11A,
+    And64 = 0x11B,
+    Or8 = 0x11C,
+    Or16 = 0x11D,
+    Or32 = 0x11E,
+    Or64 = 0x11F,
+    Eor8 = 0x120,
+    Eor16 = 0x121,
+    Eor32 = 0x122,
+    Eor64 = 0x123,
+    Bic8 = 0x124,
+    Bic16 = 0x125,
+    Bic32 = 0x126,
+    Bic64 = 0x127,
+    Orn8 = 0x128,
+    Orn16 = 0x129,
+    Orn32 = 0x12A,
+    Orn64 = 0x12B,
+    Eon8 = 0x12C,
+    Eon16 = 0x12D,
+    Eon32 = 0x12E,
+    Eon64 = 0x12F,
 
-    Not8 = 0x130, Not16 = 0x131, Not32 = 0x132, Not64 = 0x133,
-    Neg8 = 0x134, Neg16 = 0x135, Neg32 = 0x136, Neg64 = 0x137,
+    Not8 = 0x130,
+    Not16 = 0x131,
+    Not32 = 0x132,
+    Not64 = 0x133,
+    Neg8 = 0x134,
+    Neg16 = 0x135,
+    Neg32 = 0x136,
+    Neg64 = 0x137,
 
-    Lsl8 = 0x140, Lsl16 = 0x141, Lsl32 = 0x142, Lsl64 = 0x143,
-    Lsr8 = 0x144, Lsr16 = 0x145, Lsr32 = 0x146, Lsr64 = 0x147,
-    Asr8 = 0x148, Asr16 = 0x149, Asr32 = 0x14A, Asr64 = 0x14B,
-    Ror8 = 0x14C, Ror16 = 0x14D, Ror32 = 0x14E, Ror64 = 0x14F,
+    Lsl8 = 0x140,
+    Lsl16 = 0x141,
+    Lsl32 = 0x142,
+    Lsl64 = 0x143,
+    Lsr8 = 0x144,
+    Lsr16 = 0x145,
+    Lsr32 = 0x146,
+    Lsr64 = 0x147,
+    Asr8 = 0x148,
+    Asr16 = 0x149,
+    Asr32 = 0x14A,
+    Asr64 = 0x14B,
+    Ror8 = 0x14C,
+    Ror16 = 0x14D,
+    Ror32 = 0x14E,
+    Ror64 = 0x14F,
 
-    Ubfm8 = 0x150, Ubfm16 = 0x151, Ubfm32 = 0x152, Ubfm64 = 0x153,
-    Sbfm8 = 0x154, Sbfm16 = 0x155, Sbfm32 = 0x156, Sbfm64 = 0x157,
-    Bfm8  = 0x158, Bfm16  = 0x159, Bfm32  = 0x15A, Bfm64  = 0x15B,
-    Extr8 = 0x15C, Extr16 = 0x15D, Extr32 = 0x15E, Extr64 = 0x15F,
+    Ubfm8 = 0x150,
+    Ubfm16 = 0x151,
+    Ubfm32 = 0x152,
+    Ubfm64 = 0x153,
+    Sbfm8 = 0x154,
+    Sbfm16 = 0x155,
+    Sbfm32 = 0x156,
+    Sbfm64 = 0x157,
+    Bfm8 = 0x158,
+    Bfm16 = 0x159,
+    Bfm32 = 0x15A,
+    Bfm64 = 0x15B,
+    Extr8 = 0x15C,
+    Extr16 = 0x15D,
+    Extr32 = 0x15E,
+    Extr64 = 0x15F,
 
-    Mul8  = 0x160, Mul16  = 0x161, Mul32  = 0x162, Mul64  = 0x163,
-    Madd8 = 0x164, Madd16 = 0x165, Madd32 = 0x166, Madd64 = 0x167,
-    Msub8 = 0x168, Msub16 = 0x169, Msub32 = 0x16A, Msub64 = 0x16B,
+    Mul8 = 0x160,
+    Mul16 = 0x161,
+    Mul32 = 0x162,
+    Mul64 = 0x163,
+    Madd8 = 0x164,
+    Madd16 = 0x165,
+    Madd32 = 0x166,
+    Madd64 = 0x167,
+    Msub8 = 0x168,
+    Msub16 = 0x169,
+    Msub32 = 0x16A,
+    Msub64 = 0x16B,
 
     UMulH64 = 0x16F,
     SMulH64 = 0x173,
     UMull32 = 0x176,
     SMull32 = 0x17A,
-    UMAddl  = 0x17C,
-    SMAddl  = 0x180,
-    UMSubl  = 0x184,
-    SMSubl  = 0x188,
+    UMAddl = 0x17C,
+    SMAddl = 0x180,
+    UMSubl = 0x184,
+    SMSubl = 0x188,
 
-    UDiv8 = 0x190, UDiv16 = 0x191, UDiv32 = 0x192, UDiv64 = 0x193,
-    SDiv8 = 0x194, SDiv16 = 0x195, SDiv32 = 0x196, SDiv64 = 0x197,
+    UDiv8 = 0x190,
+    UDiv16 = 0x191,
+    UDiv32 = 0x192,
+    UDiv64 = 0x193,
+    SDiv8 = 0x194,
+    SDiv16 = 0x195,
+    SDiv32 = 0x196,
+    SDiv64 = 0x197,
 
     Zext = 0x1A0,
     Sext = 0x1A4,
 
-    Clz8  = 0x1A8, Clz16  = 0x1A9, Clz32  = 0x1AA, Clz64  = 0x1AB,
-    Cls8  = 0x1AC, Cls16  = 0x1AD, Cls32  = 0x1AE, Cls64  = 0x1AF,
-    Rbit8 = 0x1B0, Rbit16 = 0x1B1, Rbit32 = 0x1B2, Rbit64 = 0x1B3,
-    Rev16 = 0x1B5, Rev32 = 0x1B6, Rev64 = 0x1B7,
+    Clz8 = 0x1A8,
+    Clz16 = 0x1A9,
+    Clz32 = 0x1AA,
+    Clz64 = 0x1AB,
+    Cls8 = 0x1AC,
+    Cls16 = 0x1AD,
+    Cls32 = 0x1AE,
+    Cls64 = 0x1AF,
+    Rbit8 = 0x1B0,
+    Rbit16 = 0x1B1,
+    Rbit32 = 0x1B2,
+    Rbit64 = 0x1B3,
+    Rev16 = 0x1B5,
+    Rev32 = 0x1B6,
+    Rev64 = 0x1B7,
 
-    Csel8   = 0x200, Csel16   = 0x201, Csel32   = 0x202, Csel64   = 0x203,
-    Csinc8  = 0x204, Csinc16  = 0x205, Csinc32  = 0x206, Csinc64  = 0x207,
-    Csinv8  = 0x208, Csinv16  = 0x209, Csinv32  = 0x20A, Csinv64  = 0x20B,
-    Csneg8  = 0x20C, Csneg16  = 0x20D, Csneg32  = 0x20E, Csneg64  = 0x20F,
+    Csel8 = 0x200,
+    Csel16 = 0x201,
+    Csel32 = 0x202,
+    Csel64 = 0x203,
+    Csinc8 = 0x204,
+    Csinc16 = 0x205,
+    Csinc32 = 0x206,
+    Csinc64 = 0x207,
+    Csinv8 = 0x208,
+    Csinv16 = 0x209,
+    Csinv32 = 0x20A,
+    Csinv64 = 0x20B,
+    Csneg8 = 0x20C,
+    Csneg16 = 0x20D,
+    Csneg32 = 0x20E,
+    Csneg64 = 0x20F,
 
-    CcmpReg8 = 0x210, CcmpReg16 = 0x211, CcmpReg32 = 0x212, CcmpReg64 = 0x213,
-    CcmpImm8 = 0x214, CcmpImm16 = 0x215, CcmpImm32 = 0x216, CcmpImm64 = 0x217,
-    CcmnReg8 = 0x218, CcmnReg16 = 0x219, CcmnReg32 = 0x21A, CcmnReg64 = 0x21B,
-    CcmnImm8 = 0x21C, CcmnImm16 = 0x21D, CcmnImm32 = 0x21E, CcmnImm64 = 0x21F,
+    CcmpReg8 = 0x210,
+    CcmpReg16 = 0x211,
+    CcmpReg32 = 0x212,
+    CcmpReg64 = 0x213,
+    CcmpImm8 = 0x214,
+    CcmpImm16 = 0x215,
+    CcmpImm32 = 0x216,
+    CcmpImm64 = 0x217,
+    CcmnReg8 = 0x218,
+    CcmnReg16 = 0x219,
+    CcmnReg32 = 0x21A,
+    CcmnReg64 = 0x21B,
+    CcmnImm8 = 0x21C,
+    CcmnImm16 = 0x21D,
+    CcmnImm32 = 0x21E,
+    CcmnImm64 = 0x21F,
 
-    Branch              = 0x300,
-    BranchLink          = 0x304,
-    BranchIndirect      = 0x308,
-    BranchIndirectLink  = 0x30C,
-    Ret                 = 0x310,
-    BranchCond          = 0x314,
-    CbZ                 = 0x318,
-    CbNz                = 0x31C,
-    TbZ                 = 0x320,
-    TbNz                = 0x324,
+    Branch = 0x300,
+    BranchLink = 0x304,
+    BranchIndirect = 0x308,
+    BranchIndirectLink = 0x30C,
+    Ret = 0x310,
+    BranchCond = 0x314,
+    CbZ = 0x318,
+    CbNz = 0x31C,
+    TbZ = 0x320,
+    TbNz = 0x324,
 
-    Load8  = 0x400, Load16  = 0x401, Load32  = 0x402, Load64  = 0x403,
+    Load8 = 0x400,
+    Load16 = 0x401,
+    Load32 = 0x402,
+    Load64 = 0x403,
     Load128 = 0x404,
 
-    LoadS8 = 0x408, LoadS16 = 0x409, LoadS32 = 0x40A,
+    LoadS8 = 0x408,
+    LoadS16 = 0x409,
+    LoadS32 = 0x40A,
 
-    Store8 = 0x40C, Store16 = 0x40D, Store32 = 0x40E, Store64 = 0x40F,
+    Store8 = 0x40C,
+    Store16 = 0x40D,
+    Store32 = 0x40E,
+    Store64 = 0x40F,
     Store128 = 0x410,
 
-    LoadAcq8  = 0x418, LoadAcq16  = 0x419, LoadAcq32  = 0x41A, LoadAcq64  = 0x41B,
-    StoreRel8 = 0x41C, StoreRel16 = 0x41D, StoreRel32 = 0x41E, StoreRel64 = 0x41F,
+    LoadAcq8 = 0x418,
+    LoadAcq16 = 0x419,
+    LoadAcq32 = 0x41A,
+    LoadAcq64 = 0x41B,
+    StoreRel8 = 0x41C,
+    StoreRel16 = 0x41D,
+    StoreRel32 = 0x41E,
+    StoreRel64 = 0x41F,
 
-    LoadEx8  = 0x420, LoadEx16  = 0x421, LoadEx32  = 0x422, LoadEx64  = 0x423,
-    StoreEx8 = 0x424, StoreEx16 = 0x425, StoreEx32 = 0x426, StoreEx64 = 0x427,
+    LoadEx8 = 0x420,
+    LoadEx16 = 0x421,
+    LoadEx32 = 0x422,
+    LoadEx64 = 0x423,
+    StoreEx8 = 0x424,
+    StoreEx16 = 0x425,
+    StoreEx32 = 0x426,
+    StoreEx64 = 0x427,
 
-    LoadPair8  = 0x428, LoadPair16  = 0x429, LoadPair32  = 0x42A, LoadPair64  = 0x42B,
-    StorePair8 = 0x42C, StorePair16 = 0x42D, StorePair32 = 0x42E, StorePair64 = 0x42F,
+    LoadPair8 = 0x428,
+    LoadPair16 = 0x429,
+    LoadPair32 = 0x42A,
+    LoadPair64 = 0x42B,
+    StorePair8 = 0x42C,
+    StorePair16 = 0x42D,
+    StorePair32 = 0x42E,
+    StorePair64 = 0x42F,
 
-    Fmov32 = 0x502, Fmov64 = 0x503,
-    Fadd32 = 0x506, Fadd64 = 0x507,
-    Fsub32 = 0x50A, Fsub64 = 0x50B,
-    Fmul32 = 0x50E, Fmul64 = 0x50F,
-    Fdiv32 = 0x512, Fdiv64 = 0x513,
-    Fneg32 = 0x516, Fneg64 = 0x517,
-    Fabs32 = 0x51A, Fabs64 = 0x51B,
-    Fsqrt32 = 0x51E, Fsqrt64 = 0x51F,
-    Fcmp32 = 0x522, Fcmp64 = 0x523,
-    Fmax32 = 0x526, Fmax64 = 0x527,
-    Fmin32 = 0x52A, Fmin64 = 0x52B,
+    Fmov32 = 0x502,
+    Fmov64 = 0x503,
+    Fadd32 = 0x506,
+    Fadd64 = 0x507,
+    Fsub32 = 0x50A,
+    Fsub64 = 0x50B,
+    Fmul32 = 0x50E,
+    Fmul64 = 0x50F,
+    Fdiv32 = 0x512,
+    Fdiv64 = 0x513,
+    Fneg32 = 0x516,
+    Fneg64 = 0x517,
+    Fabs32 = 0x51A,
+    Fabs64 = 0x51B,
+    Fsqrt32 = 0x51E,
+    Fsqrt64 = 0x51F,
+    Fcmp32 = 0x522,
+    Fcmp64 = 0x523,
+    Fmax32 = 0x526,
+    Fmax64 = 0x527,
+    Fmin32 = 0x52A,
+    Fmin64 = 0x52B,
 
     FcvtZsSW = 0x540,
     FcvtZsSX = 0x541,
     FcvtZsDW = 0x542,
     FcvtZsDX = 0x543,
-    ScvtfWS  = 0x544,
-    ScvtfXS  = 0x545,
-    ScvtfWD  = 0x546,
-    ScvtfXD  = 0x547,
-    FcvtSD   = 0x548,
-    FcvtDS   = 0x549,
+    ScvtfWS = 0x544,
+    ScvtfXS = 0x545,
+    ScvtfWD = 0x546,
+    ScvtfXD = 0x547,
+    FcvtSD = 0x548,
+    FcvtDS = 0x549,
 
-    VecAdd8  = 0x600, VecAdd16  = 0x601, VecAdd32  = 0x602, VecAdd64  = 0x603,
-    VecSub8  = 0x604, VecSub16  = 0x605, VecSub32  = 0x606, VecSub64  = 0x607,
+    VecAdd8 = 0x600,
+    VecAdd16 = 0x601,
+    VecAdd32 = 0x602,
+    VecAdd64 = 0x603,
+    VecSub8 = 0x604,
+    VecSub16 = 0x605,
+    VecSub32 = 0x606,
+    VecSub64 = 0x607,
 
-    VecAnd   = 0x608,
-    VecOrr   = 0x60C,
-    VecEor   = 0x610,
-    VecBic   = 0x614,
-    VecOrn   = 0x618,
+    VecAnd = 0x608,
+    VecOrr = 0x60C,
+    VecEor = 0x610,
+    VecBic = 0x614,
+    VecOrn = 0x618,
 
-    VecDupGpr8  = 0x61C, VecDupGpr16 = 0x61D, VecDupGpr32 = 0x61E, VecDupGpr64 = 0x61F,
-    VecInsGpr8  = 0x620, VecInsGpr16 = 0x621, VecInsGpr32 = 0x622, VecInsGpr64 = 0x623,
+    VecDupGpr8 = 0x61C,
+    VecDupGpr16 = 0x61D,
+    VecDupGpr32 = 0x61E,
+    VecDupGpr64 = 0x61F,
+    VecInsGpr8 = 0x620,
+    VecInsGpr16 = 0x621,
+    VecInsGpr32 = 0x622,
+    VecInsGpr64 = 0x623,
 
-    VecBuildQ      = 0x62C,
+    VecBuildQ = 0x62C,
     VecExtractLo64 = 0x630,
     VecExtractHi64 = 0x634,
 
-    VecExtract8  = 0x638,
+    VecExtract8 = 0x638,
     VecExtract16 = 0x639,
     VecExtract32 = 0x63A,
 
-    VecNeg8  = 0x640, VecNeg16 = 0x641, VecNeg32 = 0x642, VecNeg64 = 0x643,
-    VecAbs8  = 0x644, VecAbs16 = 0x645, VecAbs32 = 0x646, VecAbs64 = 0x647,
-    VecNot   = 0x648,
+    VecNeg8 = 0x640,
+    VecNeg16 = 0x641,
+    VecNeg32 = 0x642,
+    VecNeg64 = 0x643,
+    VecAbs8 = 0x644,
+    VecAbs16 = 0x645,
+    VecAbs32 = 0x646,
+    VecAbs64 = 0x647,
+    VecNot = 0x648,
 
-    VecMul8  = 0x64C, VecMul16 = 0x64D, VecMul32 = 0x64E, VecMul64 = 0x64F,
+    VecMul8 = 0x64C,
+    VecMul16 = 0x64D,
+    VecMul32 = 0x64E,
+    VecMul64 = 0x64F,
 
-    VecShlImm8  = 0x650, VecShlImm16  = 0x651, VecShlImm32  = 0x652, VecShlImm64  = 0x653,
-    VecUshrImm8 = 0x654, VecUshrImm16 = 0x655, VecUshrImm32 = 0x656, VecUshrImm64 = 0x657,
-    VecSshrImm8 = 0x658, VecSshrImm16 = 0x659, VecSshrImm32 = 0x65A, VecSshrImm64 = 0x65B,
+    VecShlImm8 = 0x650,
+    VecShlImm16 = 0x651,
+    VecShlImm32 = 0x652,
+    VecShlImm64 = 0x653,
+    VecUshrImm8 = 0x654,
+    VecUshrImm16 = 0x655,
+    VecUshrImm32 = 0x656,
+    VecUshrImm64 = 0x657,
+    VecSshrImm8 = 0x658,
+    VecSshrImm16 = 0x659,
+    VecSshrImm32 = 0x65A,
+    VecSshrImm64 = 0x65B,
 
-    VecCmEq8 = 0x65C, VecCmEq16 = 0x65D, VecCmEq32 = 0x65E, VecCmEq64 = 0x65F,
-    VecCmGt8 = 0x660, VecCmGt16 = 0x661, VecCmGt32 = 0x662, VecCmGt64 = 0x663,
-    VecCmGe8 = 0x664, VecCmGe16 = 0x665, VecCmGe32 = 0x666, VecCmGe64 = 0x667,
-    VecCmHi8 = 0x668, VecCmHi16 = 0x669, VecCmHi32 = 0x66A, VecCmHi64 = 0x66B,
-    VecCmHs8 = 0x66C, VecCmHs16 = 0x66D, VecCmHs32 = 0x66E, VecCmHs64 = 0x66F,
+    VecCmEq8 = 0x65C,
+    VecCmEq16 = 0x65D,
+    VecCmEq32 = 0x65E,
+    VecCmEq64 = 0x65F,
+    VecCmGt8 = 0x660,
+    VecCmGt16 = 0x661,
+    VecCmGt32 = 0x662,
+    VecCmGt64 = 0x663,
+    VecCmGe8 = 0x664,
+    VecCmGe16 = 0x665,
+    VecCmGe32 = 0x666,
+    VecCmGe64 = 0x667,
+    VecCmHi8 = 0x668,
+    VecCmHi16 = 0x669,
+    VecCmHi32 = 0x66A,
+    VecCmHi64 = 0x66B,
+    VecCmHs8 = 0x66C,
+    VecCmHs16 = 0x66D,
+    VecCmHs32 = 0x66E,
+    VecCmHs64 = 0x66F,
 
     VecBit = 0x670,
     VecBif = 0x674,
@@ -176,25 +374,52 @@ pub enum Op {
 
     VecExt = 0x67C,
 
-    VecZip1_8 = 0x680, VecZip1_16 = 0x681, VecZip1_32 = 0x682, VecZip1_64 = 0x683,
-    VecZip2_8 = 0x684, VecZip2_16 = 0x685, VecZip2_32 = 0x686, VecZip2_64 = 0x687,
+    VecZip1_8 = 0x680,
+    VecZip1_16 = 0x681,
+    VecZip1_32 = 0x682,
+    VecZip1_64 = 0x683,
+    VecZip2_8 = 0x684,
+    VecZip2_16 = 0x685,
+    VecZip2_32 = 0x686,
+    VecZip2_64 = 0x687,
 
-    VecSmin8 = 0x688, VecSmin16 = 0x689, VecSmin32 = 0x68A, VecSmin64 = 0x68B,
-    VecSmax8 = 0x68C, VecSmax16 = 0x68D, VecSmax32 = 0x68E, VecSmax64 = 0x68F,
-    VecUmin8 = 0x690, VecUmin16 = 0x691, VecUmin32 = 0x692, VecUmin64 = 0x693,
-    VecUmax8 = 0x694, VecUmax16 = 0x695, VecUmax32 = 0x696, VecUmax64 = 0x697,
+    VecSmin8 = 0x688,
+    VecSmin16 = 0x689,
+    VecSmin32 = 0x68A,
+    VecSmin64 = 0x68B,
+    VecSmax8 = 0x68C,
+    VecSmax16 = 0x68D,
+    VecSmax32 = 0x68E,
+    VecSmax64 = 0x68F,
+    VecUmin8 = 0x690,
+    VecUmin16 = 0x691,
+    VecUmin32 = 0x692,
+    VecUmin64 = 0x693,
+    VecUmax8 = 0x694,
+    VecUmax16 = 0x695,
+    VecUmax32 = 0x696,
+    VecUmax64 = 0x697,
 
     VecAddv32 = 0x698,
 
-    VecFAdd_S  = 0x6A0, VecFAdd_D  = 0x6A1,
-    VecFSub_S  = 0x6A2, VecFSub_D  = 0x6A3,
-    VecFMul_S  = 0x6A4, VecFMul_D  = 0x6A5,
-    VecFDiv_S  = 0x6A6, VecFDiv_D  = 0x6A7,
-    VecFMax_S  = 0x6A8, VecFMax_D  = 0x6A9,
-    VecFMin_S  = 0x6AA, VecFMin_D  = 0x6AB,
-    VecFNeg_S  = 0x6AC, VecFNeg_D  = 0x6AD,
-    VecFAbs_S  = 0x6AE, VecFAbs_D  = 0x6AF,
-    VecFSqrt_S = 0x6B0, VecFSqrt_D = 0x6B1,
+    VecFAdd_S = 0x6A0,
+    VecFAdd_D = 0x6A1,
+    VecFSub_S = 0x6A2,
+    VecFSub_D = 0x6A3,
+    VecFMul_S = 0x6A4,
+    VecFMul_D = 0x6A5,
+    VecFDiv_S = 0x6A6,
+    VecFDiv_D = 0x6A7,
+    VecFMax_S = 0x6A8,
+    VecFMax_D = 0x6A9,
+    VecFMin_S = 0x6AA,
+    VecFMin_D = 0x6AB,
+    VecFNeg_S = 0x6AC,
+    VecFNeg_D = 0x6AD,
+    VecFAbs_S = 0x6AE,
+    VecFAbs_D = 0x6AF,
+    VecFSqrt_S = 0x6B0,
+    VecFSqrt_D = 0x6B1,
 
     VecSaddl = 0x6B4,
     VecUaddl = 0x6B8,
@@ -206,9 +431,12 @@ pub enum Op {
     VecXtn = 0x6BC,
     VecXtn2 = 0x6F0,
 
-    VecFCmEq_S = 0x6F4, VecFCmEq_D = 0x6F5,
-    VecFCmGt_S = 0x6F8, VecFCmGt_D = 0x6F9,
-    VecFCmGe_S = 0x6FC, VecFCmGe_D = 0x6FD,
+    VecFCmEq_S = 0x6F4,
+    VecFCmEq_D = 0x6F5,
+    VecFCmGt_S = 0x6F8,
+    VecFCmGt_D = 0x6F9,
+    VecFCmGe_S = 0x6FC,
+    VecFCmGe_D = 0x6FD,
 
     VecTbl = 0x6C0,
 
@@ -221,31 +449,42 @@ pub enum Op {
     VecTrn1 = 0x6D8,
     VecTrn2 = 0x6DC,
 
-    VecFmla_S = 0x720, VecFmla_D = 0x721,
-    VecFmls_S = 0x724, VecFmls_D = 0x725,
+    VecFmla_S = 0x720,
+    VecFmla_D = 0x721,
+    VecFmls_S = 0x724,
+    VecFmls_D = 0x725,
 
     VecTbl2 = 0x728,
     VecTbl3 = 0x72C,
 
-    VecFRintN_S = 0x730, VecFRintN_D = 0x731,
-    VecFRintM_S = 0x734, VecFRintM_D = 0x735,
-    VecFRintP_S = 0x738, VecFRintP_D = 0x739,
-    VecFRintZ_S = 0x73C, VecFRintZ_D = 0x73D,
-    VecFRintA_S = 0x740, VecFRintA_D = 0x741,
-    VecFRintX_S = 0x744, VecFRintX_D = 0x745,
+    VecFRintN_S = 0x730,
+    VecFRintN_D = 0x731,
+    VecFRintM_S = 0x734,
+    VecFRintM_D = 0x735,
+    VecFRintP_S = 0x738,
+    VecFRintP_D = 0x739,
+    VecFRintZ_S = 0x73C,
+    VecFRintZ_D = 0x73D,
+    VecFRintA_S = 0x740,
+    VecFRintA_D = 0x741,
+    VecFRintX_S = 0x744,
+    VecFRintX_D = 0x745,
 
-    Mrs            = 0x700,
-    Msr            = 0x704,
-    Hint           = 0x708,
-    Brk            = 0x70C,
-    Svc            = 0x710,
-    Hvc            = 0x714,
-    MemoryBarrier  = 0x718,
-    Clrex          = 0x71C,
+    Mrs = 0x700,
+    Msr = 0x704,
+    Hint = 0x708,
+    Brk = 0x70C,
+    Svc = 0x710,
+    Hvc = 0x714,
+    MemoryBarrier = 0x718,
+    Clrex = 0x71C,
 }
 
 impl Op {
-    #[inline] pub const fn raw(self) -> u16 { self as u16 }
+    #[inline]
+    pub const fn raw(self) -> u16 {
+        self as u16
+    }
 
     #[inline]
     pub const fn base(self) -> u16 {
@@ -269,41 +508,70 @@ impl Op {
 
     pub const fn has_side_effects(self) -> bool {
         use Op::*;
-        if matches!(self,
-            SetX | SetW | SetSp | SetNzcv | SetV
-            | AddsFlags32 | AddsFlags64 | SubsFlags32 | SubsFlags64
-            | Fcmp32 | Fcmp64
-            | Mrs | Msr | Brk | Svc | Hvc | Hint | MemoryBarrier | Clrex
+        if matches!(
+            self,
+            SetX | SetW
+                | SetSp
+                | SetNzcv
+                | SetV
+                | AddsFlags32
+                | AddsFlags64
+                | SubsFlags32
+                | SubsFlags64
+                | Fcmp32
+                | Fcmp64
+                | Mrs
+                | Msr
+                | Brk
+                | Svc
+                | Hvc
+                | Hint
+                | MemoryBarrier
+                | Clrex
         ) {
             return true;
         }
         match self.base() {
-            b if b == Store8.base()     => true,
-            b if b == Store128 as u16   => true,
-            b if b == StoreRel8.base()  => true,
-            b if b == StoreEx8.base()   => true,
-            b if b == LoadEx8.base()    => true,
+            b if b == Store8.base() => true,
+            b if b == Store128 as u16 => true,
+            b if b == StoreRel8.base() => true,
+            b if b == StoreEx8.base() => true,
+            b if b == LoadEx8.base() => true,
             b if b == StorePair8.base() => true,
             b if b == Branch.base()
-              || b == BranchLink.base()
-              || b == BranchIndirect.base()
-              || b == BranchIndirectLink.base()
-              || b == Ret.base()
-              || b == BranchCond.base()
-              || b == CbZ.base()
-              || b == CbNz.base()
-              || b == TbZ.base()
-              || b == TbNz.base() => true,
+                || b == BranchLink.base()
+                || b == BranchIndirect.base()
+                || b == BranchIndirectLink.base()
+                || b == Ret.base()
+                || b == BranchCond.base()
+                || b == CbZ.base()
+                || b == CbNz.base()
+                || b == TbZ.base()
+                || b == TbNz.base() =>
+            {
+                true
+            }
             _ => false,
         }
     }
 
     pub const fn is_terminator(self) -> bool {
         use Op::*;
-        matches!(self,
-            Branch | BranchLink | BranchIndirect | BranchIndirectLink
-            | Ret | BranchCond | CbZ | CbNz | TbZ | TbNz
-            | Brk | Svc | Hvc
+        matches!(
+            self,
+            Branch
+                | BranchLink
+                | BranchIndirect
+                | BranchIndirectLink
+                | Ret
+                | BranchCond
+                | CbZ
+                | CbNz
+                | TbZ
+                | TbNz
+                | Brk
+                | Svc
+                | Hvc
         )
     }
 
@@ -312,9 +580,7 @@ impl Op {
         if self.has_side_effects() {
             return false;
         }
-        if matches!(self,
-            GetX | GetW | GetSp | GetNzcv | GetV | Mrs
-        ) {
+        if matches!(self, GetX | GetW | GetSp | GetNzcv | GetV | Mrs) {
             return false;
         }
         match self.base() {
@@ -335,18 +601,39 @@ mod tests {
     #[test]
     fn sized_families_encode_size_in_low_bits() {
         let cases: &[(Op, u32)] = &[
-            (Op::Add8,  1), (Op::Add16,  2), (Op::Add32,  4), (Op::Add64,  8),
-            (Op::Sub8,  1), (Op::Sub64,  8),
-            (Op::Lsl8,  1), (Op::Lsl16,  2), (Op::Lsl32,  4), (Op::Lsl64,  8),
-            (Op::Lsr64, 8), (Op::Asr32,  4), (Op::Ror16,  2),
-            (Op::Load8, 1), (Op::Load16, 2), (Op::Load32, 4), (Op::Load64, 8),
-            (Op::Store8, 1), (Op::Store64, 8),
-            (Op::Csel32, 4), (Op::Csel64, 8),
-            (Op::AddsFlags32, 4), (Op::SubsFlags64, 8),
+            (Op::Add8, 1),
+            (Op::Add16, 2),
+            (Op::Add32, 4),
+            (Op::Add64, 8),
+            (Op::Sub8, 1),
+            (Op::Sub64, 8),
+            (Op::Lsl8, 1),
+            (Op::Lsl16, 2),
+            (Op::Lsl32, 4),
+            (Op::Lsl64, 8),
+            (Op::Lsr64, 8),
+            (Op::Asr32, 4),
+            (Op::Ror16, 2),
+            (Op::Load8, 1),
+            (Op::Load16, 2),
+            (Op::Load32, 4),
+            (Op::Load64, 8),
+            (Op::Store8, 1),
+            (Op::Store64, 8),
+            (Op::Csel32, 4),
+            (Op::Csel64, 8),
+            (Op::AddsFlags32, 4),
+            (Op::SubsFlags64, 8),
         ];
         for &(op, bytes) in cases {
-            assert_eq!(op.size_bytes(), bytes,
-                "{:?}: expected size_bytes={}, got {}", op, bytes, op.size_bytes());
+            assert_eq!(
+                op.size_bytes(),
+                bytes,
+                "{:?}: expected size_bytes={}, got {}",
+                op,
+                bytes,
+                op.size_bytes()
+            );
             assert_eq!(op.size_bits(), bytes * 8);
         }
     }
@@ -366,6 +653,6 @@ mod tests {
         assert_eq!(Op::Add64 as u16 & 0b11, 3);
         assert_eq!(Op::Add32 as u16 & 0b11, 2);
         assert_eq!(Op::Add16 as u16 & 0b11, 1);
-        assert_eq!(Op::Add8  as u16 & 0b11, 0);
+        assert_eq!(Op::Add8 as u16 & 0b11, 0);
     }
 }

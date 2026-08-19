@@ -9,21 +9,24 @@ use crate::util::bits::{bit, bits};
 pub fn translate(em: &mut IrEmitter<'_>, insn: ADDSUB_EXT) -> Result<InstStatus> {
     use ADDSUB_EXT::*;
     let (raw, sub, set_flags) = match insn {
-        ADD_Rd_SP_Rn_SP_Rm_EXT(i)  => (i.0, false, false),
-        ADDS_Rd_Rn_SP_Rm_EXT(i)    => (i.0, false, true),
-        SUB_Rd_SP_Rn_SP_Rm_EXT(i)  => (i.0, true,  false),
-        SUBS_Rd_Rn_SP_Rm_EXT(i)    => (i.0, true,  true),
+        ADD_Rd_SP_Rn_SP_Rm_EXT(i) => (i.0, false, false),
+        ADDS_Rd_Rn_SP_Rm_EXT(i) => (i.0, false, true),
+        SUB_Rd_SP_Rn_SP_Rm_EXT(i) => (i.0, true, false),
+        SUBS_Rd_Rn_SP_Rm_EXT(i) => (i.0, true, true),
     };
 
-    let sf      = bit(raw, 31);
-    let rm      = bits(raw, 16, 5) as u8;
+    let sf = bit(raw, 31);
+    let rm = bits(raw, 16, 5) as u8;
     let option_ = bits(raw, 13, 3);
-    let imm3    = bits(raw, 10, 3);
-    let rn      = bits(raw, 5, 5) as u8;
-    let rd      = bits(raw, 0, 5) as u8;
+    let imm3 = bits(raw, 10, 3);
+    let rn = bits(raw, 5, 5) as u8;
+    let rd = bits(raw, 0, 5) as u8;
 
     if imm3 > 4 {
-        return Err(Error::Decode { pc: em.current_pc, opcode: raw });
+        return Err(Error::Decode {
+            pc: em.current_pc,
+            opcode: raw,
+        });
     }
     let size = if sf == 1 { RegSize::X } else { RegSize::W };
     let sp_form = !set_flags;
@@ -64,10 +67,18 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ADDSUB_EXT) -> Result<InstStatus>
     }
 
     if set_flags {
-        let result = if sub { em.subs(a, b, size) } else { em.adds(a, b, size) };
+        let result = if sub {
+            em.subs(a, b, size)
+        } else {
+            em.adds(a, b, size)
+        };
         em.set_x(rd, result);
     } else {
-        let result = if sub { em.sub(a, b, size) } else { em.add(a, b, size) };
+        let result = if sub {
+            em.sub(a, b, size)
+        } else {
+            em.add(a, b, size)
+        };
         em.set_x_or_sp(rd, result, sp_form);
     }
     Ok(InstStatus::Continue)

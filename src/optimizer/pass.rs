@@ -1,4 +1,4 @@
-use crate::arch::{Cond, Nzcv, NUM_GPRS};
+use crate::arch::{Cond, NUM_GPRS, Nzcv};
 use crate::ir::{Armlet, Block, Op, Terminal, Ty, ValueRef};
 
 #[derive(Default)]
@@ -8,7 +8,9 @@ pub struct Scratch {
 }
 
 impl Scratch {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     fn resize(&mut self, n: usize) {
         self.uses.clear();
@@ -25,15 +27,17 @@ pub fn optimize(block: &mut Block) {
 
 pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
     let mut n = block.code.len();
-    if n == 0 { return; }
+    if n == 0 {
+        return;
+    }
     scratch.resize(n);
 
-    let mut reach_x:    [ValueRef; NUM_GPRS] = [ValueRef::NONE; NUM_GPRS];
-    let mut reach_sp:   ValueRef = ValueRef::NONE;
+    let mut reach_x: [ValueRef; NUM_GPRS] = [ValueRef::NONE; NUM_GPRS];
+    let mut reach_sp: ValueRef = ValueRef::NONE;
     let mut reach_nzcv: ValueRef = ValueRef::NONE;
 
-    let mut last_setx:    [ValueRef; NUM_GPRS] = [ValueRef::NONE; NUM_GPRS];
-    let mut last_set_sp:   ValueRef = ValueRef::NONE;
+    let mut last_setx: [ValueRef; NUM_GPRS] = [ValueRef::NONE; NUM_GPRS];
+    let mut last_set_sp: ValueRef = ValueRef::NONE;
     let mut last_set_nzcv: ValueRef = ValueRef::NONE;
 
     let mut cursor = block.head_vr();
@@ -45,14 +49,20 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
         let mut a = block.code[i];
 
         for slot in a.args.iter_mut() {
-            if slot.is_none() { continue; }
+            if slot.is_none() {
+                continue;
+            }
             while slot.is_some() {
                 let sidx = slot.as_usize();
                 unsafe { core::hint::assert_unchecked(sidx < n) };
                 let pointed = &block.code[sidx];
-                if pointed.op != Op::Identity { break; }
+                if pointed.op != Op::Identity {
+                    break;
+                }
                 let nxt = pointed.args[0];
-                if nxt.is_none() || nxt.as_usize() >= sidx { break; }
+                if nxt.is_none() || nxt.as_usize() >= sidx {
+                    break;
+                }
                 *slot = nxt;
             }
         }
@@ -109,28 +119,41 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
             }
             Op::SetSp => {
                 let prev = last_set_sp;
-                if prev.is_some() { block.unlink(prev); }
+                if prev.is_some() {
+                    block.unlink(prev);
+                }
                 reach_sp = a.args[0];
                 last_set_sp = vr;
             }
             Op::SetNzcv => {
                 let prev = last_set_nzcv;
-                if prev.is_some() { block.unlink(prev); }
+                if prev.is_some() {
+                    block.unlink(prev);
+                }
                 reach_nzcv = a.args[0];
                 last_set_nzcv = vr;
             }
 
-            Op::AddsFlags32 | Op::AddsFlags64
-            | Op::SubsFlags32 | Op::SubsFlags64
-            | Op::Fcmp32 | Op::Fcmp64 => {
+            Op::AddsFlags32
+            | Op::AddsFlags64
+            | Op::SubsFlags32
+            | Op::SubsFlags64
+            | Op::Fcmp32
+            | Op::Fcmp64 => {
                 reach_nzcv = ValueRef::NONE;
                 let prev = last_set_nzcv;
-                if prev.is_some() { block.unlink(prev); }
+                if prev.is_some() {
+                    block.unlink(prev);
+                }
                 last_set_nzcv = ValueRef::NONE;
             }
 
-            Op::ConstU32 => { scratch.consts[i] = Some(a.imm & 0xFFFF_FFFF); }
-            Op::ConstU64 => { scratch.consts[i] = Some(a.imm); }
+            Op::ConstU32 => {
+                scratch.consts[i] = Some(a.imm & 0xFFFF_FFFF);
+            }
+            Op::ConstU64 => {
+                scratch.consts[i] = Some(a.imm);
+            }
 
             op if op.is_pure() => {
                 if let Some(folded) = try_fold(op, &a, &scratch.consts) {
@@ -156,10 +179,8 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
                     } else {
                         (Op::ConstU64, Ty::U64)
                     };
-                    let const_vr = block.insert_before(
-                        vr,
-                        Armlet::new(const_op, const_ty).with_imm(new_const),
-                    );
+                    let const_vr = block
+                        .insert_before(vr, Armlet::new(const_op, const_ty).with_imm(new_const));
                     a.op = new_op;
                     a.args = [base, const_vr, ValueRef::NONE, ValueRef::NONE];
                     n = block.code.len();
@@ -171,7 +192,9 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
 
             _ => {
                 if a.op.has_side_effects() {
-                    for s in last_setx.iter_mut() { *s = ValueRef::NONE; }
+                    for s in last_setx.iter_mut() {
+                        *s = ValueRef::NONE;
+                    }
                     last_set_sp = ValueRef::NONE;
                     last_set_nzcv = ValueRef::NONE;
                 }
@@ -185,14 +208,9 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
                 } else {
                     (Op::ConstU64, Op::Mul64)
                 };
-                let const_vr = block.insert_before(
-                    vr,
-                    Armlet::new(const_op, a.ty).with_imm(coeff),
-                );
-                let mul_vr = block.insert_before(
-                    vr,
-                    Armlet::new(mul_op, a.ty).with_args(&[base, const_vr]),
-                );
+                let const_vr = block.insert_before(vr, Armlet::new(const_op, a.ty).with_imm(coeff));
+                let mul_vr =
+                    block.insert_before(vr, Armlet::new(mul_op, a.ty).with_args(&[base, const_vr]));
                 a.become_identity(mul_vr);
                 n = block.code.len();
                 scratch.consts.resize(n, None);
@@ -202,8 +220,12 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
         }
 
         match a.op {
-            Op::ConstU32 => { scratch.consts[i] = Some(a.imm & 0xFFFF_FFFF); }
-            Op::ConstU64 => { scratch.consts[i] = Some(a.imm); }
+            Op::ConstU32 => {
+                scratch.consts[i] = Some(a.imm & 0xFFFF_FFFF);
+            }
+            Op::ConstU64 => {
+                scratch.consts[i] = Some(a.imm);
+            }
             Op::Identity => {
                 let src = a.args[0];
                 if src.is_some() {
@@ -240,8 +262,9 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
 
     let term_vrs: [Option<ValueRef>; 2] = match block.terminal {
         Terminal::ConditionalBranch { cond_nzcv, .. } => [Some(cond_nzcv), None],
-        Terminal::CompareBranchZero { value, .. }
-        | Terminal::TestBranchBit { value, .. } => [Some(value), None],
+        Terminal::CompareBranchZero { value, .. } | Terminal::TestBranchBit { value, .. } => {
+            [Some(value), None]
+        }
         Terminal::IndirectBranch { target, .. } => [Some(target), None],
         _ => [None, None],
     };
@@ -283,33 +306,52 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
 
 fn simplify_terminal(block: &mut Block, consts: &[Option<u64>]) {
     let const_of = |v: ValueRef| -> Option<u64> {
-        if v.is_none() { None } else { consts.get(v.as_usize()).copied().flatten() }
+        if v.is_none() {
+            None
+        } else {
+            consts.get(v.as_usize()).copied().flatten()
+        }
     };
 
     let new = match block.terminal {
-        Terminal::CompareBranchZero { value, inverse, taken_pc, not_taken_pc } => {
-            const_of(value).map(|v| {
-                let take = (v == 0) ^ inverse;
-                Terminal::DirectBranch {
-                    target_pc: if take { taken_pc } else { not_taken_pc },
-                    link: false,
-                }
-            })
-        }
-        Terminal::TestBranchBit { value, bit, inverse, taken_pc, not_taken_pc } => {
-            const_of(value).map(|v| {
-                let bit_set = ((v >> bit) & 1) != 0;
-                let take = if inverse { bit_set } else { !bit_set };
-                Terminal::DirectBranch {
-                    target_pc: if take { taken_pc } else { not_taken_pc },
-                    link: false,
-                }
-            })
-        }
-        Terminal::ConditionalBranch { cond_nzcv, cond_code, taken_pc, not_taken_pc } => {
+        Terminal::CompareBranchZero {
+            value,
+            inverse,
+            taken_pc,
+            not_taken_pc,
+        } => const_of(value).map(|v| {
+            let take = (v == 0) ^ inverse;
+            Terminal::DirectBranch {
+                target_pc: if take { taken_pc } else { not_taken_pc },
+                link: false,
+            }
+        }),
+        Terminal::TestBranchBit {
+            value,
+            bit,
+            inverse,
+            taken_pc,
+            not_taken_pc,
+        } => const_of(value).map(|v| {
+            let bit_set = ((v >> bit) & 1) != 0;
+            let take = if inverse { bit_set } else { !bit_set };
+            Terminal::DirectBranch {
+                target_pc: if take { taken_pc } else { not_taken_pc },
+                link: false,
+            }
+        }),
+        Terminal::ConditionalBranch {
+            cond_nzcv,
+            cond_code,
+            taken_pc,
+            not_taken_pc,
+        } => {
             let cond = Cond::from_bits(cond_code);
             if matches!(cond, Cond::AL | Cond::NV) {
-                Some(Terminal::DirectBranch { target_pc: taken_pc, link: false })
+                Some(Terminal::DirectBranch {
+                    target_pc: taken_pc,
+                    link: false,
+                })
             } else {
                 const_of(cond_nzcv).map(|nz| {
                     let take = Nzcv(nz as u8).check(cond);
@@ -342,11 +384,15 @@ fn try_combine_const(
     let outer_op = a.op;
     let outer_const = consts.get(a.args[1].as_usize()).copied().flatten()?;
     let inner_vr = a.args[0];
-    if !inner_vr.is_some() { return None; }
+    if !inner_vr.is_some() {
+        return None;
+    }
     let inner = block.code.get(inner_vr.as_usize())?;
     let inner_const = consts.get(inner.args[1].as_usize()).copied().flatten()?;
     let base = inner.args[0];
-    if !base.is_some() { return None; }
+    if !base.is_some() {
+        return None;
+    }
 
     let bits = outer_op.size_bits();
     let mask: u64 = if bits >= 64 { !0 } else { (1u64 << bits) - 1 };
@@ -366,8 +412,8 @@ fn try_combine_const(
         ),
         (And32, And32) => (inner_const & outer_const & mask, And32),
         (And64, And64) => (inner_const & outer_const, And64),
-        (Or32,  Or32)  => ((inner_const | outer_const) & mask, Or32),
-        (Or64,  Or64)  => (inner_const | outer_const, Or64),
+        (Or32, Or32) => ((inner_const | outer_const) & mask, Or32),
+        (Or64, Or64) => (inner_const | outer_const, Or64),
         (Eor32, Eor32) => ((inner_const ^ outer_const) & mask, Eor32),
         (Eor64, Eor64) => (inner_const ^ outer_const, Eor64),
         (Mul32, Mul32) => (inner_const.wrapping_mul(outer_const) & mask, Mul32),
@@ -378,16 +424,22 @@ fn try_combine_const(
         (Sub32, Add32) => (inner_const.wrapping_sub(outer_const) & mask, Add32),
         (Sub64, Add64) => (inner_const.wrapping_sub(outer_const), Add64),
 
-        (Lsl32, Lsl32) | (Lsl64, Lsl64)
-        | (Lsr32, Lsr32) | (Lsr64, Lsr64)
-        | (Asr32, Asr32) | (Asr64, Asr64) => {
+        (Lsl32, Lsl32)
+        | (Lsl64, Lsl64)
+        | (Lsr32, Lsr32)
+        | (Lsr64, Lsr64)
+        | (Asr32, Asr32)
+        | (Asr64, Asr64) => {
             let sum = inner_const.wrapping_add(outer_const);
-            if sum > bits_minus_1 { return None; }
+            if sum > bits_minus_1 {
+                return None;
+            }
             (sum, outer_op)
         }
-        (Ror32, Ror32) | (Ror64, Ror64) => {
-            (inner_const.wrapping_add(outer_const) & bits_minus_1, outer_op)
-        }
+        (Ror32, Ror32) | (Ror64, Ror64) => (
+            inner_const.wrapping_add(outer_const) & bits_minus_1,
+            outer_op,
+        ),
 
         _ => return None,
     };
@@ -400,15 +452,19 @@ enum Simplify {
     ToIdentity(ValueRef),
 }
 
-fn try_strength_reduce(
-    op: Op,
-    a: &Armlet,
-    consts: &[Option<u64>],
-) -> Option<Simplify> {
+fn try_strength_reduce(op: Op, a: &Armlet, consts: &[Option<u64>]) -> Option<Simplify> {
     let arg0 = a.args[0];
     let arg1 = a.args[1];
-    let c0 = if arg0.is_some() { consts.get(arg0.as_usize()).copied().flatten() } else { None };
-    let c1 = if arg1.is_some() { consts.get(arg1.as_usize()).copied().flatten() } else { None };
+    let c0 = if arg0.is_some() {
+        consts.get(arg0.as_usize()).copied().flatten()
+    } else {
+        None
+    };
+    let c1 = if arg1.is_some() {
+        consts.get(arg1.as_usize()).copied().flatten()
+    } else {
+        None
+    };
 
     let all_ones_32: u64 = 0xFFFF_FFFF;
     let all_ones_64: u64 = !0;
@@ -416,53 +472,103 @@ fn try_strength_reduce(
     use Op::*;
     match op {
         Add32 | Add64 => {
-            if c0 == Some(0) { return Some(Simplify::ToIdentity(arg1)); }
-            if c1 == Some(0) { return Some(Simplify::ToIdentity(arg0)); }
+            if c0 == Some(0) {
+                return Some(Simplify::ToIdentity(arg1));
+            }
+            if c1 == Some(0) {
+                return Some(Simplify::ToIdentity(arg0));
+            }
         }
         Sub32 | Sub64 => {
-            if c1 == Some(0) { return Some(Simplify::ToIdentity(arg0)); }
-            if arg0 == arg1 && arg0.is_some() { return Some(Simplify::ToConst(0)); }
+            if c1 == Some(0) {
+                return Some(Simplify::ToIdentity(arg0));
+            }
+            if arg0 == arg1 && arg0.is_some() {
+                return Some(Simplify::ToConst(0));
+            }
         }
         And32 => {
-            if c0 == Some(0) || c1 == Some(0) { return Some(Simplify::ToConst(0)); }
-            if c0 == Some(all_ones_32) { return Some(Simplify::ToIdentity(arg1)); }
-            if c1 == Some(all_ones_32) { return Some(Simplify::ToIdentity(arg0)); }
-            if arg0 == arg1 && arg0.is_some() { return Some(Simplify::ToIdentity(arg0)); }
+            if c0 == Some(0) || c1 == Some(0) {
+                return Some(Simplify::ToConst(0));
+            }
+            if c0 == Some(all_ones_32) {
+                return Some(Simplify::ToIdentity(arg1));
+            }
+            if c1 == Some(all_ones_32) {
+                return Some(Simplify::ToIdentity(arg0));
+            }
+            if arg0 == arg1 && arg0.is_some() {
+                return Some(Simplify::ToIdentity(arg0));
+            }
         }
         And64 => {
-            if c0 == Some(0) || c1 == Some(0) { return Some(Simplify::ToConst(0)); }
-            if c0 == Some(all_ones_64) { return Some(Simplify::ToIdentity(arg1)); }
-            if c1 == Some(all_ones_64) { return Some(Simplify::ToIdentity(arg0)); }
-            if arg0 == arg1 && arg0.is_some() { return Some(Simplify::ToIdentity(arg0)); }
+            if c0 == Some(0) || c1 == Some(0) {
+                return Some(Simplify::ToConst(0));
+            }
+            if c0 == Some(all_ones_64) {
+                return Some(Simplify::ToIdentity(arg1));
+            }
+            if c1 == Some(all_ones_64) {
+                return Some(Simplify::ToIdentity(arg0));
+            }
+            if arg0 == arg1 && arg0.is_some() {
+                return Some(Simplify::ToIdentity(arg0));
+            }
         }
         Or32 => {
-            if c0 == Some(0) { return Some(Simplify::ToIdentity(arg1)); }
-            if c1 == Some(0) { return Some(Simplify::ToIdentity(arg0)); }
+            if c0 == Some(0) {
+                return Some(Simplify::ToIdentity(arg1));
+            }
+            if c1 == Some(0) {
+                return Some(Simplify::ToIdentity(arg0));
+            }
             if c0 == Some(all_ones_32) || c1 == Some(all_ones_32) {
                 return Some(Simplify::ToConst(all_ones_32));
             }
-            if arg0 == arg1 && arg0.is_some() { return Some(Simplify::ToIdentity(arg0)); }
+            if arg0 == arg1 && arg0.is_some() {
+                return Some(Simplify::ToIdentity(arg0));
+            }
         }
         Or64 => {
-            if c0 == Some(0) { return Some(Simplify::ToIdentity(arg1)); }
-            if c1 == Some(0) { return Some(Simplify::ToIdentity(arg0)); }
+            if c0 == Some(0) {
+                return Some(Simplify::ToIdentity(arg1));
+            }
+            if c1 == Some(0) {
+                return Some(Simplify::ToIdentity(arg0));
+            }
             if c0 == Some(all_ones_64) || c1 == Some(all_ones_64) {
                 return Some(Simplify::ToConst(all_ones_64));
             }
-            if arg0 == arg1 && arg0.is_some() { return Some(Simplify::ToIdentity(arg0)); }
+            if arg0 == arg1 && arg0.is_some() {
+                return Some(Simplify::ToIdentity(arg0));
+            }
         }
         Eor32 | Eor64 => {
-            if c0 == Some(0) { return Some(Simplify::ToIdentity(arg1)); }
-            if c1 == Some(0) { return Some(Simplify::ToIdentity(arg0)); }
-            if arg0 == arg1 && arg0.is_some() { return Some(Simplify::ToConst(0)); }
+            if c0 == Some(0) {
+                return Some(Simplify::ToIdentity(arg1));
+            }
+            if c1 == Some(0) {
+                return Some(Simplify::ToIdentity(arg0));
+            }
+            if arg0 == arg1 && arg0.is_some() {
+                return Some(Simplify::ToConst(0));
+            }
         }
         Mul32 | Mul64 => {
-            if c0 == Some(0) || c1 == Some(0) { return Some(Simplify::ToConst(0)); }
-            if c0 == Some(1) { return Some(Simplify::ToIdentity(arg1)); }
-            if c1 == Some(1) { return Some(Simplify::ToIdentity(arg0)); }
+            if c0 == Some(0) || c1 == Some(0) {
+                return Some(Simplify::ToConst(0));
+            }
+            if c0 == Some(1) {
+                return Some(Simplify::ToIdentity(arg1));
+            }
+            if c1 == Some(1) {
+                return Some(Simplify::ToIdentity(arg0));
+            }
         }
         Lsl32 | Lsl64 | Lsr32 | Lsr64 | Asr32 | Asr64 | Ror32 | Ror64 => {
-            if c1 == Some(0) { return Some(Simplify::ToIdentity(arg0)); }
+            if c1 == Some(0) {
+                return Some(Simplify::ToIdentity(arg0));
+            }
         }
         _ => {}
     }
@@ -478,22 +584,42 @@ struct Term {
 fn extract_term(block: &Block, vr: ValueRef, consts: &[Option<u64>], bits: u32) -> Term {
     let i = vr.as_usize();
     if i >= block.code.len() || vr.is_none() {
-        return Term { base: vr, coeff: 1, has_mul: false };
+        return Term {
+            base: vr,
+            coeff: 1,
+            has_mul: false,
+        };
     }
     let a = &block.code[i];
     let get_c = |v: ValueRef| -> Option<u64> {
-        if v.is_none() { None } else { consts.get(v.as_usize()).copied().flatten() }
+        if v.is_none() {
+            None
+        } else {
+            consts.get(v.as_usize()).copied().flatten()
+        }
     };
     match a.op {
         Op::Mul32 | Op::Mul64 if a.op.size_bits() == bits => {
             if let Some(c) = get_c(a.args[0]) {
                 let inner = extract_term(block, a.args[1], consts, bits);
-                Term { base: inner.base, coeff: inner.coeff.wrapping_mul(c), has_mul: true }
+                Term {
+                    base: inner.base,
+                    coeff: inner.coeff.wrapping_mul(c),
+                    has_mul: true,
+                }
             } else if let Some(c) = get_c(a.args[1]) {
                 let inner = extract_term(block, a.args[0], consts, bits);
-                Term { base: inner.base, coeff: inner.coeff.wrapping_mul(c), has_mul: true }
+                Term {
+                    base: inner.base,
+                    coeff: inner.coeff.wrapping_mul(c),
+                    has_mul: true,
+                }
             } else {
-                Term { base: vr, coeff: 1, has_mul: false }
+                Term {
+                    base: vr,
+                    coeff: 1,
+                    has_mul: false,
+                }
             }
         }
         Op::Lsl32 | Op::Lsl64 if a.op.size_bits() == bits => {
@@ -506,27 +632,35 @@ fn extract_term(block: &Block, vr: ValueRef, consts: &[Option<u64>], bits: u32) 
                     has_mul: inner.has_mul,
                 }
             } else {
-                Term { base: vr, coeff: 1, has_mul: false }
+                Term {
+                    base: vr,
+                    coeff: 1,
+                    has_mul: false,
+                }
             }
         }
         Op::Identity => extract_term(block, a.args[0], consts, bits),
-        _ => Term { base: vr, coeff: 1, has_mul: false },
+        _ => Term {
+            base: vr,
+            coeff: 1,
+            has_mul: false,
+        },
     }
 }
 
-fn try_mul_fold(
-    add: &Armlet,
-    block: &Block,
-    consts: &[Option<u64>],
-) -> Option<(ValueRef, u64)> {
+fn try_mul_fold(add: &Armlet, block: &Block, consts: &[Option<u64>]) -> Option<(ValueRef, u64)> {
     let bits = add.op.size_bits();
     let mask: u64 = if bits >= 64 { !0 } else { (1u64 << bits) - 1 };
     let is_sub = matches!(add.op, Op::Sub32 | Op::Sub64);
 
     let lhs = extract_term(block, add.args[0], consts, bits);
     let rhs = extract_term(block, add.args[1], consts, bits);
-    if lhs.base != rhs.base || lhs.base.is_none() { return None; }
-    if !(lhs.has_mul || rhs.has_mul) { return None; }
+    if lhs.base != rhs.base || lhs.base.is_none() {
+        return None;
+    }
+    if !(lhs.has_mul || rhs.has_mul) {
+        return None;
+    }
 
     let combined = if is_sub {
         lhs.coeff.wrapping_sub(rhs.coeff)
@@ -534,13 +668,19 @@ fn try_mul_fold(
         lhs.coeff.wrapping_add(rhs.coeff)
     } & mask;
 
-    if combined == 0 || combined == 1 { return None; }
+    if combined == 0 || combined == 1 {
+        return None;
+    }
     Some((lhs.base, combined))
 }
 
 fn try_fold(op: Op, a: &crate::ir::Armlet, consts: &[Option<u64>]) -> Option<u64> {
     let get = |v: ValueRef| -> Option<u64> {
-        if v.is_none() { None } else { consts[v.as_usize()] }
+        if v.is_none() {
+            None
+        } else {
+            consts[v.as_usize()]
+        }
     };
     let x = get(a.args[0])?;
     let y_opt = get(a.args[1]);
@@ -553,8 +693,8 @@ fn try_fold(op: Op, a: &crate::ir::Armlet, consts: &[Option<u64>]) -> Option<u64
         Sub64 => x.wrapping_sub(y_opt?),
         And32 => (x as u32 & y_opt? as u32) as u64,
         And64 => x & y_opt?,
-        Or32  => (x as u32 | y_opt? as u32) as u64,
-        Or64  => x | y_opt?,
+        Or32 => (x as u32 | y_opt? as u32) as u64,
+        Or64 => x | y_opt?,
         Eor32 => (x as u32 ^ y_opt? as u32) as u64,
         Eor64 => x ^ y_opt?,
         Lsl32 => ((x as u32).wrapping_shl(y_opt? as u32 & 31)) as u64,
@@ -598,7 +738,11 @@ mod tests {
         optimize(&mut block);
 
         let add_node = &block.code[added.as_usize()];
-        assert_eq!(add_node.op, Op::Identity, "Add should be rewritten to Identity");
+        assert_eq!(
+            add_node.op,
+            Op::Identity,
+            "Add should be rewritten to Identity"
+        );
 
         let target = add_node.args[0];
         let mul_node = &block.code[target.as_usize()];
@@ -607,7 +751,10 @@ mod tests {
 
         let coeff_node = &block.code[mul_node.args[1].as_usize()];
         assert_eq!(coeff_node.op, Op::ConstU64);
-        assert_eq!(coeff_node.imm, 13, "coefficient should be (3 << 2) + 1 = 13");
+        assert_eq!(
+            coeff_node.imm, 13,
+            "coefficient should be (3 << 2) + 1 = 13"
+        );
     }
 
     #[test]
@@ -661,8 +808,8 @@ mod tests {
         let a = em.get_x(0);
         let b = match b_const {
             Some(v) if ty == Ty::U64 => em.const_u64(v),
-            Some(v)                  => em.const_u32(v as u32),
-            None                     => em.get_x(1),
+            Some(v) => em.const_u32(v as u32),
+            None => em.get_x(1),
         };
         let r = em.push(Armlet::new(op, ty).with_args(&[a, b]));
         let set_vr = em.push(Armlet::new(Op::SetX, Ty::Void).with_args(&[r]).with_imm(2));
@@ -787,7 +934,11 @@ mod tests {
         let inner = em.push(Armlet::new(Op::Add64, Ty::U64).with_args(&[a, c1]));
         let c2 = em.const_u64(3);
         let outer = em.push(Armlet::new(Op::Add64, Ty::U64).with_args(&[inner, c2]));
-        let set_vr = em.push(Armlet::new(Op::SetX, Ty::Void).with_args(&[outer]).with_imm(1));
+        let set_vr = em.push(
+            Armlet::new(Op::SetX, Ty::Void)
+                .with_args(&[outer])
+                .with_imm(1),
+        );
         optimize(&mut block);
         let (op, imm) = outer_binop_const(&block, set_vr);
         assert_eq!(op, Op::Add64);
@@ -803,7 +954,11 @@ mod tests {
         let inner = em.push(Armlet::new(Op::Sub64, Ty::U64).with_args(&[a, c1]));
         let c2 = em.const_u64(3);
         let outer = em.push(Armlet::new(Op::Sub64, Ty::U64).with_args(&[inner, c2]));
-        let set_vr = em.push(Armlet::new(Op::SetX, Ty::Void).with_args(&[outer]).with_imm(1));
+        let set_vr = em.push(
+            Armlet::new(Op::SetX, Ty::Void)
+                .with_args(&[outer])
+                .with_imm(1),
+        );
         optimize(&mut block);
         let (op, imm) = outer_binop_const(&block, set_vr);
         assert_eq!(op, Op::Add64, "Sub-Sub canonicalises to Add");
@@ -819,7 +974,11 @@ mod tests {
         let inner = em.push(Armlet::new(Op::Sub64, Ty::U64).with_args(&[a, c1]));
         let c2 = em.const_u64(3);
         let outer = em.push(Armlet::new(Op::Add64, Ty::U64).with_args(&[inner, c2]));
-        let set_vr = em.push(Armlet::new(Op::SetX, Ty::Void).with_args(&[outer]).with_imm(1));
+        let set_vr = em.push(
+            Armlet::new(Op::SetX, Ty::Void)
+                .with_args(&[outer])
+                .with_imm(1),
+        );
         optimize(&mut block);
         let (op, imm) = outer_binop_const(&block, set_vr);
         assert_eq!(op, Op::Add64);
@@ -835,7 +994,11 @@ mod tests {
         let inner = em.push(Armlet::new(Op::Lsl64, Ty::U64).with_args(&[a, c1]));
         let c2 = em.const_u64(4);
         let outer = em.push(Armlet::new(Op::Lsl64, Ty::U64).with_args(&[inner, c2]));
-        let set_vr = em.push(Armlet::new(Op::SetX, Ty::Void).with_args(&[outer]).with_imm(1));
+        let set_vr = em.push(
+            Armlet::new(Op::SetX, Ty::Void)
+                .with_args(&[outer])
+                .with_imm(1),
+        );
         optimize(&mut block);
         let (op, imm) = outer_binop_const(&block, set_vr);
         assert_eq!(op, Op::Lsl64);
@@ -847,9 +1010,16 @@ mod tests {
         let mut block = Block::new(0x1000);
         let mut em = IrEmitter::new(&mut block, 0x1000);
         let v = em.const_u64(0);
-        em.push(Armlet::new(Op::CbZ, Ty::Void).with_args(&[v]).with_imm(0x2000));
+        em.push(
+            Armlet::new(Op::CbZ, Ty::Void)
+                .with_args(&[v])
+                .with_imm(0x2000),
+        );
         block.terminal = Terminal::CompareBranchZero {
-            value: v, inverse: false, taken_pc: 0x2000, not_taken_pc: 0x1008,
+            value: v,
+            inverse: false,
+            taken_pc: 0x2000,
+            not_taken_pc: 0x1008,
         };
         optimize(&mut block);
         match block.terminal {
@@ -863,9 +1033,16 @@ mod tests {
         let mut block = Block::new(0x1000);
         let mut em = IrEmitter::new(&mut block, 0x1000);
         let v = em.const_u64(42);
-        em.push(Armlet::new(Op::CbNz, Ty::Void).with_args(&[v]).with_imm(0x2000));
+        em.push(
+            Armlet::new(Op::CbNz, Ty::Void)
+                .with_args(&[v])
+                .with_imm(0x2000),
+        );
         block.terminal = Terminal::CompareBranchZero {
-            value: v, inverse: true, taken_pc: 0x2000, not_taken_pc: 0x1008,
+            value: v,
+            inverse: true,
+            taken_pc: 0x2000,
+            not_taken_pc: 0x1008,
         };
         optimize(&mut block);
         match block.terminal {
@@ -879,9 +1056,17 @@ mod tests {
         let mut block = Block::new(0x1000);
         let mut em = IrEmitter::new(&mut block, 0x1000);
         let v = em.const_u64(0x10);
-        em.push(Armlet::new(Op::TbZ, Ty::Void).with_args(&[v]).with_imm(0x2000));
+        em.push(
+            Armlet::new(Op::TbZ, Ty::Void)
+                .with_args(&[v])
+                .with_imm(0x2000),
+        );
         block.terminal = Terminal::TestBranchBit {
-            value: v, bit: 0, inverse: false, taken_pc: 0x2000, not_taken_pc: 0x1008,
+            value: v,
+            bit: 0,
+            inverse: false,
+            taken_pc: 0x2000,
+            not_taken_pc: 0x1008,
         };
         optimize(&mut block);
         match block.terminal {
@@ -895,12 +1080,16 @@ mod tests {
         let mut block = Block::new(0x1000);
         let mut em = IrEmitter::new(&mut block, 0x1000);
         let nz = em.get_nzcv();
-        em.push(Armlet::new(Op::BranchCond, Ty::Void)
-            .with_args(&[nz])
-            .with_imm((0x2000u64 << 8) | (Cond::AL as u64)));
+        em.push(
+            Armlet::new(Op::BranchCond, Ty::Void)
+                .with_args(&[nz])
+                .with_imm((0x2000u64 << 8) | (Cond::AL as u64)),
+        );
         block.terminal = Terminal::ConditionalBranch {
-            cond_nzcv: nz, cond_code: Cond::AL as u8,
-            taken_pc: 0x2000, not_taken_pc: 0x1008,
+            cond_nzcv: nz,
+            cond_code: Cond::AL as u8,
+            taken_pc: 0x2000,
+            not_taken_pc: 0x1008,
         };
         optimize(&mut block);
         match block.terminal {
@@ -918,7 +1107,8 @@ mod tests {
         let v2 = em.const_u64(2);
         em.set_x(0, v2);
         optimize(&mut block);
-        let setx_count = block.iter_live()
+        let setx_count = block
+            .iter_live()
             .filter(|(_, a)| matches!(a.op, Op::SetX))
             .count();
         assert_eq!(setx_count, 1, "DSE should drop the first SetX");
@@ -931,15 +1121,19 @@ mod tests {
         let v1 = em.const_u64(1);
         em.set_x(0, v1);
         let addr = em.const_u64(0x4000);
-        let val  = em.const_u64(0x99);
+        let val = em.const_u64(0x99);
         em.store(addr, val, 8);
         let v2 = em.const_u64(2);
         em.set_x(0, v2);
         optimize(&mut block);
-        let setx_count = block.iter_live()
+        let setx_count = block
+            .iter_live()
             .filter(|(_, a)| matches!(a.op, Op::SetX))
             .count();
-        assert_eq!(setx_count, 2, "store callback may observe ctx.x; keep first SetX");
+        assert_eq!(
+            setx_count, 2,
+            "store callback may observe ctx.x; keep first SetX"
+        );
     }
 
     #[test]
@@ -953,7 +1147,8 @@ mod tests {
         let v2 = em.const_u64(2);
         em.set_x(0, v2);
         optimize(&mut block);
-        let setx1 = block.iter_live()
+        let setx1 = block
+            .iter_live()
             .find(|(_, a)| matches!(a.op, Op::SetX) && a.imm == 1)
             .expect("SetX(1) should remain");
         let src = &block.code[setx1.1.args[0].as_usize()];
@@ -970,7 +1165,11 @@ mod tests {
         let inner = em.push(Armlet::new(Op::And64, Ty::U64).with_args(&[a, c1]));
         let c2 = em.const_u64(0x0FF0);
         let outer = em.push(Armlet::new(Op::And64, Ty::U64).with_args(&[inner, c2]));
-        let set_vr = em.push(Armlet::new(Op::SetX, Ty::Void).with_args(&[outer]).with_imm(1));
+        let set_vr = em.push(
+            Armlet::new(Op::SetX, Ty::Void)
+                .with_args(&[outer])
+                .with_imm(1),
+        );
         optimize(&mut block);
         let (op, imm) = outer_binop_const(&block, set_vr);
         assert_eq!(op, Op::And64);

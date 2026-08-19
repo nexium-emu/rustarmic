@@ -46,10 +46,22 @@ impl Nzcv {
     pub const C_BIT: u8 = 1 << 1;
     pub const V_BIT: u8 = 1 << 0;
 
-    #[inline] pub fn n(self) -> bool { (self.0 & Self::N_BIT) != 0 }
-    #[inline] pub fn z(self) -> bool { (self.0 & Self::Z_BIT) != 0 }
-    #[inline] pub fn c(self) -> bool { (self.0 & Self::C_BIT) != 0 }
-    #[inline] pub fn v(self) -> bool { (self.0 & Self::V_BIT) != 0 }
+    #[inline]
+    pub fn n(self) -> bool {
+        (self.0 & Self::N_BIT) != 0
+    }
+    #[inline]
+    pub fn z(self) -> bool {
+        (self.0 & Self::Z_BIT) != 0
+    }
+    #[inline]
+    pub fn c(self) -> bool {
+        (self.0 & Self::C_BIT) != 0
+    }
+    #[inline]
+    pub fn v(self) -> bool {
+        (self.0 & Self::V_BIT) != 0
+    }
 
     pub fn check(self, cond: Cond) -> bool {
         let (n, z, c, v) = (self.n(), self.z(), self.c(), self.v());
@@ -81,22 +93,8 @@ pub enum RegSize {
 }
 
 pub const COND_TRUTH: [u16; 16] = [
-    0xF0F0,
-    0x0F0F,
-    0xCCCC,
-    0x3333,
-    0xFF00,
-    0x00FF,
-    0xAAAA,
-    0x5555,
-    0x0C0C,
-    0xF3F3,
-    0xAA55,
-    0x55AA,
-    0x0A05,
-    0xF5FA,
-    0xFFFF,
-    0xFFFF,
+    0xF0F0, 0x0F0F, 0xCCCC, 0x3333, 0xFF00, 0x00FF, 0xAAAA, 0x5555, 0x0C0C, 0xF3F3, 0xAA55, 0x55AA,
+    0x0A05, 0xF5FA, 0xFFFF, 0xFFFF,
 ];
 
 pub mod sysreg {
@@ -104,18 +102,18 @@ pub mod sysreg {
         ((op0 << 14) | (op1 << 11) | (crn << 7) | (crm << 3) | op2) as u16
     }
 
-    pub const NZCV:        u16 = pack(3, 3, 4,  2, 0);
-    pub const FPCR:        u16 = pack(3, 3, 4,  4, 0);
-    pub const FPSR:        u16 = pack(3, 3, 4,  4, 1);
-    pub const TPIDR_EL0:   u16 = pack(3, 3, 13, 0, 2);
+    pub const NZCV: u16 = pack(3, 3, 4, 2, 0);
+    pub const FPCR: u16 = pack(3, 3, 4, 4, 0);
+    pub const FPSR: u16 = pack(3, 3, 4, 4, 1);
+    pub const TPIDR_EL0: u16 = pack(3, 3, 13, 0, 2);
     pub const TPIDRRO_EL0: u16 = pack(3, 3, 13, 0, 3);
-    pub const CTR_EL0:     u16 = pack(3, 3, 0,  0, 1);
-    pub const DCZID_EL0:   u16 = pack(3, 3, 0,  0, 7);
-    pub const MIDR_EL1:    u16 = pack(3, 0, 0,  0, 0);
-    pub const MPIDR_EL1:   u16 = pack(3, 0, 0,  0, 5);
-    pub const CNTFRQ_EL0:  u16 = pack(3, 3, 14, 0, 0);
-    pub const CNTPCT_EL0:  u16 = pack(3, 3, 14, 0, 1);
-    pub const CNTVCT_EL0:  u16 = pack(3, 3, 14, 0, 2);
+    pub const CTR_EL0: u16 = pack(3, 3, 0, 0, 1);
+    pub const DCZID_EL0: u16 = pack(3, 3, 0, 0, 7);
+    pub const MIDR_EL1: u16 = pack(3, 0, 0, 0, 0);
+    pub const MPIDR_EL1: u16 = pack(3, 0, 0, 0, 5);
+    pub const CNTFRQ_EL0: u16 = pack(3, 3, 14, 0, 0);
+    pub const CNTPCT_EL0: u16 = pack(3, 3, 14, 0, 1);
+    pub const CNTVCT_EL0: u16 = pack(3, 3, 14, 0, 2);
 }
 
 #[cfg(test)]

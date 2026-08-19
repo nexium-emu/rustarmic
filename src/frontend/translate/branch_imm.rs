@@ -8,7 +8,7 @@ use crate::util::bits::{bits, sign_extend};
 pub fn translate(em: &mut IrEmitter<'_>, insn: BRANCH_IMM) -> Result<InstStatus> {
     use BRANCH_IMM::*;
     let (raw, link) = match insn {
-        B_ADDR_PCREL26(i)  => (i.0, false),
+        B_ADDR_PCREL26(i) => (i.0, false),
         BL_ADDR_PCREL26(i) => (i.0, true),
     };
     let imm26 = bits(raw, 0, 26);

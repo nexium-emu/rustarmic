@@ -4,18 +4,49 @@ use crate::ir::{Armlet, Op, ValueRef};
 #[derive(Clone, Copy, Debug)]
 pub enum Terminal {
     Invalid,
-    LinkBlock { next_pc: u64 },
-    DirectBranch { target_pc: u64, link: bool },
-    ConditionalBranch { cond_nzcv: ValueRef, cond_code: u8, taken_pc: u64, not_taken_pc: u64 },
-    CompareBranchZero { value: ValueRef, inverse: bool, taken_pc: u64, not_taken_pc: u64 },
-    TestBranchBit { value: ValueRef, bit: u8, inverse: bool, taken_pc: u64, not_taken_pc: u64 },
-    IndirectBranch { target: ValueRef, link: bool, is_ret: bool },
-    Exception { kind: ExceptionKind, imm: u32 },
+    LinkBlock {
+        next_pc: u64,
+    },
+    DirectBranch {
+        target_pc: u64,
+        link: bool,
+    },
+    ConditionalBranch {
+        cond_nzcv: ValueRef,
+        cond_code: u8,
+        taken_pc: u64,
+        not_taken_pc: u64,
+    },
+    CompareBranchZero {
+        value: ValueRef,
+        inverse: bool,
+        taken_pc: u64,
+        not_taken_pc: u64,
+    },
+    TestBranchBit {
+        value: ValueRef,
+        bit: u8,
+        inverse: bool,
+        taken_pc: u64,
+        not_taken_pc: u64,
+    },
+    IndirectBranch {
+        target: ValueRef,
+        link: bool,
+        is_ret: bool,
+    },
+    Exception {
+        kind: ExceptionKind,
+        imm: u32,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExceptionKind {
-    Svc, Brk, Hvc, UnknownInst,
+    Svc,
+    Brk,
+    Hvc,
+    UnknownInst,
 }
 
 pub struct Block {
@@ -78,7 +109,10 @@ impl Block {
     #[inline]
     pub fn insert_before(&mut self, before_vr: ValueRef, mut armlet: Armlet) -> ValueRef {
         let new_idx = self.code.len() as u32;
-        debug_assert!((new_idx as usize) < Self::MAX_NODES, "block exceeded MAX_NODES");
+        debug_assert!(
+            (new_idx as usize) < Self::MAX_NODES,
+            "block exceeded MAX_NODES"
+        );
         let before_idx = before_vr.idx();
         let prev = self.code[before_idx as usize].prev;
         armlet.prev = prev;
@@ -100,10 +134,16 @@ impl Block {
             let n = &self.code[idx as usize];
             (n.prev, n.next)
         };
-        if prev != LINK_NONE { self.code[prev as usize].next = next; }
-        else                 { self.head = next; }
-        if next != LINK_NONE { self.code[next as usize].prev = prev; }
-        else                 { self.tail = prev; }
+        if prev != LINK_NONE {
+            self.code[prev as usize].next = next;
+        } else {
+            self.head = next;
+        }
+        if next != LINK_NONE {
+            self.code[next as usize].prev = prev;
+        } else {
+            self.tail = prev;
+        }
         let n = &mut self.code[idx as usize];
         n.prev = LINK_NONE;
         n.next = LINK_NONE;
@@ -111,8 +151,14 @@ impl Block {
         n.args = [ValueRef::NONE; 4];
     }
 
-    #[inline] pub fn len(&self)      -> usize { self.code.len() }
-    #[inline] pub fn is_empty(&self) -> bool  { self.head == LINK_NONE }
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.code.len()
+    }
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.head == LINK_NONE
+    }
 
     #[inline]
     pub fn head_vr(&self) -> Option<ValueRef> {
@@ -147,11 +193,17 @@ impl Block {
     }
 
     pub fn iter_live(&self) -> LiveIter<'_> {
-        LiveIter { block: self, cursor: self.head_vr() }
+        LiveIter {
+            block: self,
+            cursor: self.head_vr(),
+        }
     }
 
     pub fn iter_live_rev(&self) -> RevLiveIter<'_> {
-        RevLiveIter { block: self, cursor: self.tail_vr() }
+        RevLiveIter {
+            block: self,
+            cursor: self.tail_vr(),
+        }
     }
 }
 

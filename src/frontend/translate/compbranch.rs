@@ -9,12 +9,12 @@ use crate::util::bits::{bit, bits, sign_extend};
 pub fn translate(em: &mut IrEmitter<'_>, insn: COMPBRANCH) -> Result<InstStatus> {
     use COMPBRANCH::*;
     let (raw, inverse) = match insn {
-        CBZ_Rt_ADDR_PCREL19(i)  => (i.0, false),
+        CBZ_Rt_ADDR_PCREL19(i) => (i.0, false),
         CBNZ_Rt_ADDR_PCREL19(i) => (i.0, true),
     };
-    let sf    = bit(raw, 31);
+    let sf = bit(raw, 31);
     let imm19 = bits(raw, 5, 19);
-    let rt    = bits(raw, 0, 5) as u8;
+    let rt = bits(raw, 0, 5) as u8;
     let offset = sign_extend(imm19 as u64, 19) << 2;
     let target = em.current_pc.wrapping_add(offset as u64);
 

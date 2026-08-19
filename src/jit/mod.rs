@@ -1,15 +1,15 @@
 pub mod code_cache;
 pub mod context;
-pub mod memory;
 pub mod dispatcher;
+pub mod memory;
 
 pub use context::CpuContext;
 pub use memory::Memory;
 
 use crate::error::{Error, Result};
-use crate::frontend::{translate_block_into, TranslateOptions};
+use crate::frontend::{TranslateOptions, translate_block_into};
 use crate::ir::Block;
-use crate::optimizer::{optimize_with_scratch, Scratch};
+use crate::optimizer::{Scratch, optimize_with_scratch};
 
 use code_cache::CodeCache;
 use dispatcher::JitFn;
@@ -41,18 +41,18 @@ pub enum ExitReason {
 }
 
 pub struct Jit {
-    pub cache:    CodeCache,
-    pub scratch:  Scratch,
-    pub block:    Block,
-    pub config:   JitConfig,
+    pub cache: CodeCache,
+    pub scratch: Scratch,
+    pub block: Block,
+    pub config: JitConfig,
 }
 
 impl Jit {
     pub fn new(config: JitConfig) -> Result<Self> {
         Ok(Self {
-            cache:   CodeCache::new(config.code_cache_bytes)?,
+            cache: CodeCache::new(config.code_cache_bytes)?,
             scratch: Scratch::new(),
-            block:   Block::new(0),
+            block: Block::new(0),
             config,
         })
     }
@@ -91,7 +91,8 @@ impl Jit {
                         "compile pc={pc:#x} insns={insns} ir_live={ir_live} host_bytes={host_bytes}",
                     );
                 }
-                self.cache.install(pc, &emitted.code, &emitted.chains, emitted.body_offset)?
+                self.cache
+                    .install(pc, &emitted.code, &emitted.chains, emitted.body_offset)?
             };
 
             let next_pc = unsafe {
@@ -107,12 +108,12 @@ impl Jit {
 
             if (next_pc >> 60) == 0xE {
                 let kind = next_pc & 0xFF;
-                let imm  = ((next_pc >> 8) & 0xFFFF) as u32;
+                let imm = ((next_pc >> 8) & 0xFFFF) as u32;
                 return Ok(match kind {
                     0x01 => ExitReason::Svc(imm),
                     0x02 => ExitReason::Brk(imm),
                     0x03 => ExitReason::Hvc(imm),
-                    _    => ExitReason::Stopped,
+                    _ => ExitReason::Stopped,
                 });
             }
             if next_pc == u64::MAX {

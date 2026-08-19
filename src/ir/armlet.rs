@@ -13,13 +13,13 @@ bitflags::bitflags! {
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct Armlet {
-    pub op:    Op,
-    pub ty:    Ty,
+    pub op: Op,
+    pub ty: Ty,
     pub flags: ArmletFlags,
-    pub prev:  u32,
-    pub next:  u32,
-    pub args:  [ValueRef; 4],
-    pub imm:   u64,
+    pub prev: u32,
+    pub next: u32,
+    pub args: [ValueRef; 4],
+    pub imm: u64,
 }
 
 pub const LINK_NONE: u32 = 0;
@@ -36,10 +36,10 @@ impl Armlet {
             op,
             ty,
             flags: ArmletFlags::empty(),
-            prev:  LINK_NONE,
-            next:  LINK_NONE,
-            args:  [ValueRef::NONE; 4],
-            imm:   0,
+            prev: LINK_NONE,
+            next: LINK_NONE,
+            args: [ValueRef::NONE; 4],
+            imm: 0,
         }
     }
 

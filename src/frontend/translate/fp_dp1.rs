@@ -6,21 +6,32 @@ use crate::ir::{Armlet, IrEmitter, Op, Ty};
 use crate::util::bits::bits;
 
 #[derive(Clone, Copy)]
-enum Kind { Mov, Neg, Abs, Sqrt, Fcvt }
+enum Kind {
+    Mov,
+    Neg,
+    Abs,
+    Sqrt,
+    Fcvt,
+}
 
 pub fn translate(em: &mut IrEmitter<'_>, insn: FLOATDP1) -> Result<InstStatus> {
     use FLOATDP1::*;
     let (raw, kind) = match insn {
-        FMOV_Fd_Fn(i)             => (i.0, Kind::Mov),
-        FMOV_Fd_S_S_Fn_S_S(i)     => (i.0, Kind::Mov),
-        FNEG_Fd_Fn(i)             => (i.0, Kind::Neg),
-        FNEG_Fd_S_S_Fn_S_S(i)     => (i.0, Kind::Neg),
-        FABS_Fd_Fn(i)             => (i.0, Kind::Abs),
-        FABS_Fd_S_S_Fn_S_S(i)     => (i.0, Kind::Abs),
-        FSQRT_Fd_Fn(i)            => (i.0, Kind::Sqrt),
-        FSQRT_Fd_S_S_Fn_S_S(i)    => (i.0, Kind::Sqrt),
-        FCVT_Fd_Fn(i)             => (i.0, Kind::Fcvt),
-        _ => return Err(Error::Unsupported { pc: em.current_pc, opcode: 0 }),
+        FMOV_Fd_Fn(i) => (i.0, Kind::Mov),
+        FMOV_Fd_S_S_Fn_S_S(i) => (i.0, Kind::Mov),
+        FNEG_Fd_Fn(i) => (i.0, Kind::Neg),
+        FNEG_Fd_S_S_Fn_S_S(i) => (i.0, Kind::Neg),
+        FABS_Fd_Fn(i) => (i.0, Kind::Abs),
+        FABS_Fd_S_S_Fn_S_S(i) => (i.0, Kind::Abs),
+        FSQRT_Fd_Fn(i) => (i.0, Kind::Sqrt),
+        FSQRT_Fd_S_S_Fn_S_S(i) => (i.0, Kind::Sqrt),
+        FCVT_Fd_Fn(i) => (i.0, Kind::Fcvt),
+        _ => {
+            return Err(Error::Unsupported {
+                pc: em.current_pc,
+                opcode: 0,
+            });
+        }
     };
 
     let ptype = bits(raw, 22, 2);
@@ -35,30 +46,54 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: FLOATDP1) -> Result<InstStatus> {
     let is_double = match ptype {
         0b00 => false,
         0b01 => true,
-        _ => return Err(Error::Unsupported { pc: em.current_pc, opcode: raw }),
+        _ => {
+            return Err(Error::Unsupported {
+                pc: em.current_pc,
+                opcode: raw,
+            });
+        }
     };
 
-    let src = if is_double { em.get_v_d(rn) } else { em.get_v_s(rn) };
+    let src = if is_double {
+        em.get_v_d(rn)
+    } else {
+        em.get_v_s(rn)
+    };
 
     let result = match kind {
         Kind::Mov => src,
         Kind::Neg => {
-            let (op, ty) = if is_double { (Op::Fneg64, Ty::U64) } else { (Op::Fneg32, Ty::U32) };
+            let (op, ty) = if is_double {
+                (Op::Fneg64, Ty::U64)
+            } else {
+                (Op::Fneg32, Ty::U32)
+            };
             em.push(Armlet::new(op, ty).with_args(&[src]))
         }
         Kind::Abs => {
-            let (op, ty) = if is_double { (Op::Fabs64, Ty::U64) } else { (Op::Fabs32, Ty::U32) };
+            let (op, ty) = if is_double {
+                (Op::Fabs64, Ty::U64)
+            } else {
+                (Op::Fabs32, Ty::U32)
+            };
             em.push(Armlet::new(op, ty).with_args(&[src]))
         }
         Kind::Sqrt => {
-            let (op, ty) = if is_double { (Op::Fsqrt64, Ty::U64) } else { (Op::Fsqrt32, Ty::U32) };
+            let (op, ty) = if is_double {
+                (Op::Fsqrt64, Ty::U64)
+            } else {
+                (Op::Fsqrt32, Ty::U32)
+            };
             em.push(Armlet::new(op, ty).with_args(&[src]))
         }
         Kind::Fcvt => unreachable!("handled before this match"),
     };
 
-    if is_double { em.set_v_d(rd, result); }
-    else { em.set_v_s(rd, result); }
+    if is_double {
+        em.set_v_d(rd, result);
+    } else {
+        em.set_v_s(rd, result);
+    }
     Ok(InstStatus::Continue)
 }
 
@@ -80,7 +115,12 @@ fn translate_fcvt(
             let r = em.push(Armlet::new(Op::FcvtDS, Ty::U32).with_args(&[src]));
             em.set_v_s(rd, r);
         }
-        _ => return Err(Error::Unsupported { pc: em.current_pc, opcode: 0 }),
+        _ => {
+            return Err(Error::Unsupported {
+                pc: em.current_pc,
+                opcode: 0,
+            });
+        }
     }
     Ok(InstStatus::Continue)
 }

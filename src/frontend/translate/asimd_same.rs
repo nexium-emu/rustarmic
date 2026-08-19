@@ -7,16 +7,45 @@ use crate::util::bits::{bit, bits};
 
 #[derive(Clone, Copy)]
 enum Kind {
-    Add, Sub, Mul,
-    And, Orr, Eor, Bic, Orn,
-    CmEq, CmGt, CmGe, CmHi, CmHs,
-    Bit, Bif, Bsl,
-    Smin, Smax, Umin, Umax,
-    Addp, Smaxp, Sminp, Umaxp, Uminp,
-    FAdd, FSub, FMul, FDiv, FMax, FMin,
-    FCmEq, FCmGt, FCmGe,
-    FMla, FMls,
-    FAddp, FMaxp, FMinp,
+    Add,
+    Sub,
+    Mul,
+    And,
+    Orr,
+    Eor,
+    Bic,
+    Orn,
+    CmEq,
+    CmGt,
+    CmGe,
+    CmHi,
+    CmHs,
+    Bit,
+    Bif,
+    Bsl,
+    Smin,
+    Smax,
+    Umin,
+    Umax,
+    Addp,
+    Smaxp,
+    Sminp,
+    Umaxp,
+    Uminp,
+    FAdd,
+    FSub,
+    FMul,
+    FDiv,
+    FMax,
+    FMin,
+    FCmEq,
+    FCmGt,
+    FCmGe,
+    FMla,
+    FMls,
+    FAddp,
+    FMaxp,
+    FMinp,
 }
 
 pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDSAME) -> Result<InstStatus> {
@@ -48,45 +77,50 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDSAME) -> Result<InstStatus> 
         UMAXP_Vd_Vn_Vm(i) => (i.0, Kind::Umaxp),
         UMINP_Vd_Vn_Vm(i) => (i.0, Kind::Uminp),
         FADDP_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => (i.0, Kind::FAddp),
-        FADDP_Vd_Vn_Vm(i)                => (i.0, Kind::FAddp),
+        FADDP_Vd_Vn_Vm(i) => (i.0, Kind::FAddp),
         FMAXP_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => (i.0, Kind::FMaxp),
-        FMAXP_Vd_Vn_Vm(i)                => (i.0, Kind::FMaxp),
+        FMAXP_Vd_Vn_Vm(i) => (i.0, Kind::FMaxp),
         FMINP_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => (i.0, Kind::FMinp),
-        FMINP_Vd_Vn_Vm(i)                => (i.0, Kind::FMinp),
+        FMINP_Vd_Vn_Vm(i) => (i.0, Kind::FMinp),
         FMAXNMP_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => (i.0, Kind::FMaxp),
-        FMAXNMP_Vd_Vn_Vm(i)                => (i.0, Kind::FMaxp),
+        FMAXNMP_Vd_Vn_Vm(i) => (i.0, Kind::FMaxp),
         FMINNMP_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => (i.0, Kind::FMinp),
-        FMINNMP_Vd_Vn_Vm(i)                => (i.0, Kind::FMinp),
+        FMINNMP_Vd_Vn_Vm(i) => (i.0, Kind::FMinp),
         FADD_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => (i.0, Kind::FAdd),
-        FADD_Vd_Vn_Vm(i)                => (i.0, Kind::FAdd),
+        FADD_Vd_Vn_Vm(i) => (i.0, Kind::FAdd),
         FSUB_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => (i.0, Kind::FSub),
-        FSUB_Vd_Vn_Vm(i)                => (i.0, Kind::FSub),
+        FSUB_Vd_Vn_Vm(i) => (i.0, Kind::FSub),
         FMUL_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => (i.0, Kind::FMul),
-        FMUL_Vd_Vn_Vm(i)                => (i.0, Kind::FMul),
+        FMUL_Vd_Vn_Vm(i) => (i.0, Kind::FMul),
         FDIV_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => (i.0, Kind::FDiv),
-        FDIV_Vd_Vn_Vm(i)                => (i.0, Kind::FDiv),
+        FDIV_Vd_Vn_Vm(i) => (i.0, Kind::FDiv),
         FMAX_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => (i.0, Kind::FMax),
-        FMAX_Vd_Vn_Vm(i)                => (i.0, Kind::FMax),
+        FMAX_Vd_Vn_Vm(i) => (i.0, Kind::FMax),
         FMIN_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => (i.0, Kind::FMin),
-        FMIN_Vd_Vn_Vm(i)                => (i.0, Kind::FMin),
+        FMIN_Vd_Vn_Vm(i) => (i.0, Kind::FMin),
         FCMEQ_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => (i.0, Kind::FCmEq),
-        FCMEQ_Vd_Vn_Vm(i)                => (i.0, Kind::FCmEq),
+        FCMEQ_Vd_Vn_Vm(i) => (i.0, Kind::FCmEq),
         FCMGT_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => (i.0, Kind::FCmGt),
-        FCMGT_Vd_Vn_Vm(i)                => (i.0, Kind::FCmGt),
+        FCMGT_Vd_Vn_Vm(i) => (i.0, Kind::FCmGt),
         FCMGE_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => (i.0, Kind::FCmGe),
-        FCMGE_Vd_Vn_Vm(i)                => (i.0, Kind::FCmGe),
-        FMLA_Vd_V_2S_Vn_V_2S_Vm_V_2S(i)  => (i.0, Kind::FMla),
-        FMLA_Vd_Vn_Vm(i)                 => (i.0, Kind::FMla),
-        FMLS_Vd_V_2S_Vn_V_2S_Vm_V_2S(i)  => (i.0, Kind::FMls),
-        FMLS_Vd_Vn_Vm(i)                 => (i.0, Kind::FMls),
-        _ => return Err(Error::Unsupported { pc: em.current_pc, opcode: 0 }),
+        FCMGE_Vd_Vn_Vm(i) => (i.0, Kind::FCmGe),
+        FMLA_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => (i.0, Kind::FMla),
+        FMLA_Vd_Vn_Vm(i) => (i.0, Kind::FMla),
+        FMLS_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => (i.0, Kind::FMls),
+        FMLS_Vd_Vn_Vm(i) => (i.0, Kind::FMls),
+        _ => {
+            return Err(Error::Unsupported {
+                pc: em.current_pc,
+                opcode: 0,
+            });
+        }
     };
 
-    let q    = bit(raw, 30) == 1;
+    let q = bit(raw, 30) == 1;
     let size = bits(raw, 22, 2);
-    let rm   = bits(raw, 16, 5) as u8;
-    let rn   = bits(raw, 5,  5) as u8;
-    let rd   = bits(raw, 0,  5) as u8;
+    let rm = bits(raw, 16, 5) as u8;
+    let rn = bits(raw, 5, 5) as u8;
+    let rd = bits(raw, 0, 5) as u8;
 
     let vn = em.get_v_q(rn);
     let vm = em.get_v_q(rm);
@@ -96,7 +130,10 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDSAME) -> Result<InstStatus> 
         Kind::Sub => em.vec_sub(vn, vm, size, q),
         Kind::Mul => {
             if size == 0 {
-                return Err(Error::Unsupported { pc: em.current_pc, opcode: raw });
+                return Err(Error::Unsupported {
+                    pc: em.current_pc,
+                    opcode: raw,
+                });
             }
             em.vec_mul(vn, vm, size, q)
         }
@@ -119,20 +156,18 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDSAME) -> Result<InstStatus> 
                 _ => unreachable!(),
             }
         }
-        Kind::Smin | Kind::Smax | Kind::Umin | Kind::Umax => {
-            match kind {
-                Kind::Smin => em.vec_smin(vn, vm, size, q),
-                Kind::Smax => em.vec_smax(vn, vm, size, q),
-                Kind::Umin => em.vec_umin(vn, vm, size, q),
-                Kind::Umax => em.vec_umax(vn, vm, size, q),
-                _ => unreachable!(),
-            }
-        }
+        Kind::Smin | Kind::Smax | Kind::Umin | Kind::Umax => match kind {
+            Kind::Smin => em.vec_smin(vn, vm, size, q),
+            Kind::Smax => em.vec_smax(vn, vm, size, q),
+            Kind::Umin => em.vec_umin(vn, vm, size, q),
+            Kind::Umax => em.vec_umax(vn, vm, size, q),
+            _ => unreachable!(),
+        },
         Kind::Addp | Kind::Smaxp | Kind::Sminp | Kind::Umaxp | Kind::Uminp => {
             let u1 = em.vec_uzp1(vn, vm, size, q);
             let u2 = em.vec_uzp2(vn, vm, size, q);
             match kind {
-                Kind::Addp  => em.vec_add(u1, u2, size, q),
+                Kind::Addp => em.vec_add(u1, u2, size, q),
                 Kind::Smaxp => em.vec_smax(u1, u2, size, q),
                 Kind::Sminp => em.vec_smin(u1, u2, size, q),
                 Kind::Umaxp => em.vec_umax(u1, u2, size, q),
@@ -143,7 +178,10 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDSAME) -> Result<InstStatus> 
         Kind::FAddp | Kind::FMaxp | Kind::FMinp => {
             let double = bit(raw, 22) == 1;
             if double && !q {
-                return Err(Error::Decode { pc: em.current_pc, opcode: raw });
+                return Err(Error::Decode {
+                    pc: em.current_pc,
+                    opcode: raw,
+                });
             }
             let lane = if double { 3 } else { 2 };
             let u1 = em.vec_uzp1(vn, vm, lane, q);
@@ -155,19 +193,29 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDSAME) -> Result<InstStatus> 
                 _ => unreachable!(),
             }
         }
-        Kind::FAdd | Kind::FSub | Kind::FMul | Kind::FDiv | Kind::FMax | Kind::FMin
-        | Kind::FCmEq | Kind::FCmGt | Kind::FCmGe => {
+        Kind::FAdd
+        | Kind::FSub
+        | Kind::FMul
+        | Kind::FDiv
+        | Kind::FMax
+        | Kind::FMin
+        | Kind::FCmEq
+        | Kind::FCmGt
+        | Kind::FCmGe => {
             let double = bit(raw, 22) == 1;
             if double && !q {
-                return Err(Error::Decode { pc: em.current_pc, opcode: raw });
+                return Err(Error::Decode {
+                    pc: em.current_pc,
+                    opcode: raw,
+                });
             }
             match kind {
-                Kind::FAdd  => em.vec_fadd (vn, vm, double, q),
-                Kind::FSub  => em.vec_fsub (vn, vm, double, q),
-                Kind::FMul  => em.vec_fmul (vn, vm, double, q),
-                Kind::FDiv  => em.vec_fdiv (vn, vm, double, q),
-                Kind::FMax  => em.vec_fmax (vn, vm, double, q),
-                Kind::FMin  => em.vec_fmin (vn, vm, double, q),
+                Kind::FAdd => em.vec_fadd(vn, vm, double, q),
+                Kind::FSub => em.vec_fsub(vn, vm, double, q),
+                Kind::FMul => em.vec_fmul(vn, vm, double, q),
+                Kind::FDiv => em.vec_fdiv(vn, vm, double, q),
+                Kind::FMax => em.vec_fmax(vn, vm, double, q),
+                Kind::FMin => em.vec_fmin(vn, vm, double, q),
                 Kind::FCmEq => em.vec_fcmeq(vn, vm, double, q),
                 Kind::FCmGt => em.vec_fcmgt(vn, vm, double, q),
                 Kind::FCmGe => em.vec_fcmge(vn, vm, double, q),
@@ -177,7 +225,10 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDSAME) -> Result<InstStatus> 
         Kind::FMla | Kind::FMls => {
             let double = bit(raw, 22) == 1;
             if double && !q {
-                return Err(Error::Decode { pc: em.current_pc, opcode: raw });
+                return Err(Error::Decode {
+                    pc: em.current_pc,
+                    opcode: raw,
+                });
             }
             let vd_prev = em.get_v_q(rd);
             match kind {

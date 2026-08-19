@@ -14,7 +14,11 @@ const XMM_SAVE_BYTES: i32 = 0;
 const fn frame_size() -> i32 {
     let raw = BLOCK_SCRATCH_BYTES + XMM_SAVE_BYTES;
     let rem = raw % 16;
-    if rem == 8 { raw } else { raw + (8 + 16 - rem) % 16 }
+    if rem == 8 {
+        raw
+    } else {
+        raw + (8 + 16 - rem) % 16
+    }
 }
 
 const THUNK_FRAME: i32 = frame_size();
@@ -22,12 +26,12 @@ const THUNK_FRAME: i32 = frame_size();
 #[cfg(target_os = "windows")]
 const ARG_BLOCK: AsmRegister64 = rcx;
 #[cfg(target_os = "windows")]
-const ARG_CTX:   AsmRegister64 = rdx;
+const ARG_CTX: AsmRegister64 = rdx;
 
 #[cfg(not(target_os = "windows"))]
 const ARG_BLOCK: AsmRegister64 = rdi;
 #[cfg(not(target_os = "windows"))]
-const ARG_CTX:   AsmRegister64 = rsi;
+const ARG_CTX: AsmRegister64 = rsi;
 
 pub fn emit_thunk_bytes() -> Result<Vec<u8>> {
     let mut asm = CodeAssembler::new(64).map_err(into_err)?;
@@ -46,11 +50,20 @@ pub fn emit_thunk_bytes() -> Result<Vec<u8>> {
     {
         for i in 0..10i32 {
             let xmm_reg = match i {
-                0 => xmm6, 1 => xmm7, 2 => xmm8, 3 => xmm9, 4 => xmm10,
-                5 => xmm11, 6 => xmm12, 7 => xmm13, 8 => xmm14, 9 => xmm15,
+                0 => xmm6,
+                1 => xmm7,
+                2 => xmm8,
+                3 => xmm9,
+                4 => xmm10,
+                5 => xmm11,
+                6 => xmm12,
+                7 => xmm13,
+                8 => xmm14,
+                9 => xmm15,
                 _ => unreachable!(),
             };
-            asm.movdqu(xmmword_ptr(rsp + i * 16), xmm_reg).map_err(into_err)?;
+            asm.movdqu(xmmword_ptr(rsp + i * 16), xmm_reg)
+                .map_err(into_err)?;
         }
     }
 
@@ -61,11 +74,20 @@ pub fn emit_thunk_bytes() -> Result<Vec<u8>> {
     {
         for i in 0..10i32 {
             let xmm_reg = match i {
-                0 => xmm6, 1 => xmm7, 2 => xmm8, 3 => xmm9, 4 => xmm10,
-                5 => xmm11, 6 => xmm12, 7 => xmm13, 8 => xmm14, 9 => xmm15,
+                0 => xmm6,
+                1 => xmm7,
+                2 => xmm8,
+                3 => xmm9,
+                4 => xmm10,
+                5 => xmm11,
+                6 => xmm12,
+                7 => xmm13,
+                8 => xmm14,
+                9 => xmm15,
                 _ => unreachable!(),
             };
-            asm.movdqu(xmm_reg, xmmword_ptr(rsp + i * 16)).map_err(into_err)?;
+            asm.movdqu(xmm_reg, xmmword_ptr(rsp + i * 16))
+                .map_err(into_err)?;
         }
     }
 

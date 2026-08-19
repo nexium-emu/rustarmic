@@ -7,19 +7,28 @@ use crate::ir::IrEmitter;
 use crate::util::bits::{bit, bits};
 
 #[derive(Clone, Copy)]
-enum Kind { Madd, Msub, Smaddl, Umaddl, Smsubl, Umsubl, Umulh, Smulh }
+enum Kind {
+    Madd,
+    Msub,
+    Smaddl,
+    Umaddl,
+    Smsubl,
+    Umsubl,
+    Umulh,
+    Smulh,
+}
 
 pub fn translate(em: &mut IrEmitter<'_>, insn: DP_3SRC) -> Result<InstStatus> {
     use DP_3SRC::*;
     let (raw, kind) = match insn {
-        MADD_Rd_Rn_Rm_Ra(i)   => (i.0, Kind::Madd),
-        MSUB_Rd_Rn_Rm_Ra(i)   => (i.0, Kind::Msub),
+        MADD_Rd_Rn_Rm_Ra(i) => (i.0, Kind::Madd),
+        MSUB_Rd_Rn_Rm_Ra(i) => (i.0, Kind::Msub),
         SMADDL_Rd_Rn_Rm_Ra(i) => (i.0, Kind::Smaddl),
         UMADDL_Rd_Rn_Rm_Ra(i) => (i.0, Kind::Umaddl),
         SMSUBL_Rd_Rn_Rm_Ra(i) => (i.0, Kind::Smsubl),
         UMSUBL_Rd_Rn_Rm_Ra(i) => (i.0, Kind::Umsubl),
-        UMULH_Rd_Rn_Rm(i)     => (i.0, Kind::Umulh),
-        SMULH_Rd_Rn_Rm(i)     => (i.0, Kind::Smulh),
+        UMULH_Rd_Rn_Rm(i) => (i.0, Kind::Umulh),
+        SMULH_Rd_Rn_Rm(i) => (i.0, Kind::Smulh),
     };
 
     let sf = bit(raw, 31);
@@ -34,10 +43,21 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: DP_3SRC) -> Result<InstStatus> {
             let n = em.get_gpr(rn, size);
             let m = em.get_gpr(rm, size);
             let a = em.get_gpr(ra, size);
-            let prod = em.push(crate::ir::Armlet::new(
-                if sf == 1 { crate::ir::Op::Mul64 } else { crate::ir::Op::Mul32 },
-                if sf == 1 { crate::ir::Ty::U64 } else { crate::ir::Ty::U32 },
-            ).with_args(&[n, m]));
+            let prod = em.push(
+                crate::ir::Armlet::new(
+                    if sf == 1 {
+                        crate::ir::Op::Mul64
+                    } else {
+                        crate::ir::Op::Mul32
+                    },
+                    if sf == 1 {
+                        crate::ir::Ty::U64
+                    } else {
+                        crate::ir::Ty::U32
+                    },
+                )
+                .with_args(&[n, m]),
+            );
             let result = match kind {
                 Kind::Madd => em.add(a, prod, size),
                 Kind::Msub => em.sub(a, prod, size),
@@ -53,8 +73,7 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: DP_3SRC) -> Result<InstStatus> {
             } else {
                 crate::ir::Op::SMulH64
             };
-            let hi = em.push(crate::ir::Armlet::new(op, crate::ir::Ty::U64)
-                .with_args(&[n, m]));
+            let hi = em.push(crate::ir::Armlet::new(op, crate::ir::Ty::U64).with_args(&[n, m]));
             em.set_x(rd, hi);
             let _ = ra;
         }
@@ -66,8 +85,10 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: DP_3SRC) -> Result<InstStatus> {
 
             let n64 = widen_w_to_x(em, n, signed);
             let m64 = widen_w_to_x(em, m, signed);
-            let prod = em.push(crate::ir::Armlet::new(crate::ir::Op::Mul64, crate::ir::Ty::U64)
-                .with_args(&[n64, m64]));
+            let prod = em.push(
+                crate::ir::Armlet::new(crate::ir::Op::Mul64, crate::ir::Ty::U64)
+                    .with_args(&[n64, m64]),
+            );
             let result = match kind {
                 Kind::Smaddl | Kind::Umaddl => em.add(a, prod, RegSize::X),
                 Kind::Smsubl | Kind::Umsubl => em.sub(a, prod, RegSize::X),
@@ -79,7 +100,11 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: DP_3SRC) -> Result<InstStatus> {
     Ok(InstStatus::Continue)
 }
 
-fn widen_w_to_x(em: &mut IrEmitter<'_>, v: crate::ir::ValueRef, signed: bool) -> crate::ir::ValueRef {
+fn widen_w_to_x(
+    em: &mut IrEmitter<'_>,
+    v: crate::ir::ValueRef,
+    signed: bool,
+) -> crate::ir::ValueRef {
     let mask = em.const_u64(0xFFFF_FFFF);
     let masked = em.and(v, mask, RegSize::X);
     if signed {

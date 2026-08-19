@@ -22,38 +22,160 @@ fn size_from_bit30(raw: u32) -> (u32, bool) {
 pub fn translate(em: &mut IrEmitter<'_>, insn: LDSTEXCL) -> Result<InstStatus> {
     use LDSTEXCL::*;
     let (raw, kind) = match insn {
-        LDXRB_Rt_ADDR_SIMPLE(i)     => (i.0, Kind::LoadEx { bytes: 1, target_x: false }),
-        LDAXRB_Rt_ADDR_SIMPLE(i)    => (i.0, Kind::LoadEx { bytes: 1, target_x: false }),
-        LDXRH_Rt_ADDR_SIMPLE(i)     => (i.0, Kind::LoadEx { bytes: 2, target_x: false }),
-        LDAXRH_Rt_ADDR_SIMPLE(i)    => (i.0, Kind::LoadEx { bytes: 2, target_x: false }),
-        LDXR_Rt_ADDR_SIMPLE(i)      => { let (b, tx) = size_from_bit30(i.0); (i.0, Kind::LoadEx { bytes: b, target_x: tx }) }
-        LDAXR_Rt_ADDR_SIMPLE(i)     => { let (b, tx) = size_from_bit30(i.0); (i.0, Kind::LoadEx { bytes: b, target_x: tx }) }
+        LDXRB_Rt_ADDR_SIMPLE(i) => (
+            i.0,
+            Kind::LoadEx {
+                bytes: 1,
+                target_x: false,
+            },
+        ),
+        LDAXRB_Rt_ADDR_SIMPLE(i) => (
+            i.0,
+            Kind::LoadEx {
+                bytes: 1,
+                target_x: false,
+            },
+        ),
+        LDXRH_Rt_ADDR_SIMPLE(i) => (
+            i.0,
+            Kind::LoadEx {
+                bytes: 2,
+                target_x: false,
+            },
+        ),
+        LDAXRH_Rt_ADDR_SIMPLE(i) => (
+            i.0,
+            Kind::LoadEx {
+                bytes: 2,
+                target_x: false,
+            },
+        ),
+        LDXR_Rt_ADDR_SIMPLE(i) => {
+            let (b, tx) = size_from_bit30(i.0);
+            (
+                i.0,
+                Kind::LoadEx {
+                    bytes: b,
+                    target_x: tx,
+                },
+            )
+        }
+        LDAXR_Rt_ADDR_SIMPLE(i) => {
+            let (b, tx) = size_from_bit30(i.0);
+            (
+                i.0,
+                Kind::LoadEx {
+                    bytes: b,
+                    target_x: tx,
+                },
+            )
+        }
 
-        STXRB_Rs_Rt_ADDR_SIMPLE(i)  => (i.0, Kind::StoreEx { bytes: 1 }),
+        STXRB_Rs_Rt_ADDR_SIMPLE(i) => (i.0, Kind::StoreEx { bytes: 1 }),
         STLXRB_Rs_Rt_ADDR_SIMPLE(i) => (i.0, Kind::StoreEx { bytes: 1 }),
-        STXRH_Rs_Rt_ADDR_SIMPLE(i)  => (i.0, Kind::StoreEx { bytes: 2 }),
+        STXRH_Rs_Rt_ADDR_SIMPLE(i) => (i.0, Kind::StoreEx { bytes: 2 }),
         STLXRH_Rs_Rt_ADDR_SIMPLE(i) => (i.0, Kind::StoreEx { bytes: 2 }),
-        STXR_Rs_Rt_ADDR_SIMPLE(i)   => { let (b, _) = size_from_bit30(i.0); (i.0, Kind::StoreEx { bytes: b }) }
-        STLXR_Rs_Rt_ADDR_SIMPLE(i)  => { let (b, _) = size_from_bit30(i.0); (i.0, Kind::StoreEx { bytes: b }) }
+        STXR_Rs_Rt_ADDR_SIMPLE(i) => {
+            let (b, _) = size_from_bit30(i.0);
+            (i.0, Kind::StoreEx { bytes: b })
+        }
+        STLXR_Rs_Rt_ADDR_SIMPLE(i) => {
+            let (b, _) = size_from_bit30(i.0);
+            (i.0, Kind::StoreEx { bytes: b })
+        }
 
-        LDARB_Rt_ADDR_SIMPLE(i)     => (i.0, Kind::Load { bytes: 1, target_x: false }),
-        LDAPRB_Rt_ADDR_SIMPLE(i)    => (i.0, Kind::Load { bytes: 1, target_x: false }),
-        LDLARB_Rt_ADDR_SIMPLE(i)    => (i.0, Kind::Load { bytes: 1, target_x: false }),
-        LDARH_Rt_ADDR_SIMPLE(i)     => (i.0, Kind::Load { bytes: 2, target_x: false }),
-        LDAPRH_Rt_ADDR_SIMPLE(i)    => (i.0, Kind::Load { bytes: 2, target_x: false }),
-        LDLARH_Rt_ADDR_SIMPLE(i)    => (i.0, Kind::Load { bytes: 2, target_x: false }),
-        LDAR_Rt_ADDR_SIMPLE(i)      => { let (b, tx) = size_from_bit30(i.0); (i.0, Kind::Load { bytes: b, target_x: tx }) }
-        LDAPR_Rt_ADDR_SIMPLE(i)     => { let (b, tx) = size_from_bit30(i.0); (i.0, Kind::Load { bytes: b, target_x: tx }) }
-        LDLAR_Rt_ADDR_SIMPLE(i)     => { let (b, tx) = size_from_bit30(i.0); (i.0, Kind::Load { bytes: b, target_x: tx }) }
+        LDARB_Rt_ADDR_SIMPLE(i) => (
+            i.0,
+            Kind::Load {
+                bytes: 1,
+                target_x: false,
+            },
+        ),
+        LDAPRB_Rt_ADDR_SIMPLE(i) => (
+            i.0,
+            Kind::Load {
+                bytes: 1,
+                target_x: false,
+            },
+        ),
+        LDLARB_Rt_ADDR_SIMPLE(i) => (
+            i.0,
+            Kind::Load {
+                bytes: 1,
+                target_x: false,
+            },
+        ),
+        LDARH_Rt_ADDR_SIMPLE(i) => (
+            i.0,
+            Kind::Load {
+                bytes: 2,
+                target_x: false,
+            },
+        ),
+        LDAPRH_Rt_ADDR_SIMPLE(i) => (
+            i.0,
+            Kind::Load {
+                bytes: 2,
+                target_x: false,
+            },
+        ),
+        LDLARH_Rt_ADDR_SIMPLE(i) => (
+            i.0,
+            Kind::Load {
+                bytes: 2,
+                target_x: false,
+            },
+        ),
+        LDAR_Rt_ADDR_SIMPLE(i) => {
+            let (b, tx) = size_from_bit30(i.0);
+            (
+                i.0,
+                Kind::Load {
+                    bytes: b,
+                    target_x: tx,
+                },
+            )
+        }
+        LDAPR_Rt_ADDR_SIMPLE(i) => {
+            let (b, tx) = size_from_bit30(i.0);
+            (
+                i.0,
+                Kind::Load {
+                    bytes: b,
+                    target_x: tx,
+                },
+            )
+        }
+        LDLAR_Rt_ADDR_SIMPLE(i) => {
+            let (b, tx) = size_from_bit30(i.0);
+            (
+                i.0,
+                Kind::Load {
+                    bytes: b,
+                    target_x: tx,
+                },
+            )
+        }
 
-        STLRB_Rt_ADDR_SIMPLE(i)     => (i.0, Kind::Store { bytes: 1 }),
-        STLLRB_Rt_ADDR_SIMPLE(i)    => (i.0, Kind::Store { bytes: 1 }),
-        STLRH_Rt_ADDR_SIMPLE(i)     => (i.0, Kind::Store { bytes: 2 }),
-        STLLRH_Rt_ADDR_SIMPLE(i)    => (i.0, Kind::Store { bytes: 2 }),
-        STLR_Rt_ADDR_SIMPLE(i)      => { let (b, _) = size_from_bit30(i.0); (i.0, Kind::Store { bytes: b }) }
-        STLLR_Rt_ADDR_SIMPLE(i)     => { let (b, _) = size_from_bit30(i.0); (i.0, Kind::Store { bytes: b }) }
+        STLRB_Rt_ADDR_SIMPLE(i) => (i.0, Kind::Store { bytes: 1 }),
+        STLLRB_Rt_ADDR_SIMPLE(i) => (i.0, Kind::Store { bytes: 1 }),
+        STLRH_Rt_ADDR_SIMPLE(i) => (i.0, Kind::Store { bytes: 2 }),
+        STLLRH_Rt_ADDR_SIMPLE(i) => (i.0, Kind::Store { bytes: 2 }),
+        STLR_Rt_ADDR_SIMPLE(i) => {
+            let (b, _) = size_from_bit30(i.0);
+            (i.0, Kind::Store { bytes: b })
+        }
+        STLLR_Rt_ADDR_SIMPLE(i) => {
+            let (b, _) = size_from_bit30(i.0);
+            (i.0, Kind::Store { bytes: b })
+        }
 
-        _ => return Err(Error::Unsupported { pc: em.current_pc, opcode: 0 }),
+        _ => {
+            return Err(Error::Unsupported {
+                pc: em.current_pc,
+                opcode: 0,
+            });
+        }
     };
 
     let rn = bits(raw, 5, 5) as u8;
@@ -63,14 +185,18 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: LDSTEXCL) -> Result<InstStatus> {
     match kind {
         Kind::LoadEx { bytes, target_x } => {
             let (op, ty) = match bytes {
-                1 => (Op::LoadEx8,  Ty::U32),
+                1 => (Op::LoadEx8, Ty::U32),
                 2 => (Op::LoadEx16, Ty::U32),
                 4 => (Op::LoadEx32, Ty::U32),
                 8 => (Op::LoadEx64, Ty::U64),
                 _ => unreachable!(),
             };
             let value = em.push(Armlet::new(op, ty).with_args(&[addr]));
-            if target_x { em.set_x(rt, value); } else { em.set_w(rt, value); }
+            if target_x {
+                em.set_x(rt, value);
+            } else {
+                em.set_w(rt, value);
+            }
         }
         Kind::StoreEx { bytes } => {
             let rs = bits(raw, 16, 5) as u8;
@@ -84,11 +210,17 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: LDSTEXCL) -> Result<InstStatus> {
                 _ => unreachable!(),
             };
             let result = em.push(Armlet::new(op, Ty::U32).with_args(&[addr, val]));
-            if rs != ZR_ENCODING { em.set_w(rs, result); }
+            if rs != ZR_ENCODING {
+                em.set_w(rs, result);
+            }
         }
         Kind::Load { bytes, target_x } => {
             let v = em.load(addr, bytes);
-            if target_x { em.set_x(rt, v); } else { em.set_w(rt, v); }
+            if target_x {
+                em.set_x(rt, v);
+            } else {
+                em.set_w(rt, v);
+            }
         }
         Kind::Store { bytes } => {
             let val_size = if bytes == 8 { RegSize::X } else { RegSize::W };

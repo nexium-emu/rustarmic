@@ -8,13 +8,13 @@ use crate::util::bits::bits;
 pub fn translate(em: &mut IrEmitter<'_>, insn: FLOATIMM) -> Result<InstStatus> {
     use FLOATIMM::*;
     let raw = match insn {
-        FMOV_Fd_FPIMM(i)         => i.0,
-        FMOV_Fd_S_S_FPIMM(i)     => i.0,
+        FMOV_Fd_FPIMM(i) => i.0,
+        FMOV_Fd_S_S_FPIMM(i) => i.0,
     };
 
     let ptype = bits(raw, 22, 2);
-    let imm8  = bits(raw, 13, 8) as u8;
-    let rd    = bits(raw, 0, 5) as u8;
+    let imm8 = bits(raw, 13, 8) as u8;
+    let rd = bits(raw, 0, 5) as u8;
 
     match ptype {
         0b00 => {
@@ -27,7 +27,12 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: FLOATIMM) -> Result<InstStatus> {
             let v = em.const_u64(bits64);
             em.set_v_d(rd, v);
         }
-        _ => return Err(Error::Unsupported { pc: em.current_pc, opcode: raw }),
+        _ => {
+            return Err(Error::Unsupported {
+                pc: em.current_pc,
+                opcode: raw,
+            });
+        }
     }
     Ok(InstStatus::Continue)
 }

@@ -12,7 +12,9 @@ static SERIAL: Mutex<()> = Mutex::new(());
 
 fn mem_init(size: usize) {
     let mut m = MEM.lock().unwrap();
-    if m.len() < size { m.resize(size, 0); }
+    if m.len() < size {
+        m.resize(size, 0);
+    }
 }
 
 unsafe extern "C" fn hk_read(ctx: *mut CpuContext, addr: u64, size: u8) {
@@ -25,7 +27,9 @@ unsafe extern "C" fn hk_read(ctx: *mut CpuContext, addr: u64, size: u8) {
     }
     let lo = u64::from_le_bytes(buf[..8].try_into().unwrap());
     let hi = u64::from_le_bytes(buf[8..].try_into().unwrap());
-    unsafe { (*ctx).io_value = [lo, hi]; }
+    unsafe {
+        (*ctx).io_value = [lo, hi];
+    }
 }
 unsafe extern "C" fn hk_write(ctx: *mut CpuContext, addr: u64, size: u8) {
     let n = size as usize;
@@ -39,21 +43,28 @@ unsafe extern "C" fn hk_write(ctx: *mut CpuContext, addr: u64, size: u8) {
 }
 
 fn install_hooks(ctx: &mut CpuContext) {
-    ctx.mem_read  = hk_read;
+    ctx.mem_read = hk_read;
     ctx.mem_write = hk_write;
 }
 
 fn build_code(words: &[u32]) -> Vec<u8> {
     let mut v = Vec::with_capacity(words.len() * 4);
-    for w in words { v.extend_from_slice(&w.to_le_bytes()); }
+    for w in words {
+        v.extend_from_slice(&w.to_le_bytes());
+    }
     v
 }
 
-struct CodeMem { bytes: Vec<u8>, base: u64 }
+struct CodeMem {
+    bytes: Vec<u8>,
+    base: u64,
+}
 impl Memory for CodeMem {
     fn fetch_inst(&mut self, addr: u64) -> Option<u32> {
         let off = addr.checked_sub(self.base)? as usize;
-        if off + 4 > self.bytes.len() { return None; }
+        if off + 4 > self.bytes.len() {
+            return None;
+        }
         let mut buf = [0u8; 4];
         buf.copy_from_slice(&self.bytes[off..off + 4]);
         Some(u32::from_le_bytes(buf))
@@ -62,22 +73,17 @@ impl Memory for CodeMem {
 
 fn run(code: &[u32], ctx: &mut CpuContext) -> ExitReason {
     install_hooks(ctx);
-    let mut mem = CodeMem { bytes: build_code(code), base: CODE_BASE };
+    let mut mem = CodeMem {
+        bytes: build_code(code),
+        base: CODE_BASE,
+    };
     let mut jit = Jit::new(JitConfig::default()).expect("jit init");
     jit.run(ctx, &mut mem).unwrap_or(ExitReason::Stopped)
 }
 
 const FIB_ITER: &[u32] = &[
-    0x2A0003E2,
-    0x52800000,
-    0x52800021,
-    0x340000C2,
-    0x0B010003,
-    0x2A0103E0,
-    0x2A0303E1,
-    0x51000442,
-    0x17FFFFFB,
-    0xD4200000,
+    0x2A0003E2, 0x52800000, 0x52800021, 0x340000C2, 0x0B010003, 0x2A0103E0, 0x2A0303E1, 0x51000442,
+    0x17FFFFFB, 0xD4200000,
 ];
 
 fn run_fib(n: u32) -> u64 {
@@ -85,7 +91,10 @@ fn run_fib(n: u32) -> u64 {
     ctx.pc = CODE_BASE;
     ctx.x[0] = n as u64;
     let exit = run(FIB_ITER, &mut ctx);
-    assert!(matches!(exit, ExitReason::Brk(_)), "fib({n}): expected BRK, got {exit:?}");
+    assert!(
+        matches!(exit, ExitReason::Brk(_)),
+        "fib({n}): expected BRK, got {exit:?}"
+    );
     ctx.x[0]
 }
 
@@ -107,14 +116,7 @@ fn fibonacci_iterative_larger() {
 }
 
 const SUM_ARRAY: &[u32] = &[
-    0xD2800002,
-    0xB40000C1,
-    0xB9400003,
-    0x8B030042,
-    0x91001000,
-    0xD1000421,
-    0x17FFFFFB,
-    0xAA0203E0,
+    0xD2800002, 0xB40000C1, 0xB9400003, 0x8B030042, 0x91001000, 0xD1000421, 0x17FFFFFB, 0xAA0203E0,
     0xD4200000,
 ];
 
@@ -134,7 +136,10 @@ fn sum_small_array() {
     ctx.x[0] = DATA_BASE;
     ctx.x[1] = 5;
     let exit = run(SUM_ARRAY, &mut ctx);
-    assert!(matches!(exit, ExitReason::Brk(_)), "sum: expected BRK, got {exit:?}");
+    assert!(
+        matches!(exit, ExitReason::Brk(_)),
+        "sum: expected BRK, got {exit:?}"
+    );
     assert_eq!(ctx.x[0], 1 + 2 + 3 + 4 + 5);
 }
 
@@ -164,19 +169,8 @@ fn sum_thousand_array() {
 }
 
 const FIB_TO_MEM: &[u32] = &[
-    0x2A0003E2,
-    0x52800000,
-    0x52800021,
-    0xAA0603E3,
-    0x34000102,
-    0xB9000060,
-    0x91001063,
-    0x0B010004,
-    0x2A0103E0,
-    0x2A0403E1,
-    0x51000442,
-    0x17FFFFF9,
-    0xD4200000,
+    0x2A0003E2, 0x52800000, 0x52800021, 0xAA0603E3, 0x34000102, 0xB9000060, 0x91001063, 0x0B010004,
+    0x2A0103E0, 0x2A0403E1, 0x51000442, 0x17FFFFF9, 0xD4200000,
 ];
 
 #[test]
@@ -185,7 +179,9 @@ fn fib_sequence_to_memory() {
     mem_init(0x1000);
     {
         let mut m = MEM.lock().unwrap();
-        for b in m.iter_mut() { *b = 0xAA; }
+        for b in m.iter_mut() {
+            *b = 0xAA;
+        }
     }
 
     let mut ctx = CpuContext::default();
