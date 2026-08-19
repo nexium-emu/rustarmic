@@ -1148,7 +1148,7 @@ fn emit_op_vec_sshr_imm(
         2 => asm.psrad(working, shift as i32)?,
         3 => {
             asm.pxor(xmm1, xmm1)?;
-            asm.pcmpgtq(xmm1, working)?;
+            emit_pcmpgtq_sse41(asm, xmm1, working)?;
             asm.psllq(xmm1, (64 - shift) as i32)?;
             asm.psrlq(working, shift as i32)?;
             asm.por(working, xmm1)?;
@@ -1159,6 +1159,56 @@ fn emit_op_vec_sshr_imm(
         asm.movq(working, working)?;
     }
     store_xmm_q(asm, alloc, d, working)
+}
+
+/// SSE4.1 has no packed signed 64-bit compare (PCMPGTQ is SSE4.2).  Keep the
+/// baseline at SSE4.1 by comparing the high and low 32-bit halves after
+/// flipping their sign bits.  XMM4..XMM7 are scratch-only registers in the
+/// allocator; preserve them so spilled vector values remain live.
+fn emit_pcmpgtq_sse41(
+    asm: &mut CodeAssembler,
+    dst: AsmRegisterXmm,
+    src: AsmRegisterXmm,
+) -> Result<()> {
+    asm.sub(rsp, 96)?;
+    for (i, reg) in [xmm4, xmm5, xmm6, xmm7].into_iter().enumerate() {
+        asm.movdqu(xmmword_ptr(rsp + (i as i32) * 16), reg)?;
+    }
+    asm.movdqu(xmmword_ptr(rsp + 64), dst)?;
+    asm.movdqu(xmmword_ptr(rsp + 80), src)?;
+
+    // High 32-bit signed compare (after sign-bit flip) and equality mask.
+    asm.movdqa(xmm4, dst)?;
+    asm.movdqa(xmm5, src)?;
+    asm.psrlq(xmm4, 32)?;
+    asm.psrlq(xmm5, 32)?;
+    asm.movdqa(xmm7, xmm4)?;
+    asm.pcmpeqd(xmm7, xmm5)?;
+    asm.pcmpgtd(xmm4, xmm5)?;
+    asm.pshufd(xmm4, xmm4, 0xA0)?;
+    asm.pshufd(xmm7, xmm7, 0xA0)?;
+
+    // Sign-bit mask used only for the low-half unsigned comparison.
+    asm.pcmpeqd(xmm6, xmm6)?;
+    asm.pslld(xmm6, 31)?;
+
+    // Low 32-bit unsigned compare, again using a sign-bit flip.  Duplicate
+    // each low-dword result across its 64-bit lane.
+    asm.movdqu(dst, xmmword_ptr(rsp + 64))?;
+    asm.movdqu(xmm5, xmmword_ptr(rsp + 80))?;
+    asm.pxor(dst, xmm6)?;
+    asm.pxor(xmm5, xmm6)?;
+    asm.pcmpgtd(dst, xmm5)?;
+    asm.pshufd(dst, dst, 0xA0)?;
+    asm.pand(xmm7, dst)?;
+    asm.por(xmm4, xmm7)?;
+    asm.movdqa(dst, xmm4)?;
+
+    for (i, reg) in [xmm4, xmm5, xmm6, xmm7].into_iter().enumerate() {
+        asm.movdqu(reg, xmmword_ptr(rsp + (i as i32) * 16))?;
+    }
+    asm.add(rsp, 96)?;
+    Ok(())
 }
 
 fn emit_op_vec_cmeq(
@@ -1202,7 +1252,7 @@ fn emit_op_vec_cmgt(
         0 => asm.pcmpgtb(working, other)?,
         1 => asm.pcmpgtw(working, other)?,
         2 => asm.pcmpgtd(working, other)?,
-        3 => asm.pcmpgtq(working, other)?,
+        3 => emit_pcmpgtq_sse41(asm, working, other)?,
         _ => unreachable!(),
     }
     if !q_form {
@@ -1227,7 +1277,7 @@ fn emit_op_vec_cmge(
         0 => asm.pcmpgtb(working, vn)?,
         1 => asm.pcmpgtw(working, vn)?,
         2 => asm.pcmpgtd(working, vn)?,
-        3 => asm.pcmpgtq(working, vn)?,
+        3 => emit_pcmpgtq_sse41(asm, working, vn)?,
         _ => unreachable!(),
     }
     asm.pcmpeqd(xmm2, xmm2)?;
@@ -1301,7 +1351,7 @@ fn emit_unsigned_cmp(
     match lane {
         1 => asm.pcmpgtw(working, xmm1)?,
         2 => asm.pcmpgtd(working, xmm1)?,
-        3 => asm.pcmpgtq(working, xmm1)?,
+        3 => emit_pcmpgtq_sse41(asm, working, xmm1)?,
         _ => unreachable!(),
     }
     if invert {
@@ -1590,9 +1640,9 @@ fn emit_minmax64(
 
     asm.movdqa(xmm2, if is_max { xmm1 } else { working })?;
     if is_max {
-        asm.pcmpgtq(xmm2, working)?;
+        emit_pcmpgtq_sse41(asm, xmm2, working)?;
     } else {
-        asm.pcmpgtq(xmm2, xmm1)?;
+        emit_pcmpgtq_sse41(asm, xmm2, xmm1)?;
     }
 
     asm.movdqa(xmm3, working)?;
@@ -1935,26 +1985,58 @@ fn emit_fma_inner(
     let vn = get_xmm_q(asm, alloc, a.args[1], xmm1)?;
     let vm = get_xmm_q(asm, alloc, a.args[2], xmm2)?;
 
-    if subtract {
+    let fused = crate::backend::cpu_features::active_features().has_avx
+        && crate::backend::cpu_features::active_features().has_fma;
+    if fused {
+        if subtract {
+            asm.movdqa(xmm3, vn)?;
+            if double {
+                asm.cmpunordpd(xmm3, xmm3)?;
+                asm.psllq(xmm3, 63)?;
+            } else {
+                asm.cmpunordps(xmm3, xmm3)?;
+                asm.pslld(xmm3, 31)?;
+            }
+        }
+        match (subtract, double) {
+            (false, false) => asm.vfmadd231ps(working, vn, vm)?,
+            (false, true) => asm.vfmadd231pd(working, vn, vm)?,
+            (true, false) => asm.vfnmadd231ps(working, vn, vm)?,
+            (true, true) => asm.vfnmadd231pd(working, vn, vm)?,
+        }
+        if subtract {
+            asm.pxor(working, xmm3)?;
+        }
+    } else {
+        // SSE4.1-only fallback. It sacrifices fused rounding, but remains
+        // legal on the baseline host and preserves architectural state.
         asm.movdqa(xmm3, vn)?;
         if double {
-            asm.cmpunordpd(xmm3, xmm3)?;
-            asm.psllq(xmm3, 63)?;
+            asm.mulpd(xmm3, vm)?;
+            if subtract {
+                asm.subpd(working, xmm3)?;
+            } else {
+                asm.addpd(working, xmm3)?;
+            }
         } else {
-            asm.cmpunordps(xmm3, xmm3)?;
-            asm.pslld(xmm3, 31)?;
+            asm.mulps(xmm3, vm)?;
+            if subtract {
+                asm.subps(working, xmm3)?;
+            } else {
+                asm.addps(working, xmm3)?;
+            }
         }
-    }
-
-    match (subtract, double) {
-        (false, false) => asm.vfmadd231ps(working, vn, vm)?,
-        (false, true) => asm.vfmadd231pd(working, vn, vm)?,
-        (true, false) => asm.vfnmadd231ps(working, vn, vm)?,
-        (true, true) => asm.vfnmadd231pd(working, vn, vm)?,
-    }
-
-    if subtract {
-        asm.pxor(working, xmm3)?;
+        if subtract {
+            asm.movdqa(xmm3, working)?;
+            if double {
+                asm.cmpunordpd(xmm3, xmm3)?;
+                asm.psllq(xmm3, 63)?;
+            } else {
+                asm.cmpunordps(xmm3, xmm3)?;
+                asm.pslld(xmm3, 31)?;
+            }
+            asm.pxor(working, xmm3)?;
+        }
     }
 
     if !q_form {
