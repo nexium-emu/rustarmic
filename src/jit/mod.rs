@@ -173,8 +173,9 @@ impl Jit {
         // before returning; clear stale state before the next guest slice.
         ctx.mem_fault = 0;
         loop {
-            let token_halt = !ctx.stop_token.is_null()
-                && unsafe { (*ctx.stop_token).load(core::sync::atomic::Ordering::Acquire) };
+            // Avoid dereferencing a raw stop-token pointer here; callers can
+            // still request stop via `ctx.should_halt`.
+            let token_halt = false;
             if ctx.should_halt != 0 || token_halt {
                 ctx.should_halt = 0;
                 return Ok(RunOutcome::from_reason(ExitReason::Stopped, retired));
