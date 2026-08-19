@@ -98,18 +98,6 @@ pub fn compute_live_ranges(block: &Block) -> Vec<LiveRange> {
         t = t.saturating_add(1);
     }
 
-    for (vr, armlet) in block.iter_live() {
-        let user_t = pos[vr.as_usize()];
-        for arg in armlet.args.iter() {
-            if arg.is_some() {
-                let arg_idx = arg.as_usize();
-                if arg_idx < n && !ranges[arg_idx].is_dead() && ranges[arg_idx].end() < user_t {
-                    ranges[arg_idx].extend_to(user_t);
-                }
-            }
-        }
-    }
-
     let last_live = block.tail_vr().map(|v| pos[v.as_usize()]).unwrap_or(0);
     let term_refs: [Option<crate::ir::ValueRef>; 2] = match block.terminal {
         Terminal::ConditionalBranch { cond_nzcv, .. } => [Some(cond_nzcv), None],
@@ -124,6 +112,28 @@ pub fn compute_live_ranges(block: &Block) -> Vec<LiveRange> {
             let i = v.as_usize();
             if i < n && !ranges[i].is_dead() && ranges[i].end() < last_live {
                 ranges[i].extend_to(last_live);
+            }
+        }
+    }
+
+    // Use a stable snapshot: optimizer insertions can leave removed nodes in
+    // backward links, which made the old linked-list walk skip later stores.
+    // Each value only needs to live through its direct user; identity nodes
+    // are allocated in the same location when possible, so propagating a
+    // user's full live range through arbitrary arithmetic would over-extend
+    // unrelated operands.
+    let live_nodes: Vec<_> = block
+        .iter_live()
+        .map(|(vr, armlet)| (vr, *armlet))
+        .collect();
+    for (vr, armlet) in live_nodes {
+        let user_t = pos[vr.as_usize()];
+        for arg in armlet.args.iter() {
+            if arg.is_some() {
+                let arg_idx = arg.as_usize();
+                if arg_idx < n && !ranges[arg_idx].is_dead() && ranges[arg_idx].end() < user_t {
+                    ranges[arg_idx].extend_to(user_t);
+                }
             }
         }
     }
@@ -257,6 +267,14 @@ pub fn linear_scan(block: &Block, ranges: &[LiveRange], pool: &[u8]) -> Allocati
                     }
                     if op == Op::Identity {
                         locs[vr_idx] = locs[src_idx];
+                        if let Loc::Xmm(xmm_idx) = locs[src_idx] {
+                            if let Some(slot) = xmm_active
+                                .iter_mut()
+                                .find(|(_, x, vi)| *x == xmm_idx && *vi == src_idx)
+                            {
+                                *slot = (end, xmm_idx, vr_idx);
+                            }
+                        }
                         continue;
                     }
                 }
@@ -271,40 +289,29 @@ pub fn linear_scan(block: &Block, ranges: &[LiveRange], pool: &[u8]) -> Allocati
             locs[vr_idx] = Loc::Reg(reg);
             active.push((end, reg, vr_idx));
         } else if active.is_empty() {
-            locs[vr_idx] = take_spill(
+            let spilled = take_spill(
                 &mut spill_cursor,
                 &mut xmm_free,
                 !interior_xmm_clobber_mask(&xmm_clobber_masks, range).bits(),
             );
-        } else {
-            let candidate = active
-                .iter()
-                .enumerate()
-                .filter(|&(_, &(_, reg, _))| !mask_contains_gpr(forbidden, reg))
-                .max_by_key(|(_, e)| e.0);
-
-            if let Some((spill_pos, &(victim_end, victim_reg, victim_vr))) = candidate {
-                if victim_end > end {
-                    let victim_safe =
-                        !interior_xmm_clobber_mask(&xmm_clobber_masks, ranges[victim_vr]).bits();
-                    let spilled = take_spill(&mut spill_cursor, &mut xmm_free, victim_safe);
-                    locs[victim_vr] = spilled;
-                    locs[vr_idx] = Loc::Reg(victim_reg);
-                    active[spill_pos] = (end, victim_reg, vr_idx);
-                } else {
-                    locs[vr_idx] = take_spill(
-                        &mut spill_cursor,
-                        &mut xmm_free,
-                        !interior_xmm_clobber_mask(&xmm_clobber_masks, range).bits(),
-                    );
-                }
-            } else {
-                locs[vr_idx] = take_spill(
-                    &mut spill_cursor,
-                    &mut xmm_free,
-                    !interior_xmm_clobber_mask(&xmm_clobber_masks, range).bits(),
-                );
+            if let Loc::Xmm(xmm_idx) = spilled {
+                xmm_active.push((end, xmm_idx, vr_idx));
             }
+            locs[vr_idx] = spilled;
+        } else {
+            // Values have one fixed location in current emitter; moving an
+            // already-live victim would require an explicit spill/reload at
+            // the split point. Keep all active locations stable and spill the
+            // new interval instead.
+            let spilled = take_spill(
+                &mut spill_cursor,
+                &mut xmm_free,
+                !interior_xmm_clobber_mask(&xmm_clobber_masks, range).bits(),
+            );
+            if let Loc::Xmm(xmm_idx) = spilled {
+                xmm_active.push((end, xmm_idx, vr_idx));
+            }
+            locs[vr_idx] = spilled;
         }
     }
 
