@@ -8,4 +8,4 @@ pub mod optimizer;
 pub mod util;
 
 pub use error::{Error, Result};
-pub use jit::{CpuContext, ExitReason, Jit, JitConfig, Memory};
+pub use jit::{CpuContext, CpuFeatures, ExitReason, Jit, JitConfig, Memory};

@@ -22,6 +22,9 @@ pub struct CodeCache {
 #[derive(Clone, Copy)]
 struct Entry {
     host_ptr: *const u8,
+    guest_start: u64,
+    guest_end: u64,
+    guest_insns: u32,
 }
 
 unsafe impl Send for CodeCache {}
@@ -53,11 +56,20 @@ impl CodeCache {
         self.table.get(&pc).map(|e| e.host_ptr)
     }
 
+    pub fn lookup_meta(&self, pc: u64) -> Option<(*const u8, u32)> {
+        self.table.get(&pc).map(|e| (e.host_ptr, e.guest_insns))
+    }
+
     pub fn invalidate_range(&mut self, start: u64, len: u64) {
-        let end = start.wrapping_add(len);
-        let in_range = |pc: u64| pc >= start && pc < end;
-        self.table.retain(|&pc, _| !in_range(pc));
-        self.pending.retain(|&target_pc, _| !in_range(target_pc));
+        let Some(end) = start.checked_add(len) else {
+            self.table.clear();
+            self.pending.clear();
+            return;
+        };
+        self.table
+            .retain(|_, entry| entry.guest_end <= start || entry.guest_start >= end);
+        self.pending
+            .retain(|&target_pc, _| target_pc < start || target_pc >= end);
     }
 
     /// Drop all translated blocks while retaining the executable allocation.
@@ -100,13 +112,26 @@ impl CodeCache {
     pub fn install(
         &mut self,
         guest_pc: u64,
+        guest_end: u64,
+        guest_insns: u32,
         bytes: &[u8],
         chains: &[ChainSite],
         body_offset: u32,
+        cache_block: bool,
     ) -> Result<*const u8> {
         let host_ptr = self.append_raw(bytes)?;
         let body_addr = unsafe { host_ptr.add(body_offset as usize) };
-        self.table.insert(guest_pc, Entry { host_ptr });
+        if cache_block {
+            self.table.insert(
+                guest_pc,
+                Entry {
+                    host_ptr,
+                    guest_start: guest_pc,
+                    guest_end: guest_end.max(guest_pc.saturating_add(4)),
+                    guest_insns: guest_insns.max(1),
+                },
+            );
+        }
 
         // Direct patching is intentionally disabled until link slots and
         // execution epochs are in place.  Mutable inbound JMPs can otherwise
