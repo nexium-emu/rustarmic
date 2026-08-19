@@ -4,7 +4,7 @@ pub mod dispatcher;
 pub mod memory;
 
 pub use context::CpuContext;
-pub use memory::Memory;
+pub use memory::{FlatMemory, Memory};
 
 use crate::error::{Error, Result};
 use crate::frontend::{TranslateOptions, translate_block_into};
