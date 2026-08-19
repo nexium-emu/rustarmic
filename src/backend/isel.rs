@@ -3472,16 +3472,28 @@ fn emit_fastmem_bounds_check(
     bytes: u32,
     lbl_slow: CodeLabel,
 ) -> Result<()> {
+    // Check the guest address before subtracting the mapping base.  The old
+    // `offset + bytes <= size` check allowed addresses below `mem_base_va` to
+    // wrap into the mapping and access memory before the backing allocation.
     asm.mov(SCRATCH2, SCRATCH1)?;
+    asm.cmp(
+        SCRATCH2,
+        qword_ptr(CTX_REG + cpu_offsets::mem_base_va() as i32),
+    )?;
+    asm.jb(lbl_slow)?;
     asm.sub(
         SCRATCH2,
         qword_ptr(CTX_REG + cpu_offsets::mem_base_va() as i32),
     )?;
-    asm.lea(SCRATCH0, qword_ptr(SCRATCH2 + bytes as i32))?;
-    asm.cmp(
+    // Avoid offset+bytes overflow by comparing against size-bytes.
+    asm.mov(
         SCRATCH0,
         qword_ptr(CTX_REG + cpu_offsets::mem_size() as i32),
     )?;
+    asm.cmp(SCRATCH0, bytes as i32)?;
+    asm.jb(lbl_slow)?;
+    asm.sub(SCRATCH0, bytes as i32)?;
+    asm.cmp(SCRATCH2, SCRATCH0)?;
     asm.ja(lbl_slow)?;
     Ok(())
 }

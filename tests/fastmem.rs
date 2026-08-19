@@ -207,7 +207,9 @@ fn fastmem_before_range_falls_through_to_fn_ptr() {
     ctx.mem_base_va = DATA_BASE;
     ctx.mem_size = backing.len() as u64;
     ctx.pc = CODE_BASE;
-    ctx.x[0] = DATA_BASE - 0x10;
+    // A one-byte-underflow used to wrap the unsigned offset check and read
+    // before the backing allocation.
+    ctx.x[0] = DATA_BASE - 1;
 
     let code = build_code(&[0xF9400001, BRK_0]);
     let cfg = JitConfig {
