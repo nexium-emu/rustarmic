@@ -22,7 +22,6 @@ pub struct CodeCache {
 #[derive(Clone, Copy)]
 struct Entry {
     host_ptr: *const u8,
-    body_offset: u32,
 }
 
 unsafe impl Send for CodeCache {}
@@ -107,55 +106,14 @@ impl CodeCache {
     ) -> Result<*const u8> {
         let host_ptr = self.append_raw(bytes)?;
         let body_addr = unsafe { host_ptr.add(body_offset as usize) };
-        self.table.insert(
-            guest_pc,
-            Entry {
-                host_ptr,
-                body_offset,
-            },
-        );
+        self.table.insert(guest_pc, Entry { host_ptr });
 
-        if let Some(patches) = self.pending.remove(&guest_pc) {
-            for patch_addr in patches {
-                unsafe {
-                    patch_to_jmp(patch_addr, body_addr);
-                }
-            }
-        }
-
-        for c in chains {
-            let patch_addr = unsafe { (host_ptr as *mut u8).add(c.patch_offset as usize) };
-            if let Some(entry) = self.table.get(&c.target_pc) {
-                let target_body = unsafe { entry.host_ptr.add(entry.body_offset as usize) };
-                unsafe {
-                    patch_to_jmp(patch_addr, target_body);
-                }
-            } else {
-                self.pending
-                    .entry(c.target_pc)
-                    .or_default()
-                    .push(patch_addr);
-            }
-        }
+        // Direct patching is intentionally disabled until link slots and
+        // execution epochs are in place.  Mutable inbound JMPs can otherwise
+        // survive invalidation and jump into stale code.  The emitter emits a
+        // normal fallback return at every chain site meanwhile.
+        let _ = (body_addr, chains);
 
         Ok(host_ptr)
-    }
-}
-
-unsafe fn patch_to_jmp(patch_addr: *mut u8, target: *const u8) {
-    let rel = (target as isize).wrapping_sub((patch_addr as isize).wrapping_add(5));
-    if rel < i32::MIN as isize || rel > i32::MAX as isize {
-        return;
-    }
-    unsafe {
-        patch_addr.write(0xE9);
-        let rel_bytes = (rel as i32).to_le_bytes();
-        for i in 0..4 {
-            patch_addr.add(1 + i).write(rel_bytes[i]);
-        }
-    }
-    #[cfg(target_arch = "x86_64")]
-    {
-        core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
     }
 }

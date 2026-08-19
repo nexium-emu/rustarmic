@@ -178,8 +178,6 @@ pub fn emit_block(block: &Block) -> Result<EmittedBlock> {
 fn emit_patch_site(asm: &mut CodeAssembler, fallback_pc: u64) -> Result<CodeLabel> {
     let mut label = asm.create_label();
     asm.set_label(&mut label)?;
-    asm.db(&[0xE9])?;
-    asm.dd(&[0u32])?;
     asm.mov(rax, fallback_pc as i64)?;
     Ok(label)
 }
@@ -190,8 +188,6 @@ fn emit_patch_site_at_label(
     fallback_pc: u64,
 ) -> Result<()> {
     asm.set_label(label)?;
-    asm.db(&[0xE9])?;
-    asm.dd(&[0u32])?;
     asm.mov(rax, fallback_pc as i64)?;
     Ok(())
 }
