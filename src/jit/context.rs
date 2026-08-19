@@ -38,14 +38,12 @@ pub struct CpuContext {
 unsafe impl Send for CpuContext {}
 
 unsafe extern "C" fn default_read_cntpct(_ctx: *mut CpuContext) -> u64 {
-    #[cfg(target_arch = "x86_64")]
-    unsafe {
-        core::arch::x86_64::_rdtsc()
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        0
-    }
+    use std::sync::OnceLock;
+    use std::time::Instant;
+    static START: OnceLock<Instant> = OnceLock::new();
+    let elapsed = START.get_or_init(Instant::now).elapsed().as_nanos();
+    let ticks = elapsed.saturating_mul(19_200_000) / 1_000_000_000;
+    ticks.min(u128::from(u64::MAX)) as u64
 }
 
 unsafe extern "C" fn default_mem_read(_: *mut CpuContext, addr: u64, size: u8) {
