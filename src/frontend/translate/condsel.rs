@@ -53,6 +53,6 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: CONDSEL) -> Result<InstStatus> {
             .with_imm(cond as u64),
     );
 
-    em.set_x(rd, result);
+    em.set_gpr(rd, result, size);
     Ok(InstStatus::Continue)
 }

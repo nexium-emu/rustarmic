@@ -49,6 +49,15 @@ fn movz_into_x0() {
 }
 
 #[test]
+fn movz_into_w_register_zero_extends_guest_x_register() {
+    let code = build_code(&[0x5282_468E, 0xD420_0000]);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    run(code, &mut ctx);
+    assert_eq!(ctx.x[14], 0x1234, "W14 writes must update X14");
+}
+
+#[test]
 fn add_imm_pipeline() {
     let code = build_code(&[0xD280_0C80, 0x9100_C800, 0xD420_0000]);
     let mut ctx = CpuContext::default();

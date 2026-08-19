@@ -77,6 +77,6 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: LOG_SHIFT) -> Result<InstStatus> 
         em.subs(result, zero, size);
     }
 
-    em.set_x(rd, result);
+    em.set_gpr(rd, result, size);
     Ok(InstStatus::Continue)
 }

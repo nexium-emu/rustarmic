@@ -108,7 +108,7 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
                 }
             }
 
-            Op::SetX | Op::SetW => {
+            Op::SetX => {
                 let reg = a.imm as usize;
                 if reg < NUM_GPRS {
                     let prev = last_setx[reg];
@@ -116,6 +116,22 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
                         block.unlink(prev);
                     }
                     reach_x[reg] = a.args[0];
+                    last_setx[reg] = vr;
+                }
+            }
+            Op::SetW => {
+                let reg = a.imm as usize;
+                if reg < NUM_GPRS {
+                    let prev = last_setx[reg];
+                    if prev.is_some() {
+                        block.unlink(prev);
+                    }
+                    // W writes zero-extend into architectural X. The source
+                    // value may be a 64-bit expression whose upper half is
+                    // not zero, so it cannot be forwarded to a later GetX.
+                    // Force that read through the context until a dedicated
+                    // zero-extension value exists in IR.
+                    reach_x[reg] = ValueRef::NONE;
                     last_setx[reg] = vr;
                 }
             }

@@ -2,7 +2,7 @@
 
 mod harness;
 
-use harness::{RegState, run_pair};
+use harness::{DATA_BASE, RegState, mem_init, run_pair};
 
 const CODE_BASE: u64 = 0x1000;
 const STACK_BASE: u64 = 0x10_0000;
@@ -53,4 +53,44 @@ fn add_subs_flags() {
 fn logical_imm_and_or() {
     let code = snippet(&[0xD29FE000, 0x00000000, 0x00000000, 0x00000000]);
     let _ = code;
+}
+
+#[test]
+fn q_pair_store_uses_w_form_computed_base_address() {
+    mem_init(0x20_000);
+
+    // rtld's allocator loop reduced to one iteration. This sequence first
+    // computes X14 through W14, then uses it as the Q-pair store base.
+    let code = snippet(&[
+        0x4e08_0d20, // dup v0.2d, x9
+        0x4b00_03ee, // neg w14, w0
+        0x9240_05ce, // and x14, x14, #3
+        0x8b0e_018f, // add x15, x12, x14
+        0xd100_8050, // sub x16, x2, #0x20
+        0x8b00_01ef, // add x15, x15, x0
+        0xcb0e_0210, // sub x16, x16, x14
+        0x9101_01ee, // add x14, x15, #0x40
+        0x927e_f60f, // and x15, x16, #...fc
+        0xcb0c_01ec, // sub x12, x15, x12
+        0xd345_fd8c, // lsr x12, x12, #5
+        0x9100_058c, // add x12, x12, #1
+        0x927e_e58c, // and x12, x12, #...fc
+        0xad3e_01c0, // stp q0, q0, [x14, #-64]
+        0xd100_118c, // sub x12, x12, #4
+        0xad3f_01c0, // stp q0, q0, [x14, #-32]
+        0xad00_01c0, // stp q0, q0, [x14]
+        0xad01_01c0, // stp q0, q0, [x14, #32]
+        0x9102_01ce, // add x14, x14, #0x80
+        0xb5ff_ff4c, // cbnz x12, -0x80
+        0xd420_0000, // brk #0
+    ]);
+
+    let mut init = baseline_state();
+    init.x[0] = DATA_BASE + 0x53d0;
+    init.x[2] = 0x1d8;
+    init.x[9] = 0;
+    init.x[12] = 4;
+    let (uni, jit) = run_pair(&code, init);
+    assert_eq!(jit.x[14], uni.x[14]);
+    assert_eq!(jit.pc, uni.pc);
 }

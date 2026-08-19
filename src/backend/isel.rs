@@ -326,7 +326,10 @@ fn emit_op_set_w(
 ) -> Result<()> {
     let a = block.code[idx];
     load32(asm, alloc, a.args[0], eax)?;
-    store_guest_x(asm, a.imm as usize, SCRATCH0)?;
+    // EAX is the value loaded above.  Using SCRATCH0 here left W-form
+    // writes dependent on stale host state, corrupting the upper-level X
+    // register and breaking startup code that mixes W and X arithmetic.
+    store_guest_x(asm, a.imm as usize, rax)?;
     Ok(())
 }
 fn emit_op_get_sp(

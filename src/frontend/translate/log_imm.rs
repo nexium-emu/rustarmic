@@ -58,6 +58,6 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: LOG_IMM) -> Result<InstStatus> {
         em.subs(result, zero, size);
     }
 
-    em.set_x_or_sp(rd, result, sp_form_dst);
+    em.set_gpr_or_sp(rd, result, size, sp_form_dst);
     Ok(InstStatus::Continue)
 }

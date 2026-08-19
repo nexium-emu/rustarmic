@@ -112,6 +112,18 @@ impl<'b> IrEmitter<'b> {
         }
     }
 
+    /// Write an integer result, preserving the architectural W-register
+    /// zero-extension while still supporting SP when encoded as register 31.
+    pub fn set_gpr_or_sp(&mut self, reg: u8, value: ValueRef, size: RegSize, sp_form: bool) {
+        if reg == ZR_ENCODING {
+            if sp_form {
+                self.set_sp(value);
+            }
+        } else {
+            self.set_gpr(reg, value, size);
+        }
+    }
+
     pub fn get_v_s(&mut self, reg: u8) -> ValueRef {
         debug_assert!((reg as usize) < crate::arch::NUM_VREGS);
         self.push(Armlet::new(Op::GetV, Ty::U32).with_imm(reg as u64))

@@ -52,9 +52,7 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: LDST_POS) -> Result<InstStatus> {
         }
         Kind::LoadU => {
             let v = em.load(addr, bytes);
-            if size <= 2 && !target_x {
-                em.set_w(rt, v);
-            } else if size <= 2 {
+            if size <= 2 {
                 em.set_w(rt, v);
             } else {
                 em.set_x(rt, v);

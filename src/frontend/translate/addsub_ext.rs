@@ -72,14 +72,14 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ADDSUB_EXT) -> Result<InstStatus>
         } else {
             em.adds(a, b, size)
         };
-        em.set_x(rd, result);
+        em.set_gpr(rd, result, size);
     } else {
         let result = if sub {
             em.sub(a, b, size)
         } else {
             em.add(a, b, size)
         };
-        em.set_x_or_sp(rd, result, sp_form);
+        em.set_gpr_or_sp(rd, result, size, sp_form);
     }
     Ok(InstStatus::Continue)
 }

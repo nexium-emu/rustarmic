@@ -353,6 +353,24 @@ fn str_q_writes_full_128_to_memory() {
 }
 
 #[test]
+fn stp_q_uses_w_form_computed_base_for_both_callbacks() {
+    mem_init(0x10000);
+    let mut ctx = CpuContext::default();
+    ctx.pc = CODE_BASE;
+    ctx.x[0] = DATA_BASE + 0xD00;
+    ctx.v[0] = [0x1111_2222_3333_4444, 0x5555_6666_7777_8888];
+
+    // ADD W14,W0,#0 zero-extends into X14; STP Q0,Q0 then performs two
+    // callback writes at X14 and X14+8.
+    let code = build_code(&[0x1100_000E, 0xAD00_01C0, 0xD420_0000]);
+    run(code, &mut ctx);
+    assert_eq!(mem_read(DATA_BASE + 0xD00, 8), 0x1111_2222_3333_4444);
+    assert_eq!(mem_read(DATA_BASE + 0xD08, 8), 0x5555_6666_7777_8888);
+    assert_eq!(mem_read(DATA_BASE + 0xD10, 8), 0x1111_2222_3333_4444);
+    assert_eq!(mem_read(DATA_BASE + 0xD18, 8), 0x5555_6666_7777_8888);
+}
+
+#[test]
 fn mov_v_16b_copies_full_register() {
     let mut ctx = CpuContext::default();
     ctx.pc = CODE_BASE;
