@@ -4009,7 +4009,9 @@ fn emit_mrs(
             asm.mov(SCRATCH0, 0x412F_D050u64 as i64)?;
         }
         sysreg::MPIDR_EL1 => {
-            asm.mov(SCRATCH0, 0x8000_0000u64 as i64)?;
+            asm.mov(SCRATCH0, qword_ptr(CTX_REG + cpu_offsets::core_id() as i32))?;
+            asm.and(SCRATCH0, 0xffi32)?;
+            asm.or(SCRATCH0, i32::MIN)?;
         }
         sysreg::CNTFRQ_EL0 => {
             asm.mov(

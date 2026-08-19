@@ -13,6 +13,8 @@ pub struct CpuContext {
     pub mem_base: *mut u8,
     pub mem_base_va: u64,
     pub mem_size: u64,
+    pub core_id: u64,
+    pub stop_token: *const std::sync::atomic::AtomicBool,
     pub tpidr_el0: u64,
     pub tpidrro_el0: u64,
     pub cntfrq_el0: u64,
@@ -25,7 +27,12 @@ pub struct CpuContext {
     pub nzcv: u8,
     pub exclusive_size: u8,
     pub should_halt: u8,
-    _pad0: [u8; 5],
+    pub mem_fault: u8,
+    pub mem_fault_access: u8,
+    pub mem_fault_size: u8,
+    pub mem_fault_cause: u8,
+    pub mem_fault_addr: u64,
+    pub mem_fault_pc: u64,
 }
 
 unsafe impl Send for CpuContext {}
@@ -65,6 +72,8 @@ impl Default for CpuContext {
             mem_base: core::ptr::null_mut(),
             mem_base_va: 0,
             mem_size: 0,
+            core_id: 0,
+            stop_token: core::ptr::null(),
             tpidr_el0: 0,
             tpidrro_el0: 0,
             cntfrq_el0: 19_200_000,
@@ -77,7 +86,12 @@ impl Default for CpuContext {
             nzcv: 0,
             exclusive_size: 0,
             should_halt: 0,
-            _pad0: [0; 5],
+            mem_fault: 0,
+            mem_fault_access: 0,
+            mem_fault_size: 0,
+            mem_fault_cause: 0,
+            mem_fault_addr: 0,
+            mem_fault_pc: 0,
         }
     }
 }
@@ -117,6 +131,10 @@ pub mod cpu_offsets {
     #[inline]
     pub const fn mem_size() -> usize {
         offset_of!(CpuContext, mem_size)
+    }
+    #[inline]
+    pub const fn core_id() -> usize {
+        offset_of!(CpuContext, core_id)
     }
     #[inline]
     pub const fn exclusive_addr() -> usize {
@@ -161,5 +179,29 @@ pub mod cpu_offsets {
     #[inline]
     pub const fn fpsr() -> usize {
         offset_of!(CpuContext, fpsr)
+    }
+    #[inline]
+    pub const fn mem_fault() -> usize {
+        offset_of!(CpuContext, mem_fault)
+    }
+    #[inline]
+    pub const fn mem_fault_access() -> usize {
+        offset_of!(CpuContext, mem_fault_access)
+    }
+    #[inline]
+    pub const fn mem_fault_size() -> usize {
+        offset_of!(CpuContext, mem_fault_size)
+    }
+    #[inline]
+    pub const fn mem_fault_cause() -> usize {
+        offset_of!(CpuContext, mem_fault_cause)
+    }
+    #[inline]
+    pub const fn mem_fault_addr() -> usize {
+        offset_of!(CpuContext, mem_fault_addr)
+    }
+    #[inline]
+    pub const fn mem_fault_pc() -> usize {
+        offset_of!(CpuContext, mem_fault_pc)
     }
 }
