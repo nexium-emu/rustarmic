@@ -28,6 +28,7 @@ pub mod condcmp_imm;
 pub mod condcmp_reg;
 pub mod condsel;
 pub mod crypto_aes;
+pub mod crypto_sha256;
 pub mod dp_1src;
 pub mod dp_2src;
 pub mod dp_3src;

@@ -523,6 +523,10 @@ pub enum Op {
     AesDecrypt = 0x754,
     AesMixColumns = 0x758,
     AesInverseMixColumns = 0x75C,
+    Sha256Hash = 0x760,
+    Sha256Hash2 = 0x764,
+    Sha256Schedule0 = 0x768,
+    Sha256Schedule1 = 0x76C,
 
     Mrs = 0x700,
     Msr = 0x704,

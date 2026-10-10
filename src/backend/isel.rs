@@ -126,6 +126,7 @@ fn dispatch_op(op: Op) -> Option<EmitFn> {
         SaturatingBinary => emit_op_saturating_binary,
         IntMinMaxReduce32 => emit_op_integer_reduce,
         AesEncrypt | AesDecrypt | AesMixColumns | AesInverseMixColumns => emit_op_crypto_aes,
+        Sha256Hash | Sha256Hash2 | Sha256Schedule0 | Sha256Schedule1 => emit_op_crypto_sha256,
         Fdiv32 | Fdiv64 => emit_op_fdiv,
         Fmax32 | Fmax64 => emit_op_fmax,
         Fmin32 | Fmin64 => emit_op_fmin,
@@ -3252,6 +3253,46 @@ fn emit_op_crypto_aes(
         asm.movdqu(xmm0, xmmword_ptr(rsp + 16))?;
         asm.add(rsp, 32)?;
     }
+    store_xmm_q(asm, alloc, destination, xmm0)
+}
+
+fn emit_op_crypto_sha256(
+    asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize,
+) -> Result<()> {
+    let a = block.code[idx];
+    let destination = dst_of(&a, idx).unwrap();
+    asm.sub(rsp, 64)?;
+    for index in 0..2 {
+        into_xmm_q(asm, alloc, a.args[index], xmm0)?;
+        asm.movdqu(xmmword_ptr(rsp + (index * 16) as i32), xmm0)?;
+    }
+    if a.op == Op::Sha256Schedule0 {
+        asm.pxor(xmm0, xmm0)?;
+    } else {
+        into_xmm_q(asm, alloc, a.args[2], xmm0)?;
+    }
+    asm.movdqu(xmmword_ptr(rsp + 32), xmm0)?;
+    let mode = match a.op {
+        Op::Sha256Hash => 0,
+        Op::Sha256Hash2 => 1,
+        Op::Sha256Schedule0 => 2,
+        Op::Sha256Schedule1 => 3,
+        _ => unreachable!(),
+    };
+    let helper = if crate::backend::cpu_features::active_features().has_shani {
+        crate::backend::crypto_sha256::accelerated as *const ()
+    } else {
+        crate::backend::crypto_sha256::portable as *const ()
+    };
+    asm.lea(ARG0_REG, ptr(rsp))?;
+    asm.lea(SCRATCH1, ptr(rsp + 48))?;
+    asm.mov(SCRATCH3, mode as i64)?;
+    asm.sub(rsp, CALL_PRECALL_SUB)?;
+    asm.mov(rax, helper as usize as i64)?;
+    asm.call(rax)?;
+    asm.add(rsp, CALL_PRECALL_SUB)?;
+    asm.movdqu(xmm0, xmmword_ptr(rsp + 48))?;
+    asm.add(rsp, 64)?;
     store_xmm_q(asm, alloc, destination, xmm0)
 }
 

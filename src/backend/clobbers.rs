@@ -187,6 +187,11 @@ pub fn clobbers_for_op(op: Op) -> ClobberSet {
             c.xmm = CALLER_SAVED_XMMS;
         }
 
+        Sha256Hash | Sha256Hash2 | Sha256Schedule0 | Sha256Schedule1 => {
+            c.gpr = CALLER_SAVED_GPRS;
+            c.xmm = CALLER_SAVED_XMMS;
+        }
+
         AesEncrypt | AesDecrypt | AesMixColumns | AesInverseMixColumns => {
             if crate::backend::cpu_features::active_features().has_aesni {
                 c.xmm = XmmMask::XMM0 | XmmMask::XMM1;

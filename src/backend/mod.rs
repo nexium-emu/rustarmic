@@ -6,6 +6,7 @@ mod integer_minmax_reduce;
 pub mod clobbers;
 pub mod cpu_features;
 mod crypto_aes;
+mod crypto_sha256;
 pub mod emit;
 pub mod isel;
 pub mod operand;
