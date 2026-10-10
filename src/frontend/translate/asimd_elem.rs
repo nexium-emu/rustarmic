@@ -1,10 +1,10 @@
 #![allow(clippy::enum_variant_names)]
 
-use disarm64::decoder::ASIMDELEM;
+use disarm64::decoder::{ASIMDELEM, ASISDELEM};
 
 use crate::error::{Error, Result};
 use crate::frontend::translator::InstStatus;
-use crate::ir::IrEmitter;
+use crate::ir::{Armlet, IrEmitter, Op, Ty};
 use crate::util::bits::{bit, bits};
 
 #[derive(Clone, Copy)]
@@ -106,36 +106,103 @@ fn raw_of(insn: &ASIMDELEM) -> u32 {
     }
 }
 
-fn translate_fp(em: &mut IrEmitter<'_>, raw: u32, kind: FpKind) -> Result<InstStatus> {
-    let q = bit(raw, 30) == 1;
+fn fp_element_fields(em: &IrEmitter<'_>, raw: u32) -> Result<(bool, u32, u8)> {
     let sz = bit(raw, 22);
     let l = bit(raw, 21);
     let m_b = bit(raw, 20);
     let h = bit(raw, 11);
     let rm_low4 = bits(raw, 16, 4);
+    if sz != 0 && l != 0 {
+        return Err(Error::Decode {
+            pc: em.current_pc,
+            opcode: raw,
+        });
+    }
+    // M, not L, is the register's high bit for BOTH S and D. D uses H for
+    // its lane index and reserves L; S uses H:L for all four source lanes.
+    let idx = if sz == 0 { (h << 1) | l } else { h };
+    Ok((sz != 0, idx, ((m_b << 4) | rm_low4) as u8))
+}
+
+pub fn translate_scalar(em: &mut IrEmitter<'_>, insn: ASISDELEM) -> Result<InstStatus> {
+    let (raw, kind) = match insn {
+        ASISDELEM::FMUL_Sd_Sn_Em(i) => (i.0, FpKind::FMul),
+        ASISDELEM::FMLA_Sd_Sn_Em(i) => (i.0, FpKind::FMla),
+        ASISDELEM::FMLS_Sd_Sn_Em(i) => (i.0, FpKind::FMls),
+        _ => {
+            return Err(Error::Unsupported {
+                pc: em.current_pc,
+                opcode: 0,
+            });
+        }
+    };
+    let (double, index, rm) = fp_element_fields(em, raw)?;
+    let rn = bits(raw, 5, 5) as u8;
+    let rd = bits(raw, 0, 5) as u8;
+    // Capture scalar multiplicand, complete indexed source, and accumulator
+    // before any write, including all aliases and source register V31.
+    let n = if double {
+        em.get_v_d(rn)
+    } else {
+        em.get_v_s(rn)
+    };
+    let vm = em.get_v_q(rm);
+    let m = if double {
+        if index == 0 {
+            em.vec_extract_lo64(vm)
+        } else {
+            em.vec_extract_hi64(vm)
+        }
+    } else {
+        em.vec_extract_u32(vm, index)
+    };
+    let ty = if double { Ty::U64 } else { Ty::U32 };
+    let result = match kind {
+        FpKind::FMul => {
+            let op = if double { Op::Fmul64 } else { Op::Fmul32 };
+            em.push(Armlet::new(op, ty).with_args(&[n, m]))
+        }
+        FpKind::FMla | FpKind::FMls => {
+            let a = if double {
+                em.get_v_d(rd)
+            } else {
+                em.get_v_s(rd)
+            };
+            let n = if matches!(kind, FpKind::FMls) {
+                let op = if double { Op::Fneg64 } else { Op::Fneg32 };
+                em.push(Armlet::new(op, ty).with_args(&[n]))
+            } else {
+                n
+            };
+            let op = if double { Op::Fmadd64 } else { Op::Fmadd32 };
+            em.push(Armlet::new(op, ty).with_args(&[n, m, a]))
+        }
+        FpKind::FMulx => unreachable!(),
+    };
+    // Scalar writes replace the complete SIMD register, clearing unused bits.
+    if double {
+        em.set_v_d(rd, result);
+    } else {
+        em.set_v_s(rd, result);
+    }
+    Ok(InstStatus::Continue)
+}
+
+fn translate_fp(em: &mut IrEmitter<'_>, raw: u32, kind: FpKind) -> Result<InstStatus> {
+    let q = bit(raw, 30) == 1;
+    let (double, idx, rm) = fp_element_fields(em, raw)?;
     let rn = bits(raw, 5, 5) as u8;
     let rd = bits(raw, 0, 5) as u8;
 
-    if sz == 1 && !q {
+    if double && !q {
         return Err(Error::Decode {
             pc: em.current_pc,
             opcode: raw,
         });
     }
 
-    let (idx, rm) = if sz == 0 {
-        let idx = (h << 1) | l;
-        let rm = (m_b << 4) | rm_low4;
-        (idx, rm as u8)
-    } else {
-        let idx = h;
-        let rm = (l << 4) | rm_low4;
-        let _ = m_b;
-        (idx, rm as u8)
-    };
-
     let vm = em.get_v_q(rm);
-    let broadcast = if sz == 0 {
+    let broadcast = if !double {
         let scalar = em.vec_extract_u32(vm, idx);
         em.vec_dup_gpr(scalar, 2, q)
     } else {
@@ -148,7 +215,6 @@ fn translate_fp(em: &mut IrEmitter<'_>, raw: u32, kind: FpKind) -> Result<InstSt
     };
 
     let vn = em.get_v_q(rn);
-    let double = sz == 1;
     let result = match kind {
         FpKind::FMla => {
             let vd_prev = em.get_v_q(rd);

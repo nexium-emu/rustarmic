@@ -1,8 +1,9 @@
 use disarm64::decoder::ASIMDMISC;
 
+use crate::arch::RegSize;
 use crate::error::{Error, Result};
 use crate::frontend::translator::InstStatus;
-use crate::ir::IrEmitter;
+use crate::ir::{Armlet, IrEmitter, Op, Ty};
 use crate::util::bits::{bit, bits};
 
 #[derive(Clone, Copy)]
@@ -36,9 +37,37 @@ enum Kind {
     Cnt,
 }
 
+fn translate_shift_left_width(em: &mut IrEmitter<'_>, raw: u32) -> Result<InstStatus> {
+    let size = bits(raw, 22, 2);
+    if size == 3 { return Err(Error::Unsupported { pc: em.current_pc, opcode: raw }); }
+    let rn = bits(raw, 5, 5) as u8;
+    let rd = bits(raw, 0, 5) as u8;
+    let source = em.get_v_q(rn);
+    let zero = em.const_u64(0);
+    let zero = em.vec_build_q(zero, zero);
+    let widened = em.vec_uaddl(source, zero, size, bit(raw, 30) != 0);
+    let result = em.vec_shl_imm(widened, size + 1, 8 << size, true);
+    em.set_v_q(rd, result);
+    Ok(InstStatus::Continue)
+}
+
 pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDMISC) -> Result<InstStatus> {
     use ASIMDMISC::*;
     let (raw, kind) = match insn {
+        SHLL_Vd_Vn_SHLL_IMM(i) => return translate_shift_left_width(em, i.0),
+        SHLL2_Vd_Vn_SHLL_IMM(i) => return translate_shift_left_width(em, i.0),
+        CLZ_Vd_Vn(i) => return translate_leading_count(em, i.0, false),
+        CLS_Vd_Vn(i) => return translate_leading_count(em, i.0, true),
+        FCVTL_Vd_Vn(i) => return super::asimd_widen::translate(em, i.0),
+        FCVTL2_Vd_Vn(i) => return super::asimd_widen::translate(em, i.0),
+        FRSQRTE_Vd_Vn(i) => return super::asimd_recip::translate(em, i.0, false, false),
+        FRECPE_Vd_Vn(i) => return super::asimd_recip::translate_reciprocal(em, i.0, false, false),
+        SQXTN_Vd_Vn(i) => return super::asimd_narrow::translate(em, i.0, false, 0),
+        SQXTN2_Vd_Vn(i) => return super::asimd_narrow::translate(em, i.0, false, 0),
+        UQXTN_Vd_Vn(i) => return super::asimd_narrow::translate(em, i.0, false, 1),
+        UQXTN2_Vd_Vn(i) => return super::asimd_narrow::translate(em, i.0, false, 1),
+        SQXTUN_Vd_Vn(i) => return super::asimd_narrow::translate(em, i.0, false, 2),
+        SQXTUN2_Vd_Vn(i) => return super::asimd_narrow::translate(em, i.0, false, 2),
         NEG_Vd_Vn(i) => (i.0, Kind::Neg),
         ABS_Vd_Vn(i) => (i.0, Kind::Abs),
         NOT_Vd_Vn(i) => (i.0, Kind::Not),
@@ -68,6 +97,14 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDMISC) -> Result<InstStatus> 
         FCMLE_Vd_Vn_FPIMM0(i) => (i.0, Kind::FCmLe0),
         FCMLT_Vd_Vn_FPIMM0(i) => (i.0, Kind::FCmLt0),
         CNT_Vd_Vn(i) => (i.0, Kind::Cnt),
+        SCVTF_Vd_Vn(i) => return super::asimd_convert::translate_vector(em, i.0, false),
+        UCVTF_Vd_Vn(i) => return super::asimd_convert::translate_vector(em, i.0, true),
+        FCVTZS_Vd_Vn(i) => {
+            return super::asimd_convert::translate_vector_float_to_int(em, i.0, false);
+        }
+        FCVTZU_Vd_Vn(i) => {
+            return super::asimd_convert::translate_vector_float_to_int(em, i.0, true);
+        }
         _ => {
             return Err(Error::Unsupported {
                 pc: em.current_pc,
@@ -191,6 +228,46 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDMISC) -> Result<InstStatus> 
         }
         Kind::Cnt => em.vec_cnt(vn, q),
     };
+    em.set_v_q(rd, result);
+    Ok(InstStatus::Continue)
+}
+
+// Arm CLZ/CLS (vector): lane widths are8/16/32, never64. Reuse the native
+// scalar CLZ32 lowerer (feature-gated LZCNT or correct BSR zero handling).
+fn translate_leading_count(em: &mut IrEmitter<'_>, raw: u32, signed: bool) -> Result<InstStatus> {
+    let size = bits(raw, 22, 2);
+    if size == 3 {
+        return Err(Error::Unsupported { pc: em.current_pc, opcode: raw });
+    }
+    let q = bit(raw, 30) != 0;
+    let width = 8u32 << size;
+    let rn = bits(raw, 5, 5) as u8;
+    let rd = bits(raw, 0, 5) as u8;
+    let source = em.get_v_q(rn);
+    let source = if signed {
+        // Invert negative lanes only. CLS(x)=CLZ(x XOR sign_mask)-1;
+        // zero and minus one both produce width-1, not width.
+        let sign_mask = em.vec_sshr_imm(source, size, width - 1, q);
+        em.vec_eor(source, sign_mask, q)
+    } else {
+        source
+    };
+    let z = em.const_u64(0);
+    let mut result = em.vec_build_q(z, z);
+    let adjustment = em.const_u64((32 - width + u32::from(signed)) as u64);
+    for lane in 0..(if q { 128 } else { 64 }) / width {
+        let value = match size {
+            0 => em.vec_extract_u8(source, lane),
+            1 => em.vec_extract_u16(source, lane),
+            2 => em.vec_extract_u32(source, lane),
+            _ => unreachable!(),
+        };
+        let leading = em.push(Armlet::new(Op::Clz32, Ty::U32).with_args(&[value]));
+        // Narrow lane extracts are zero-extended to32 bits; remove that prefix.
+        let count = em.sub(leading, adjustment, RegSize::W);
+        result = em.vec_ins_gpr(result, count, size, lane, q);
+    }
+    // Starting from zero ensures Q0 clears all inactive upper64 bits.
     em.set_v_q(rd, result);
     Ok(InstStatus::Continue)
 }

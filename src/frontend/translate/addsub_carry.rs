@@ -1,22 +1,18 @@
 use disarm64::decoder::ADDSUB_CARRY;
 
 use crate::arch::RegSize;
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::frontend::translator::InstStatus;
 use crate::ir::{Armlet, IrEmitter, Op, Ty};
 use crate::util::bits::{bit, bits};
 
 pub fn translate(em: &mut IrEmitter<'_>, insn: ADDSUB_CARRY) -> Result<InstStatus> {
     use ADDSUB_CARRY::*;
-    let (raw, is_sub) = match insn {
-        ADC_Rd_Rn_Rm(i) => (i.0, false),
-        SBC_Rd_Rn_Rm(i) => (i.0, true),
-        ADCS_Rd_Rn_Rm(_) | SBCS_Rd_Rn_Rm(_) => {
-            return Err(Error::Unsupported {
-                pc: em.current_pc,
-                opcode: 0,
-            });
-        }
+    let (raw, is_sub, setflags) = match insn {
+        ADC_Rd_Rn_Rm(i) => (i.0, false, false),
+        SBC_Rd_Rn_Rm(i) => (i.0, true, false),
+        ADCS_Rd_Rn_Rm(i) => (i.0, false, true),
+        SBCS_Rd_Rn_Rm(i) => (i.0, true, true),
     };
     let sf = bit(raw, 31);
     let rm = bits(raw, 16, 5) as u8;
@@ -28,11 +24,15 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ADDSUB_CARRY) -> Result<InstStatu
     let n = em.get_gpr(rn, size);
     let m = em.get_gpr(rm, size);
     let nzcv = em.get_nzcv();
-    let op = match (is_sub, sf) {
-        (false, 1) => Op::Adc64,
-        (false, 0) => Op::Adc32,
-        (true, 1) => Op::Sbc64,
-        (true, 0) => Op::Sbc32,
+    let op = match (is_sub, setflags, sf) {
+        (false, false, 1) => Op::Adc64,
+        (false, false, 0) => Op::Adc32,
+        (true, false, 1) => Op::Sbc64,
+        (true, false, 0) => Op::Sbc32,
+        (false, true, 1) => Op::Adcs64,
+        (false, true, 0) => Op::Adcs32,
+        (true, true, 1) => Op::Sbcs64,
+        (true, true, 0) => Op::Sbcs32,
         _ => unreachable!(),
     };
     let result = em.push(Armlet::new(op, ty).with_args(&[n, m, nzcv]));

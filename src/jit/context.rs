@@ -2,6 +2,11 @@ use crate::arch::{NUM_GPRS, NUM_VREGS};
 
 pub type MemReadFn = unsafe extern "C" fn(*mut CpuContext, addr: u64, size: u8);
 pub type MemWriteFn = unsafe extern "C" fn(*mut CpuContext, addr: u64, size: u8);
+/// Store `io_value[0]` only if memory still matches `exclusive_value`.
+/// Return architectural STXR status: zero on success, one on failure. Embedders
+/// must install an atomic implementation for concurrent ordinary memory writes.
+/// Memory faults use the existing CpuContext fault fields, as for MemWriteFn.
+pub type MemWriteExclusiveFn = unsafe extern "C" fn(*mut CpuContext, addr: u64, size: u8) -> u32;
 
 #[repr(C, align(64))]
 pub struct CpuContext {
@@ -10,6 +15,7 @@ pub struct CpuContext {
     pub v: [[u64; 2]; NUM_VREGS],
     pub pc: u64,
     pub exclusive_addr: u64,
+    pub exclusive_value: u64,
     pub mem_base: *mut u8,
     pub mem_base_va: u64,
     pub mem_size: u64,
@@ -21,6 +27,7 @@ pub struct CpuContext {
     pub read_cntpct: unsafe extern "C" fn(*mut CpuContext) -> u64,
     pub mem_read: MemReadFn,
     pub mem_write: MemWriteFn,
+    pub mem_write_exclusive: MemWriteExclusiveFn,
     pub io_value: [u64; 2],
     pub fpcr: u32,
     pub fpsr: u32,
@@ -38,12 +45,23 @@ pub struct CpuContext {
 unsafe impl Send for CpuContext {}
 
 unsafe extern "C" fn default_read_cntpct(_ctx: *mut CpuContext) -> u64 {
-    use std::sync::OnceLock;
-    use std::time::Instant;
-    static START: OnceLock<Instant> = OnceLock::new();
-    let elapsed = START.get_or_init(Instant::now).elapsed().as_nanos();
-    let ticks = elapsed.saturating_mul(19_200_000) / 1_000_000_000;
-    ticks.min(u128::from(u64::MAX)) as u64
+    CpuContext::default_cntpct()
+}
+
+impl CpuContext {
+    /// Read the same process-wide 19.2MHz monotonic clock used by the default
+    /// CNTPCT_EL0/CNTVCT_EL0 callback, without borrowing or mutating a context.
+    /// Embedders may use this to keep host services in the guest clock's epoch.
+    /// This deliberately does not invoke a custom `read_cntpct` callback:
+    /// custom callbacks retain their existing mutable-context contract.
+    pub fn default_cntpct() -> u64 {
+        use std::sync::OnceLock;
+        use std::time::Instant;
+        static START: OnceLock<Instant> = OnceLock::new();
+        let elapsed = START.get_or_init(Instant::now).elapsed().as_nanos();
+        let ticks = elapsed.saturating_mul(19_200_000) / 1_000_000_000;
+        ticks.min(u128::from(u64::MAX)) as u64
+    }
 }
 
 unsafe extern "C" fn default_mem_read(_: *mut CpuContext, addr: u64, size: u8) {
@@ -59,6 +77,42 @@ unsafe extern "C" fn default_mem_write(_: *mut CpuContext, addr: u64, size: u8) 
     )
 }
 
+// Compatibility for existing single-core callback embedders. The mutex only
+// serializes this helper's exclusive writes: ordinary callbacks do not acquire
+// it. This is not an atomic CAS against concurrent ordinary writes, nor an ARM
+// global reservation monitor (same-value writes/ABA are not detected). Production
+// multicore embedders must supply a genuinely atomic mem_write_exclusive hook.
+unsafe extern "C" fn default_mem_write_exclusive(
+    context: *mut CpuContext,
+    address: u64,
+    size: u8,
+) -> u32 {
+    static EXCLUSIVE_CALLBACKS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = EXCLUSIVE_CALLBACKS
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let context_ref = unsafe { &mut *context };
+    let desired = context_ref.io_value;
+    let expected = context_ref.exclusive_value;
+    let read = context_ref.mem_read;
+    let write = context_ref.mem_write;
+    unsafe { read(context, address, size) };
+    let context_ref = unsafe { &mut *context };
+    let mask = match size {
+        1 => u8::MAX as u64,
+        2 => u16::MAX as u64,
+        4 => u32::MAX as u64,
+        8 => u64::MAX,
+        _ => return 1,
+    };
+    if context_ref.mem_fault != 0 || context_ref.io_value[0] & mask != expected & mask {
+        return 1;
+    }
+    context_ref.io_value = desired;
+    unsafe { write(context, address, size) };
+    u32::from(unsafe { (*context).mem_fault != 0 })
+}
+
 impl Default for CpuContext {
     fn default() -> Self {
         Self {
@@ -67,6 +121,7 @@ impl Default for CpuContext {
             v: [[0; 2]; NUM_VREGS],
             pc: 0,
             exclusive_addr: 0,
+            exclusive_value: 0,
             mem_base: core::ptr::null_mut(),
             mem_base_va: 0,
             mem_size: 0,
@@ -78,6 +133,7 @@ impl Default for CpuContext {
             read_cntpct: default_read_cntpct,
             mem_read: default_mem_read,
             mem_write: default_mem_write,
+            mem_write_exclusive: default_mem_write_exclusive,
             io_value: [0; 2],
             fpcr: 0,
             fpsr: 0,
@@ -138,6 +194,9 @@ pub mod cpu_offsets {
     pub const fn exclusive_addr() -> usize {
         offset_of!(CpuContext, exclusive_addr)
     }
+    pub const fn exclusive_value() -> usize {
+        offset_of!(CpuContext, exclusive_value)
+    }
     #[inline]
     pub const fn exclusive_size() -> usize {
         offset_of!(CpuContext, exclusive_size)
@@ -165,6 +224,9 @@ pub mod cpu_offsets {
     #[inline]
     pub const fn mem_write() -> usize {
         offset_of!(CpuContext, mem_write)
+    }
+    pub const fn mem_write_exclusive() -> usize {
+        offset_of!(CpuContext, mem_write_exclusive)
     }
     #[inline]
     pub const fn io_value() -> usize {

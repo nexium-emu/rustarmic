@@ -326,6 +326,28 @@ impl<'b> IrEmitter<'b> {
         )
     }
 
+    pub fn vec_variable_shift(
+        &mut self,
+        vn: ValueRef,
+        vm: ValueRef,
+        lane_log2: u32,
+        q: bool,
+        signed: bool,
+    ) -> ValueRef {
+        let op = match (signed, lane_log2) {
+            (false, 0) => Op::VecUshl8,
+            (false, 1) => Op::VecUshl16,
+            (false, 2) => Op::VecUshl32,
+            (false, 3) => Op::VecUshl64,
+            (true, 0) => Op::VecSshl8,
+            (true, 1) => Op::VecSshl16,
+            (true, 2) => Op::VecSshl32,
+            (true, 3) => Op::VecSshl64,
+            _ => unreachable!("bad lane_log2"),
+        };
+        self.push(Armlet::new(op, Ty::U128).with_args(&[vn, vm]).with_imm(q as u64))
+    }
+
     pub fn vec_shl_imm(&mut self, vn: ValueRef, lane_log2: u32, shift: u32, q: bool) -> ValueRef {
         let op = match lane_log2 {
             0 => Op::VecShlImm8,

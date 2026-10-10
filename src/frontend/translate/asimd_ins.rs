@@ -1,4 +1,4 @@
-use disarm64::decoder::ASIMDINS;
+use disarm64::decoder::{ASIMDINS, ASISDONE};
 
 use crate::arch::RegSize;
 use crate::error::{Error, Result};
@@ -16,6 +16,37 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDINS) -> Result<InstStatus> {
         INS_Ed_Rn(i) => translate_ins_from_gpr(em, i.0),
         INS_Ed_En(i) => translate_ins_from_element(em, i.0),
     }
+}
+
+pub fn translate_scalar(em: &mut IrEmitter<'_>, insn: ASISDONE) -> Result<InstStatus> {
+    // MOV (scalar, element) is an assembler alias of this same DUP encoding.
+    let ASISDONE::DUP_Sd_En(instruction) = insn;
+    let raw = instruction.0;
+    let (size, lane) = decode_imm5(bits(raw, 16, 5)).ok_or(Error::Decode {
+        pc: em.current_pc,
+        opcode: raw,
+    })?;
+    let rn = bits(raw, 5, 5) as u8;
+    let rd = bits(raw, 0, 5) as u8;
+    // Snapshot all source bits before clearing the scalar destination: Rd can
+    // alias Rn, and the selected lane can reside in the source's upper half.
+    let source = em.get_v_q(rn);
+    let value = match size {
+        0 => em.vec_extract_u8(source, lane),
+        1 => em.vec_extract_u16(source, lane),
+        2 => em.vec_extract_u32(source, lane),
+        3 if lane == 0 => em.vec_extract_lo64(source),
+        3 => em.vec_extract_hi64(source),
+        _ => unreachable!(),
+    };
+    if size == 3 {
+        em.set_v_d(rd, value);
+    } else {
+        // Extract8/16 produce zero-extended U32 values, so SetVS also clears
+        // unused bits between the byte/halfword result and the 32-bit boundary.
+        em.set_v_s(rd, value);
+    }
+    Ok(InstStatus::Continue)
 }
 
 fn decode_imm5(imm5: u32) -> Option<(u32, u32)> {

@@ -39,24 +39,24 @@ fn run(words: &[u32], data: &[u8]) -> CpuContext {
 
 #[test]
 fn ldrsb_w_zero_extends_signed_result_to_32_bits() {
-    let ctx = run(&[0x3980_0001, BRK_0], &[0x80]);
+    let ctx = run(&[0x39C0_0001, BRK_0], &[0x80]);
     assert_eq!(ctx.x[1], 0x0000_0000_FFFF_FF80);
 }
 
 #[test]
 fn ldrsb_x_sign_extends_to_64_bits() {
-    let ctx = run(&[0x39C0_0001, BRK_0], &[0x80]);
+    let ctx = run(&[0x3980_0001, BRK_0], &[0x80]);
     assert_eq!(ctx.x[1], 0xFFFF_FFFF_FFFF_FF80);
 }
 
 #[test]
 fn ldrsh_w_zero_extends_signed_result_to_32_bits() {
-    let ctx = run(&[0x7980_0001, BRK_0], &[0x00, 0x80]);
+    let ctx = run(&[0x79C0_0001, BRK_0], &[0x00, 0x80]);
     assert_eq!(ctx.x[1], 0x0000_0000_FFFF_8000);
 }
 
 #[test]
 fn ldrsh_x_sign_extends_to_64_bits() {
-    let ctx = run(&[0x79C0_0001, BRK_0], &[0x00, 0x80]);
+    let ctx = run(&[0x7980_0001, BRK_0], &[0x00, 0x80]);
     assert_eq!(ctx.x[1], 0xFFFF_FFFF_FFFF_8000);
 }

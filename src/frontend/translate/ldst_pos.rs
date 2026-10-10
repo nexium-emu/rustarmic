@@ -20,8 +20,9 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: LDST_POS) -> Result<InstStatus> {
         LDR_Rt_ADDR_UIMM12(i) => (i.0, Kind::LoadU, true),
         LDRB_Rt_ADDR_UIMM12(i) => (i.0, Kind::LoadU, false),
         LDRH_Rt_ADDR_UIMM12(i) => (i.0, Kind::LoadU, false),
-        LDRSB_Rt_ADDR_UIMM12(i) => (i.0, Kind::LoadS, bit(i.0, 22) != 0),
-        LDRSH_Rt_ADDR_UIMM12(i) => (i.0, Kind::LoadS, bit(i.0, 22) != 0),
+        // Signed loads: opc=10 targets X; opc=11 targets W (opc<0>=bit22).
+        LDRSB_Rt_ADDR_UIMM12(i) => (i.0, Kind::LoadS, bit(i.0, 22) == 0),
+        LDRSH_Rt_ADDR_UIMM12(i) => (i.0, Kind::LoadS, bit(i.0, 22) == 0),
         LDRSW_Rt_ADDR_UIMM12(i) => (i.0, Kind::LoadS, true),
         STR_Rt_ADDR_UIMM12(i) => (i.0, Kind::Store, true),
         STRB_Rt_ADDR_UIMM12(i) => (i.0, Kind::Store, false),
@@ -82,8 +83,16 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: LDST_POS) -> Result<InstStatus> {
             } else if bytes == 8 {
                 let v = em.load(addr, bytes);
                 em.set_v_d(rt, v);
-            } else if bytes == 4 {
+            } else if matches!(bytes, 1 | 2 | 4) {
                 let v = em.load(addr, bytes);
+                // SetV accepts a U32 scalar, not Load8/16's narrow IR type.
+                // Promote with an explicit mask and clear the entire upper Q.
+                let v = if bytes < 4 {
+                    let mask = em.const_u32((1u32 << (bytes * 8)) - 1);
+                    em.and(v, mask, RegSize::W)
+                } else {
+                    v
+                };
                 em.set_v_s(rt, v);
             } else {
                 return Err(Error::Unsupported {
@@ -104,7 +113,7 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: LDST_POS) -> Result<InstStatus> {
             } else {
                 let v = if bytes == 8 {
                     em.get_v_d(rt)
-                } else if bytes == 4 {
+                } else if matches!(bytes, 1 | 2 | 4) {
                     em.get_v_s(rt)
                 } else {
                     return Err(Error::Unsupported {

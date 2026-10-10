@@ -63,7 +63,13 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: BITFIELD) -> Result<InstStatus> {
     let result = match kind {
         Kind::Ubfm => bot,
         Kind::Sbfm => {
-            let high_bit = if imms < immr { width - 1 } else { imms - immr };
+            // The wrapping SBFIZ form moves source bit `imms` upward by
+            // width-immr; extend that inserted sign bit, not the register MSB.
+            let high_bit = if imms < immr {
+                imms + width - immr
+            } else {
+                imms - immr
+            };
             let shl_amt = (width - 1 - high_bit) as u64;
             let amt_c = em.const_u64(shl_amt);
             let shifted_l = em.lsl(bot, amt_c, size);

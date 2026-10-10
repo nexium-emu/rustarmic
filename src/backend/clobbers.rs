@@ -103,9 +103,11 @@ pub fn clobbers_for_op(op: Op) -> ClobberSet {
             c.result_pinned_to_gpr = Some(gpr_id::RAX);
         }
 
-        AddsFlags32 | AddsFlags64 | SubsFlags32 | SubsFlags64 => {
+        AddsFlags32 | AddsFlags64 | SubsFlags32 | SubsFlags64
+        | Adcs32 | Adcs64 | Sbcs32 | Sbcs64 => {
             c.gpr = GprMask::RAX
                 | GprMask::RCX
+                | GprMask::RDX
                 | GprMask::RSI
                 | GprMask::R8
                 | GprMask::R9
@@ -115,7 +117,7 @@ pub fn clobbers_for_op(op: Op) -> ClobberSet {
         }
 
         Adc32 | Adc64 | Sbc32 | Sbc64 => {
-            c.gpr = GprMask::RAX | GprMask::RCX;
+            c.gpr = GprMask::RAX | GprMask::RCX | GprMask::RDX;
             c.result_pinned_to_gpr = Some(gpr_id::RAX);
         }
 
@@ -170,10 +172,19 @@ pub fn clobbers_for_op(op: Op) -> ClobberSet {
             }
         }
 
-        Mrs => {
+        Mrs | Fmadd32 | Fmadd64 | FrsqrtEstimate32 | FrsqrtEstimate64
+        | FrsqrtStep32 | FrsqrtStep64 | FrecipEstimate32 | FrecipEstimate64
+        | FrecipStep32 | FrecipStep64 | SaturatingNarrow | FabsDiff32 | FabsDiff64
+        | FpMinMaxReduce32 | IntMinMaxReduce32 | FpMinMaxNum32 | FpMinMaxNum64
+        | FpAbsoluteCompare32 | FpAbsoluteCompare64 => {
             c.gpr = CALLER_SAVED_GPRS;
             c.xmm = CALLER_SAVED_XMMS;
             c.result_pinned_to_gpr = Some(gpr_id::RAX);
+        }
+
+        SaturatingBinary => {
+            c.gpr = CALLER_SAVED_GPRS;
+            c.xmm = CALLER_SAVED_XMMS;
         }
 
         _ => {

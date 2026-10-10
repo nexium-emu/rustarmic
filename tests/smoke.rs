@@ -1993,27 +1993,33 @@ fn vec_sshr_imm_16b_sign_extends() {
 }
 
 #[test]
-fn vec_mul_2d_via_decomposition() {
+fn vec_mul_reserved_2d_rejects_without_retirement_or_mutation() {
     let mut ctx = CpuContext::default();
     ctx.pc = CODE_BASE;
     ctx.v[1] = [3, 0x0000_0001_0000_0001];
     ctx.v[2] = [7, 5];
-    let code = build_code(&[0x4EE2_9C20, 0xD4200000]);
-    run(code, &mut ctx);
-    assert_eq!(ctx.v[0][0], 21);
-    assert_eq!(ctx.v[0][1], 0x0000_0005_0000_0005);
+    let original = ctx.v;
+    let mut code = CodeMem { bytes: build_code(&[0x4EE2_9C20]), base: CODE_BASE };
+    let mut jit = Jit::new(JitConfig::default()).unwrap();
+    let result = jit.run_bounded(&mut ctx, &mut code, 1).unwrap();
+    assert!(matches!(result.stop, rustarmic::StopReason::Unsupported(_)));
+    assert_eq!(result.retired, 0);
+    assert_eq!(ctx.v, original);
 }
 
 #[test]
-fn vec_mul_2d_wraps_at_64() {
+fn vec_mul_reserved_1d_rejects_without_retirement_or_mutation() {
     let mut ctx = CpuContext::default();
     ctx.pc = CODE_BASE;
     ctx.v[1] = [0x8000_0000_0000_0000, 0xFFFF_FFFF_FFFF_FFFF];
     ctx.v[2] = [2, 0xFFFF_FFFF_FFFF_FFFF];
-    let code = build_code(&[0x4EE2_9C20, 0xD4200000]);
-    run(code, &mut ctx);
-    assert_eq!(ctx.v[0][0], 0);
-    assert_eq!(ctx.v[0][1], 1);
+    let original = ctx.v;
+    let mut code = CodeMem { bytes: build_code(&[0x0EE2_9C20]), base: CODE_BASE };
+    let mut jit = Jit::new(JitConfig::default()).unwrap();
+    let result = jit.run_bounded(&mut ctx, &mut code, 1).unwrap();
+    assert!(matches!(result.stop, rustarmic::StopReason::Unsupported(_)));
+    assert_eq!(result.retired, 0);
+    assert_eq!(ctx.v, original);
 }
 
 #[test]

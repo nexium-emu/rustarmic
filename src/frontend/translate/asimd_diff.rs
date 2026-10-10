@@ -11,8 +11,16 @@ enum Kind {
     Uaddl,
     Ssubl,
     Usubl,
+    Saddw,
+    Uaddw,
+    Ssubw,
+    Usubw,
     Smull,
     Umull,
+    Smlal,
+    Umlal,
+    Smlsl,
+    Umlsl,
 }
 
 pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDDIFF) -> Result<InstStatus> {
@@ -26,10 +34,26 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDDIFF) -> Result<InstStatus> 
         SSUBL2_Vd_Vn_Vm(i) => (i.0, Kind::Ssubl),
         USUBL_Vd_Vn_Vm(i) => (i.0, Kind::Usubl),
         USUBL2_Vd_Vn_Vm(i) => (i.0, Kind::Usubl),
+        SADDW_Vd_Vn_Vm(i) => (i.0, Kind::Saddw),
+        SADDW2_Vd_Vn_Vm(i) => (i.0, Kind::Saddw),
+        UADDW_Vd_Vn_Vm(i) => (i.0, Kind::Uaddw),
+        UADDW2_Vd_Vn_Vm(i) => (i.0, Kind::Uaddw),
+        SSUBW_Vd_Vn_Vm(i) => (i.0, Kind::Ssubw),
+        SSUBW2_Vd_Vn_Vm(i) => (i.0, Kind::Ssubw),
+        USUBW_Vd_Vn_Vm(i) => (i.0, Kind::Usubw),
+        USUBW2_Vd_Vn_Vm(i) => (i.0, Kind::Usubw),
         SMULL_Vd_Vn_Vm(i) => (i.0, Kind::Smull),
         SMULL2_Vd_Vn_Vm(i) => (i.0, Kind::Smull),
         UMULL_Vd_Vn_Vm(i) => (i.0, Kind::Umull),
         UMULL2_Vd_Vn_Vm(i) => (i.0, Kind::Umull),
+        SMLAL_Vd_Vn_Vm(i) => (i.0, Kind::Smlal),
+        SMLAL2_Vd_Vn_Vm(i) => (i.0, Kind::Smlal),
+        UMLAL_Vd_Vn_Vm(i) => (i.0, Kind::Umlal),
+        UMLAL2_Vd_Vn_Vm(i) => (i.0, Kind::Umlal),
+        SMLSL_Vd_Vn_Vm(i) => (i.0, Kind::Smlsl),
+        SMLSL2_Vd_Vn_Vm(i) => (i.0, Kind::Smlsl),
+        UMLSL_Vd_Vn_Vm(i) => (i.0, Kind::Umlsl),
+        UMLSL2_Vd_Vn_Vm(i) => (i.0, Kind::Umlsl),
         _ => {
             return Err(Error::Unsupported {
                 pc: em.current_pc,
@@ -59,8 +83,41 @@ fn translate_with(em: &mut IrEmitter<'_>, raw: u32, kind: Kind) -> Result<InstSt
         Kind::Uaddl => em.vec_uaddl(vn, vm, size, high_half),
         Kind::Ssubl => em.vec_ssubl(vn, vm, size, high_half),
         Kind::Usubl => em.vec_usubl(vn, vm, size, high_half),
+        Kind::Saddw | Kind::Uaddw | Kind::Ssubw | Kind::Usubw => {
+            // Arm S/UADDW and S/USUBW keep all128 bits of wide Vn. Q selects
+            // only the64-bit half of narrow Vm, then each result wraps at
+            // double the source element width. Snapshot both before SetVQ.
+            let z = em.const_u64(0);
+            let zero = em.vec_build_q(z, z);
+            let widened = if matches!(kind, Kind::Saddw | Kind::Ssubw) {
+                em.vec_saddl(vm, zero, size, high_half)
+            } else {
+                em.vec_uaddl(vm, zero, size, high_half)
+            };
+            if matches!(kind, Kind::Ssubw | Kind::Usubw) {
+                em.vec_sub(vn, widened, size + 1, true)
+            } else {
+                em.vec_add(vn, widened, size + 1, true)
+            }
+        }
         Kind::Smull => em.vec_smull(vn, vm, size, high_half),
         Kind::Umull => em.vec_umull(vn, vm, size, high_half),
+        Kind::Smlal | Kind::Umlal | Kind::Smlsl | Kind::Umlsl => {
+            // Q selects the same original 64-bit half of BOTH narrow
+            // sources, never the accumulator or destination width. Capture
+            // the full wide accumulator before any aliased destination write.
+            let accumulator = em.get_v_q(rd);
+            let product = if matches!(kind, Kind::Smlal | Kind::Smlsl) {
+                em.vec_smull(vn, vm, size, high_half)
+            } else {
+                em.vec_umull(vn, vm, size, high_half)
+            };
+            if matches!(kind, Kind::Smlsl | Kind::Umlsl) {
+                em.vec_sub(accumulator, product, size + 1, true)
+            } else {
+                em.vec_add(accumulator, product, size + 1, true)
+            }
+        }
     };
     em.set_v_q(rd, result);
     Ok(InstStatus::Continue)

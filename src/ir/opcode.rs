@@ -165,6 +165,15 @@ pub enum Op {
     Rev32 = 0x1B6,
     Rev64 = 0x1B7,
 
+    Crc32Ieee8 = 0x1BC,
+    Crc32Ieee16 = 0x1BD,
+    Crc32Ieee32 = 0x1BE,
+    Crc32Ieee64 = 0x1BF,
+    Crc32Castagnoli8 = 0x1C0,
+    Crc32Castagnoli16 = 0x1C1,
+    Crc32Castagnoli32 = 0x1C2,
+    Crc32Castagnoli64 = 0x1C3,
+
     Csel8 = 0x200,
     Csel16 = 0x201,
     Csel32 = 0x202,
@@ -286,6 +295,38 @@ pub enum Op {
     ScvtfXD = 0x547,
     FcvtSD = 0x548,
     FcvtDS = 0x549,
+    FcvtZuSW = 0x550,
+    FcvtZuSX = 0x551,
+    FcvtZuDW = 0x552,
+    FcvtZuDX = 0x553,
+    Fmadd32 = 0x554,
+    Fmadd64 = 0x555,
+    FrsqrtEstimate32 = 0x55A,
+    FrsqrtEstimate64 = 0x55B,
+    FrsqrtStep32 = 0x55E,
+    FrsqrtStep64 = 0x55F,
+    SaturatingNarrow = 0x560,
+    FrecipEstimate32 = 0x566,
+    FrecipEstimate64 = 0x567,
+    FrecipStep32 = 0x56A,
+    FrecipStep64 = 0x56B,
+    FabsDiff32 = 0x56E,
+    FabsDiff64 = 0x56F,
+    FpMinMaxReduce32 = 0x570,
+    IntMinMaxReduce32 = 0x571,
+    FpMinMaxNum32 = 0x574,
+    FpMinMaxNum64 = 0x575,
+    SaturatingBinary = 0x578,
+    FpAbsoluteCompare32 = 0x57A,
+    FpAbsoluteCompare64 = 0x57B,
+    Adcs32 = 0x57E,
+    Adcs64 = 0x57F,
+    Sbcs32 = 0x582,
+    Sbcs64 = 0x583,
+    UcvtfWS = 0x54C,
+    UcvtfXS = 0x54D,
+    UcvtfWD = 0x54E,
+    UcvtfXD = 0x54F,
 
     VecAdd8 = 0x600,
     VecAdd16 = 0x601,
@@ -469,6 +510,14 @@ pub enum Op {
     VecFRintA_D = 0x741,
     VecFRintX_S = 0x744,
     VecFRintX_D = 0x745,
+    VecUshl8 = 0x748,
+    VecUshl16 = 0x749,
+    VecUshl32 = 0x74A,
+    VecUshl64 = 0x74B,
+    VecSshl8 = 0x74C,
+    VecSshl16 = 0x74D,
+    VecSshl32 = 0x74E,
+    VecSshl64 = 0x74F,
 
     Mrs = 0x700,
     Msr = 0x704,
@@ -520,6 +569,27 @@ impl Op {
                 | SubsFlags64
                 | Fcmp32
                 | Fcmp64
+                | FrsqrtEstimate32
+                | FrsqrtEstimate64
+                | FrsqrtStep32
+                | FrsqrtStep64
+                | SaturatingNarrow
+                | FrecipEstimate32
+                | FrecipEstimate64
+                | FrecipStep32
+                | FrecipStep64
+                | FabsDiff32
+                | FabsDiff64
+                | FpMinMaxReduce32
+                | FpMinMaxNum32
+                | FpMinMaxNum64
+                | SaturatingBinary
+                | FpAbsoluteCompare32
+                | FpAbsoluteCompare64
+                | Adcs32
+                | Adcs64
+                | Sbcs32
+                | Sbcs64
                 | Mrs
                 | Msr
                 | Brk
@@ -532,6 +602,13 @@ impl Op {
             return true;
         }
         match self.base() {
+            // Guest reads remain observable (callbacks, MMIO, faults) even
+            // when their result targets ZR or is overwritten before use.
+            b if b == Load8.base()
+                || b == Load128 as u16
+                || b == LoadS8.base()
+                || b == LoadAcq8.base()
+                || b == LoadPair8.base() => true,
             b if b == Store8.base() => true,
             b if b == Store128 as u16 => true,
             b if b == StoreRel8.base() => true,

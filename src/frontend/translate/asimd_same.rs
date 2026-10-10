@@ -2,14 +2,18 @@ use disarm64::decoder::ASIMDSAME;
 
 use crate::error::{Error, Result};
 use crate::frontend::translator::InstStatus;
-use crate::ir::IrEmitter;
+use crate::ir::{Armlet, IrEmitter, Op, Ty};
 use crate::util::bits::{bit, bits};
 
 #[derive(Clone, Copy)]
 enum Kind {
     Add,
     Sub,
+    Ushl,
+    Sshl,
     Mul,
+    Mla,
+    Mls,
     And,
     Orr,
     Eor,
@@ -48,12 +52,108 @@ enum Kind {
     FMinp,
 }
 
+fn translate_minmax_number(em: &mut IrEmitter<'_>, raw: u32, minimum: bool) -> Result<InstStatus> {
+    let double = bit(raw, 22) != 0;
+    let q = bit(raw, 30) != 0;
+    if double && !q {
+        return Err(Error::Unsupported { pc: em.current_pc, opcode: raw });
+    }
+    let rn = bits(raw, 5, 5) as u8;
+    let rm = bits(raw, 16, 5) as u8;
+    let rd = bits(raw, 0, 5) as u8;
+    let n = em.get_v_q(rn);
+    let m = em.get_v_q(rm);
+    let zero = em.const_u64(0);
+    let mut result = em.vec_build_q(zero, zero);
+    for lane in 0..if double || !q { 2 } else { 4 } {
+        let extract = |em: &mut IrEmitter<'_>, source| {
+            if double {
+                if lane == 0 { em.vec_extract_lo64(source) } else { em.vec_extract_hi64(source) }
+            } else { em.vec_extract_u32(source, lane) }
+        };
+        let a = extract(em, n);
+        let b = extract(em, m);
+        let value = em.push(Armlet::new(
+            if double { Op::FpMinMaxNum64 } else { Op::FpMinMaxNum32 },
+            if double { Ty::U64 } else { Ty::U32 },
+        ).with_args(&[a, b]).with_imm(u64::from(minimum)));
+        result = em.vec_ins_gpr(result, value, if double { 3 } else { 2 }, lane, q);
+    }
+    em.set_v_q(rd, result);
+    Ok(InstStatus::Continue)
+}
+
+pub(super) fn translate_saturating_binary(
+    em: &mut IrEmitter<'_>, raw: u32, scalar: bool, unsigned: bool, subtract: bool,
+) -> Result<InstStatus> {
+    let size = bits(raw, 22, 2);
+    let q = bit(raw, 30) != 0;
+    if !scalar && size == 3 && !q {
+        return Err(Error::Unsupported { pc: em.current_pc, opcode: raw });
+    }
+    let n = em.get_v_q(bits(raw, 5, 5) as u8);
+    let m = em.get_v_q(bits(raw, 16, 5) as u8);
+    let values = [em.vec_extract_lo64(n), em.vec_extract_hi64(n),
+                  em.vec_extract_lo64(m), em.vec_extract_hi64(m)];
+    let mode = u64::from(size) | (u64::from(unsigned) << 2) | (u64::from(subtract) << 3)
+        | (u64::from(q) << 4) | (u64::from(scalar) << 5);
+    let result = em.push(Armlet::new(Op::SaturatingBinary, Ty::U128)
+        .with_args(&values).with_imm(mode));
+    em.set_v_q(bits(raw, 0, 5) as u8, result);
+    Ok(InstStatus::Continue)
+}
+
+pub(super) fn translate_absolute_compare(
+    em: &mut IrEmitter<'_>, raw: u32, scalar: bool, greater: bool,
+) -> Result<InstStatus> {
+    let double = bit(raw, 22) != 0;
+    let q = bit(raw, 30) != 0;
+    if !scalar && double && !q {
+        return Err(Error::Unsupported { pc: em.current_pc, opcode: raw });
+    }
+    let n = em.get_v_q(bits(raw, 5, 5) as u8);
+    let m = em.get_v_q(bits(raw, 16, 5) as u8);
+    let zero = em.const_u64(0);
+    let mut result = em.vec_build_q(zero, zero);
+    for lane in 0..if scalar { 1 } else if double || !q { 2 } else { 4 } {
+        let extract = |em: &mut IrEmitter<'_>, value| {
+            if double {
+                if lane == 0 { em.vec_extract_lo64(value) } else { em.vec_extract_hi64(value) }
+            } else { em.vec_extract_u32(value, lane) }
+        };
+        let a = extract(em, n);
+        let b = extract(em, m);
+        let value = em.push(Armlet::new(
+            if double { Op::FpAbsoluteCompare64 } else { Op::FpAbsoluteCompare32 },
+            if double { Ty::U64 } else { Ty::U32 },
+        ).with_args(&[a, b]).with_imm(u64::from(greater) | (u64::from(double) << 1)));
+        result = em.vec_ins_gpr(result, value, if double { 3 } else { 2 }, lane, true);
+    }
+    em.set_v_q(bits(raw, 0, 5) as u8, result);
+    Ok(InstStatus::Continue)
+}
+
 pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDSAME) -> Result<InstStatus> {
     use ASIMDSAME::*;
     let (raw, kind) = match insn {
+        SQADD_Vd_Vn_Vm(i) => return translate_saturating_binary(em, i.0, false, false, false),
+        UQADD_Vd_Vn_Vm(i) => return translate_saturating_binary(em, i.0, false, true, false),
+        SQSUB_Vd_Vn_Vm(i) => return translate_saturating_binary(em, i.0, false, false, true),
+        UQSUB_Vd_Vn_Vm(i) => return translate_saturating_binary(em, i.0, false, true, true),
+        FACGE_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => return translate_absolute_compare(em, i.0, false, false),
+        FACGT_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => return translate_absolute_compare(em, i.0, false, true),
+        FMINNM_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => return translate_minmax_number(em, i.0, true),
+        FMAXNM_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => return translate_minmax_number(em, i.0, false),
+        CMTST_Vd_Vn_Vm(i) => return translate_cmtst(em, i.0, false),
+        FRSQRTS_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => return super::asimd_recip::translate(em, i.0, false, true),
+        FRECPS_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => return super::asimd_recip::translate_reciprocal(em, i.0, false, true),
         ADD_Vd_Vn_Vm(i) => (i.0, Kind::Add),
         SUB_Vd_Vn_Vm(i) => (i.0, Kind::Sub),
+        USHL_Vd_Vn_Vm(i) => (i.0, Kind::Ushl),
+        SSHL_Vd_Vn_Vm(i) => (i.0, Kind::Sshl),
         MUL_Vd_Vn_Vm(i) => (i.0, Kind::Mul),
+        MLA_Vd_Vn_Vm(i) => (i.0, Kind::Mla),
+        MLS_Vd_Vn_Vm(i) => (i.0, Kind::Mls),
         AND_Vd_Vn_Vm(i) => (i.0, Kind::And),
         ORR_Vd_Vn_Vm(i) => (i.0, Kind::Orr),
         EOR_Vd_Vn_Vm(i) => (i.0, Kind::Eor),
@@ -90,6 +190,7 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDSAME) -> Result<InstStatus> 
         FADD_Vd_Vn_Vm(i) => (i.0, Kind::FAdd),
         FSUB_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => (i.0, Kind::FSub),
         FSUB_Vd_Vn_Vm(i) => (i.0, Kind::FSub),
+        FABD_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => return super::asimd_recip::translate_absolute_difference(em, i.0, false),
         FMUL_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => (i.0, Kind::FMul),
         FMUL_Vd_Vn_Vm(i) => (i.0, Kind::FMul),
         FDIV_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => (i.0, Kind::FDiv),
@@ -128,14 +229,37 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDSAME) -> Result<InstStatus> 
     let result = match kind {
         Kind::Add => em.vec_add(vn, vm, size, q),
         Kind::Sub => em.vec_sub(vn, vm, size, q),
+        Kind::Ushl | Kind::Sshl => {
+            if size == 3 && !q {
+                return Err(Error::Decode {
+                    pc: em.current_pc,
+                    opcode: raw,
+                });
+            }
+            em.vec_variable_shift(vn, vm, size, q, matches!(kind, Kind::Sshl))
+        }
         Kind::Mul => {
-            if size == 0 {
+            if size == 3 {
                 return Err(Error::Unsupported {
                     pc: em.current_pc,
                     opcode: raw,
                 });
             }
             em.vec_mul(vn, vm, size, q)
+        }
+        Kind::Mla | Kind::Mls => {
+            if size == 3 {
+                return Err(Error::Unsupported { pc: em.current_pc, opcode: raw });
+            }
+            // Capture the old accumulator as well as both original full
+            // sources before any destination write, including all aliases.
+            let accumulator = em.get_v_q(rd);
+            let product = em.vec_mul(vn, vm, size, q);
+            if matches!(kind, Kind::Mls) {
+                em.vec_sub(accumulator, product, size, q)
+            } else {
+                em.vec_add(accumulator, product, size, q)
+            }
         }
         Kind::And => em.vec_and(vn, vm, q),
         Kind::Orr => em.vec_orr(vn, vm, q),
@@ -239,6 +363,29 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDSAME) -> Result<InstStatus> 
         }
     };
 
+    em.set_v_q(rd, result);
+    Ok(InstStatus::Continue)
+}
+
+// Arm CMTST: each lane is all ones exactly when the original operand AND
+// is nonzero. Integer comparisons do not change NZCV or floating status.
+pub(super) fn translate_cmtst(em: &mut IrEmitter<'_>, raw: u32, scalar: bool) -> Result<InstStatus> {
+    let size = bits(raw, 22, 2);
+    let q = !scalar && bit(raw, 30) != 0;
+    if (scalar && size != 3) || (!scalar && size == 3 && !q) {
+        return Err(Error::Unsupported { pc: em.current_pc, opcode: raw });
+    }
+    let rn = bits(raw, 5, 5) as u8;
+    let rm = bits(raw, 16, 5) as u8;
+    let rd = bits(raw, 0, 5) as u8;
+    let n = em.get_v_q(rn);
+    let m = em.get_v_q(rm);
+    let masked = em.vec_and(n, m, q);
+    let z = em.const_u64(0);
+    let zero = em.vec_build_q(z, z);
+    let equal_zero = em.vec_cmeq(masked, zero, size, q);
+    let result = em.vec_not(equal_zero, q);
+    // Q0 and scalar D both write only the low64 bits and clear the upper64.
     em.set_v_q(rd, result);
     Ok(InstStatus::Continue)
 }

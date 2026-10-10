@@ -79,6 +79,8 @@ fn dispatch_op(op: Op) -> Option<EmitFn> {
 
         Adc32 | Adc64 => emit_op_adc,
         Sbc32 | Sbc64 => emit_op_sbc,
+        Adcs32 | Adcs64 => emit_op_adcs,
+        Sbcs32 | Sbcs64 => emit_op_sbcs,
 
         UDiv32 | UDiv64 => emit_op_udiv,
         SDiv32 | SDiv64 => emit_op_sdiv,
@@ -89,6 +91,8 @@ fn dispatch_op(op: Op) -> Option<EmitFn> {
         Rev16 => emit_op_rev16,
         Rev32 => emit_op_rev32,
         Rev64 => emit_op_rev64,
+        Crc32Ieee8 | Crc32Ieee16 | Crc32Ieee32 | Crc32Ieee64
+        | Crc32Castagnoli8 | Crc32Castagnoli16 | Crc32Castagnoli32 | Crc32Castagnoli64 => emit_op_crc32,
 
         Lsl32 | Lsl64 => emit_op_lsl,
         Lsr32 | Lsr64 => emit_op_lsr,
@@ -111,6 +115,16 @@ fn dispatch_op(op: Op) -> Option<EmitFn> {
         Fadd32 | Fadd64 => emit_op_fadd,
         Fsub32 | Fsub64 => emit_op_fsub,
         Fmul32 | Fmul64 => emit_op_fmul,
+        Fmadd32 | Fmadd64 => emit_op_scalar_fma,
+        FrsqrtEstimate32 | FrsqrtEstimate64 | FrsqrtStep32 | FrsqrtStep64
+        | FrecipEstimate32 | FrecipEstimate64 | FrecipStep32 | FrecipStep64 => emit_op_reciprocal,
+        SaturatingNarrow => emit_op_saturating_narrow,
+        FabsDiff32 | FabsDiff64 => emit_op_absolute_difference,
+        FpMinMaxReduce32 => emit_op_fp_reduce,
+        FpMinMaxNum32 | FpMinMaxNum64 => emit_op_fp_minmax_number,
+        FpAbsoluteCompare32 | FpAbsoluteCompare64 => emit_op_absolute_compare,
+        SaturatingBinary => emit_op_saturating_binary,
+        IntMinMaxReduce32 => emit_op_integer_reduce,
         Fdiv32 | Fdiv64 => emit_op_fdiv,
         Fmax32 | Fmax64 => emit_op_fmax,
         Fmin32 | Fmin64 => emit_op_fmin,
@@ -123,10 +137,12 @@ fn dispatch_op(op: Op) -> Option<EmitFn> {
         FcvtZsSX => emit_op_fcvt_zs_sx,
         FcvtZsDW => emit_op_fcvt_zs_dw,
         FcvtZsDX => emit_op_fcvt_zs_dx,
+        FcvtZuSW | FcvtZuSX | FcvtZuDW | FcvtZuDX => emit_op_fcvt_zu,
         ScvtfWS => emit_op_scvtf_ws,
         ScvtfXS => emit_op_scvtf_xs,
         ScvtfWD => emit_op_scvtf_wd,
         ScvtfXD => emit_op_scvtf_xd,
+        UcvtfWS | UcvtfXS | UcvtfWD | UcvtfXD => emit_op_ucvtf,
         FcvtSD => emit_op_fcvt_sd,
         FcvtDS => emit_op_fcvt_ds,
 
@@ -149,11 +165,13 @@ fn dispatch_op(op: Op) -> Option<EmitFn> {
         VecAbs8 | VecAbs16 | VecAbs32 => emit_op_vec_abs,
         VecNot => emit_op_vec_not,
 
-        VecMul16 | VecMul32 | VecMul64 => emit_op_vec_mul,
+        VecMul8 | VecMul16 | VecMul32 | VecMul64 => emit_op_vec_mul,
 
         VecShlImm8 | VecShlImm16 | VecShlImm32 | VecShlImm64 => emit_op_vec_shl_imm,
         VecUshrImm8 | VecUshrImm16 | VecUshrImm32 | VecUshrImm64 => emit_op_vec_ushr_imm,
         VecSshrImm8 | VecSshrImm16 | VecSshrImm32 | VecSshrImm64 => emit_op_vec_sshr_imm,
+        VecUshl8 | VecUshl16 | VecUshl32 | VecUshl64
+        | VecSshl8 | VecSshl16 | VecSshl32 | VecSshl64 => emit_op_vec_variable_shift,
 
         VecCmEq8 | VecCmEq16 | VecCmEq32 | VecCmEq64 => emit_op_vec_cmeq,
         VecCmGt8 | VecCmGt16 | VecCmGt32 | VecCmGt64 => emit_op_vec_cmgt,
@@ -520,7 +538,7 @@ fn emit_mulh(
 }
 
 macro_rules! adapt_adc {
-    ($name:ident, $subtract:expr) => {
+    ($name:ident, $subtract:expr, $setflags:expr) => {
         fn $name(
             asm: &mut CodeAssembler,
             block: &Block,
@@ -528,12 +546,14 @@ macro_rules! adapt_adc {
             idx: usize,
         ) -> Result<()> {
             let a = block.code[idx];
-            emit_adc_sbc(asm, alloc, a, dst_of(&a, idx), $subtract, a.op.size_bits())
+            emit_adc_sbc(asm, alloc, a, dst_of(&a, idx), $subtract, a.op.size_bits(), $setflags)
         }
     };
 }
-adapt_adc!(emit_op_adc, false);
-adapt_adc!(emit_op_sbc, true);
+adapt_adc!(emit_op_adc, false, false);
+adapt_adc!(emit_op_sbc, true, false);
+adapt_adc!(emit_op_adcs, false, true);
+adapt_adc!(emit_op_sbcs, true, true);
 
 macro_rules! adapt_div {
     ($name:ident, $signed:expr) => {
@@ -1022,6 +1042,22 @@ fn emit_op_vec_mul(
     into_xmm_q(asm, alloc, a.args[0], working)?;
     let other = get_xmm_q(asm, alloc, a.args[1], xmm1)?;
     match a.op.size_log2() {
+        0 => {
+            // x86 has no packed byte multiply. Odd bytes are isolated as
+            // word low halves before PMULLW; even-byte products need only
+            // their low8 bits, so cross terms are removed before merging.
+            // Keep both original operands intact, especially when aliased.
+            asm.movdqa(xmm2, working)?;
+            asm.psrlw(xmm2, 8i32)?;
+            asm.movdqa(xmm3, other)?;
+            asm.psrlw(xmm3, 8i32)?;
+            asm.pmullw(xmm2, xmm3)?;
+            asm.psllw(xmm2, 8i32)?;
+            asm.pmullw(working, other)?;
+            asm.psllw(working, 8i32)?;
+            asm.psrlw(working, 8i32)?;
+            asm.por(working, xmm2)?;
+        }
         1 => asm.pmullw(working, other)?,
         2 => asm.pmulld(working, other)?,
         3 => emit_mul64_into(asm, working, other)?,
@@ -1036,6 +1072,78 @@ fn emit_op_vec_mul(
         asm.movq(working, working)?;
     }
     store_xmm_q(asm, alloc, d, working)
+}
+
+fn emit_op_vec_variable_shift(
+    asm: &mut CodeAssembler,
+    block: &Block,
+    alloc: &Allocation,
+    idx: usize,
+) -> Result<()> {
+    let a = block.code[idx];
+    let signed = a.op.base() == Op::VecSshl8.base();
+    let bytes = a.op.size_bytes();
+    let width = bytes * 8;
+    let vector_bytes = if a.imm & 1 != 0 { 16 } else { 8 };
+    // Keep both inputs untouched, even when all guest operands alias.
+    into_xmm_q(asm, alloc, a.args[0], xmm1)?;
+    into_xmm_q(asm, alloc, a.args[1], xmm2)?;
+    asm.pxor(xmm0, xmm0)?;
+    for lane in 0..vector_bytes / bytes {
+        match bytes {
+            1 => asm.pextrb(eax, xmm1, lane as i32)?,
+            2 => asm.pextrw(eax, xmm1, lane as i32)?,
+            4 => asm.pextrd(eax, xmm1, lane as i32)?,
+            8 => asm.pextrq(rax, xmm1, lane as i32)?,
+            _ => unreachable!(),
+        }
+        if signed {
+            match bytes {
+                1 => asm.movsx(rax, al)?,
+                2 => asm.movsx(rax, ax)?,
+                4 => asm.movsxd(rax, eax)?,
+                _ => {},
+            }
+        }
+        // Arm uses only the signed low byte, not the full element value.
+        asm.pextrb(ecx, xmm2, (lane * bytes) as i32)?;
+        asm.movsx(ecx, cl)?;
+        let mut right = asm.create_label();
+        let mut zero = asm.create_label();
+        let mut insert = asm.create_label();
+        asm.test(ecx, ecx)?;
+        asm.js(right)?;
+        asm.cmp(ecx, width as i32)?;
+        asm.jae(zero)?;
+        asm.shl(rax, cl)?;
+        asm.jmp(insert)?;
+        asm.set_label(&mut right)?;
+        asm.neg(ecx)?;
+        asm.cmp(ecx, width as i32)?;
+        if signed {
+            // Arithmetic right overshifts retain the original sign; clamping
+            // to width-1 prevents x86's modulo-64 count from changing it.
+            asm.mov(edx, (width - 1) as i32)?;
+            asm.cmovae(ecx, edx)?;
+            asm.sar(rax, cl)?;
+        } else {
+            asm.jae(zero)?;
+            asm.shr(rax, cl)?;
+        }
+        asm.jmp(insert)?;
+        asm.set_label(&mut zero)?;
+        asm.xor(eax, eax)?;
+        asm.set_label(&mut insert)?;
+        match bytes {
+            1 => asm.pinsrb(xmm0, eax, lane as i32)?,
+            2 => asm.pinsrw(xmm0, eax, lane as i32)?,
+            4 => asm.pinsrd(xmm0, eax, lane as i32)?,
+            8 => asm.pinsrq(xmm0, rax, lane as i32)?,
+            _ => unreachable!(),
+        }
+    }
+    // Starting from zero also clears Q=0's unused upper 64 bits.
+    store_xmm_q(asm, alloc, dst_of(&a, idx).unwrap(), xmm0)
 }
 
 fn broadcast_byte_mask(asm: &mut CodeAssembler, byte: u8) -> Result<()> {
@@ -1874,6 +1982,18 @@ fn emit_op_vec_frinta(
     }
     asm.pand(working, xmm1)?;
 
+    // Adding 0.5 before truncation misrounds the immediate predecessor of a
+    // tie when the addition rounds upward. Truncate first, then compare the
+    // exact fractional part to 0.5 and conditionally add one instead.
+    asm.movdqa(xmm1, working)?;
+    if double {
+        asm.roundpd(working, working, 0x0B)?;
+        asm.subpd(xmm1, working)?;
+    } else {
+        asm.roundps(working, working, 0x0B)?;
+        asm.subps(xmm1, working)?;
+    }
+
     if double {
         asm.mov(rax, 0x3FE0_0000_0000_0000u64 as i64)?;
     } else {
@@ -1882,16 +2002,21 @@ fn emit_op_vec_frinta(
     asm.movq(xmm3, rax)?;
     asm.punpcklqdq(xmm3, xmm3)?;
     if double {
+        asm.cmppd(xmm3, xmm1, 2)?; // Ordered 0.5 <= fractional magnitude.
+        asm.mov(rax, 0x3FF0_0000_0000_0000u64 as i64)?;
+    } else {
+        asm.cmpps(xmm3, xmm1, 2)?;
+        asm.mov(rax, 0x3F80_0000_3F80_0000u64 as i64)?;
+    }
+    asm.movq(xmm1, rax)?;
+    asm.punpcklqdq(xmm1, xmm1)?;
+    asm.pand(xmm3, xmm1)?;
+    if double {
         asm.addpd(working, xmm3)?;
     } else {
         asm.addps(working, xmm3)?;
     }
     asm.por(working, xmm2)?;
-    if double {
-        asm.roundpd(working, working, 0x0B)?;
-    } else {
-        asm.roundps(working, working, 0x0B)?;
-    }
 
     if !q_form {
         asm.movq(working, working)?;
@@ -3023,18 +3148,26 @@ fn emit_adc_sbc(
     dst: Option<ValueRef>,
     is_sub: bool,
     bits: u32,
+    setflags: bool,
 ) -> Result<()> {
-    asm.bt(dword_ptr(CTX_REG + cpu_offsets::nzcv() as i32), 1i32)?;
-    if is_sub {
-        asm.cmc()?;
-    }
+    // Consume the explicit incoming NZCV SSA value. The optimizer may forward
+    // it and eliminate a prior SetNzcv when this instruction overwrites flags.
+    load32(asm, alloc, a.args[2], edx)?;
     if bits == 64 {
         load64(asm, alloc, a.args[0], rax)?;
         load64(asm, alloc, a.args[1], rcx)?;
+        asm.bt(edx, 1i32)?;
+        if is_sub { asm.cmc()?; }
         if is_sub {
             asm.sbb(rax, rcx)?;
         } else {
             asm.adc(rax, rcx)?;
+        }
+        if setflags {
+            asm.sets(r8b)?;
+            asm.sete(r9b)?;
+            asm.setc(r10b)?;
+            asm.seto(r11b)?;
         }
         if let Some(d) = dst {
             store64(asm, alloc, d, rax)?;
@@ -3042,14 +3175,103 @@ fn emit_adc_sbc(
     } else {
         load32(asm, alloc, a.args[0], eax)?;
         load32(asm, alloc, a.args[1], ecx)?;
+        asm.bt(edx, 1i32)?;
+        if is_sub { asm.cmc()?; }
         if is_sub {
             asm.sbb(eax, ecx)?;
         } else {
             asm.adc(eax, ecx)?;
         }
+        if setflags {
+            asm.sets(r8b)?;
+            asm.sete(r9b)?;
+            asm.setc(r10b)?;
+            asm.seto(r11b)?;
+        }
         if let Some(d) = dst {
             store32(asm, alloc, d, eax)?;
         }
+    }
+    if setflags {
+        // SBB reports borrow; Arm AddWithCarry(N, NOT(M), C) reports no-borrow.
+        if is_sub { asm.xor(r10b, 1i32)?; }
+        asm.movzx(eax, r8b)?;
+        asm.shl(eax, 3i32)?;
+        asm.movzx(ecx, r9b)?;
+        asm.shl(ecx, 2i32)?;
+        asm.or(eax, ecx)?;
+        asm.movzx(ecx, r10b)?;
+        asm.shl(ecx, 1i32)?;
+        asm.or(eax, ecx)?;
+        asm.movzx(ecx, r11b)?;
+        asm.or(eax, ecx)?;
+        asm.mov(byte_ptr(CTX_REG + cpu_offsets::nzcv() as i32), al)?;
+    }
+    Ok(())
+}
+
+fn emit_op_saturating_binary(
+    asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize,
+) -> Result<()> {
+    let a = block.code[idx];
+    load64(asm, alloc, a.args[0], SCRATCH1)?;
+    load64(asm, alloc, a.args[1], SCRATCH3)?;
+    load64(asm, alloc, a.args[2], ARG3_REG)?;
+    #[cfg(target_os = "windows")]
+    {
+        load64(asm, alloc, a.args[3], rax)?;
+        asm.mov(ARG0_REG, CTX_REG)?;
+        // Four integer register arguments, 32-byte shadow space, two stack
+        // arguments, and the existing 8-byte call-alignment adjustment.
+        asm.sub(rsp, CALL_PRECALL_SUB + 16)?;
+        asm.mov(qword_ptr(rsp + 32), rax)?;
+        asm.mov(qword_ptr(rsp + 40), a.imm as i32)?;
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        load64(asm, alloc, a.args[3], r8)?;
+        asm.mov(ARG0_REG, CTX_REG)?;
+        asm.mov(r9, a.imm as i64)?;
+        asm.sub(rsp, CALL_PRECALL_SUB)?;
+    }
+    asm.mov(rax, crate::backend::simd_binary_status::saturating_binary as *const () as usize as i64)?;
+    asm.call(rax)?;
+    #[cfg(target_os = "windows")]
+    asm.add(rsp, CALL_PRECALL_SUB + 16)?;
+    #[cfg(not(target_os = "windows"))]
+    asm.add(rsp, CALL_PRECALL_SUB)?;
+    if let Some(destination) = dst_of(&a, idx) {
+        asm.movdqu(xmm0, xmmword_ptr(CTX_REG + cpu_offsets::io_value() as i32))?;
+        store_xmm_q(asm, alloc, destination, xmm0)?;
+    }
+    Ok(())
+}
+
+fn emit_op_absolute_compare(
+    asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize,
+) -> Result<()> {
+    let a = block.code[idx];
+    let double = a.op == Op::FpAbsoluteCompare64;
+    if double {
+        load64(asm, alloc, a.args[0], SCRATCH1)?;
+        load64(asm, alloc, a.args[1], SCRATCH3)?;
+    } else {
+        #[cfg(target_os = "windows")]
+        let (n_reg, m_reg) = (edx, r8d);
+        #[cfg(not(target_os = "windows"))]
+        let (n_reg, m_reg) = (esi, edx);
+        load32(asm, alloc, a.args[0], n_reg)?;
+        load32(asm, alloc, a.args[1], m_reg)?;
+    }
+    asm.mov(ARG0_REG, CTX_REG)?;
+    asm.mov(ARG3_REG, a.imm as i64)?;
+    asm.mov(rax, crate::backend::simd_binary_status::absolute_compare as *const () as usize as i64)?;
+    asm.sub(rsp, CALL_PRECALL_SUB)?;
+    asm.call(rax)?;
+    asm.add(rsp, CALL_PRECALL_SUB)?;
+    if let Some(destination) = dst_of(&a, idx) {
+        if double { store64(asm, alloc, destination, rax)?; }
+        else { store32(asm, alloc, destination, eax)?; }
     }
     Ok(())
 }
@@ -3570,6 +3792,10 @@ fn emit_load_ex(
         8 => asm.mov(rax, qword_ptr(CTX_REG + io_off))?,
         _ => unreachable!(),
     }
+    // Save the actual zero-extended loaded value before storing its SSA result
+    // or reloading the address into scratch registers. STXR's callback compares
+    // memory atomically with these bits, not just the local address/size pair.
+    asm.mov(qword_ptr(CTX_REG + cpu_offsets::exclusive_value() as i32), rax)?;
     if let Some(d) = dst {
         match bytes {
             1 | 2 | 4 => store32(asm, alloc, d, eax)?,
@@ -3586,6 +3812,12 @@ fn emit_load_ex(
         byte_ptr(CTX_REG + cpu_offsets::exclusive_size() as i32),
         bytes as i32,
     )?;
+    // A faulting exclusive load must not leave a usable local reservation.
+    let mut load_succeeded = asm.create_label();
+    asm.cmp(byte_ptr(CTX_REG + cpu_offsets::mem_fault() as i32), 0)?;
+    asm.je(load_succeeded)?;
+    asm.mov(byte_ptr(CTX_REG + cpu_offsets::exclusive_size() as i32), 0)?;
+    asm.set_label(&mut load_succeeded)?;
     Ok(())
 }
 
@@ -3632,9 +3864,8 @@ fn emit_store_ex(
     asm.mov(SCRATCH3, bytes as i64)?;
     asm.mov(ARG0_REG, CTX_REG)?;
     asm.sub(rsp, CALL_PRECALL_SUB)?;
-    asm.call(qword_ptr(CTX_REG + cpu_offsets::mem_write() as i32))?;
+    asm.call(qword_ptr(CTX_REG + cpu_offsets::mem_write_exclusive() as i32))?;
     asm.add(rsp, CALL_PRECALL_SUB)?;
-    asm.xor(eax, eax)?;
     asm.jmp(lbl_done)?;
 
     asm.set_label(&mut lbl_fail)?;
@@ -3822,12 +4053,492 @@ fn emit_fcvt_zs(
             asm.cvttss2si(eax, xmm0)?;
         }
     }
+
+    // x86 returns the signed minimum for every invalid conversion. Arm
+    // saturates overflow instead and converts NaN to zero. Ordinary results
+    // retain the native conversion path; classify only its ambiguous sentinel.
+    let mut done = asm.create_label();
+    let mut nan = asm.create_label();
+    if dst_is_x {
+        asm.mov(SCRATCH1, i64::MIN)?;
+        asm.cmp(rax, SCRATCH1)?;
+    } else {
+        asm.cmp(eax, i32::MIN)?;
+    }
+    asm.jne(done)?;
+    asm.pxor(xmm1, xmm1)?;
+    if src_is_double {
+        asm.ucomisd(xmm0, xmm1)?;
+    } else {
+        asm.ucomiss(xmm0, xmm1)?;
+    }
+    asm.jp(nan)?;
+    // Negative overflow and a valid signed-minimum result both stay minimum.
+    asm.jbe(done)?;
+    if dst_is_x {
+        asm.mov(rax, i64::MAX)?;
+    } else {
+        asm.mov(eax, i32::MAX)?;
+    }
+    asm.jmp(done)?;
+    asm.set_label(&mut nan)?;
+    asm.xor(eax, eax)?;
+    asm.set_label(&mut done)?;
+
     if let Some(d) = dst {
         if dst_is_x {
             store64(asm, alloc, d, rax)?;
         } else {
             store32(asm, alloc, d, eax)?;
         }
+    }
+    Ok(())
+}
+
+// Process special values in architectural addend/multiplicand/multiplier
+// order. Signaling NaNs take precedence over quiet NaNs; generated invalid
+// operations produce the positive default NaN. FPSR updates remain separate.
+fn scalar_fma_special(n: u64, m: u64, a: u64, double: bool) -> Option<u64> {
+    let (exponent, fraction, quiet, sign) = if double {
+        (0x7ff0_0000_0000_0000, 0x000f_ffff_ffff_ffff,
+            0x0008_0000_0000_0000, 0x8000_0000_0000_0000)
+    } else {
+        (0x7f80_0000, 0x007f_ffff, 0x0040_0000, 0x8000_0000)
+    };
+    let nan = |v: u64| v & exponent == exponent && v & fraction != 0;
+    let infinity = |v: u64| v & !sign == exponent;
+    let zero = |v: u64| v & !sign == 0;
+    let invalid_product = (infinity(n) && zero(m)) || (zero(n) && infinity(m));
+    for operand in [a, n, m] {
+        if nan(operand) && operand & quiet == 0 {
+            return Some(operand | quiet);
+        }
+    }
+    // 0*Inf overrides a quiet NaN addend (but not signaling NaNs).
+    if nan(a) && invalid_product {
+        return Some(exponent | quiet);
+    }
+    for operand in [a, n, m] {
+        if nan(operand) {
+            return Some(operand | quiet);
+        }
+    }
+    let invalid_sum = infinity(a) && (infinity(n) || infinity(m))
+        && ((n ^ m ^ a) & sign != 0);
+    if invalid_product || invalid_sum {
+        return Some(exponent | quiet);
+    }
+    None
+}
+
+extern "C" fn scalar_fma_s(n: u64, m: u64, a: u64) -> u64 {
+    let (n, m, a) = (n as u32 as u64, m as u32 as u64, a as u32 as u64);
+    if let Some(value) = scalar_fma_special(n, m, a, false) {
+        return value;
+    }
+    // Rust mul_add specifies one correctly rounded fused operation, including
+    // hosts without FMA. Multiplying in f64 and narrowing is not equivalent.
+    f32::from_bits(n as u32).mul_add(f32::from_bits(m as u32), f32::from_bits(a as u32)).to_bits() as u64
+}
+
+extern "C" fn scalar_fma_d(n: u64, m: u64, a: u64) -> u64 {
+    if let Some(value) = scalar_fma_special(n, m, a, true) {
+        return value;
+    }
+    f64::from_bits(n).mul_add(f64::from_bits(m), f64::from_bits(a)).to_bits()
+}
+
+fn emit_op_scalar_fma(
+    asm: &mut CodeAssembler,
+    block: &Block,
+    alloc: &Allocation,
+    idx: usize,
+) -> Result<()> {
+    let a = block.code[idx];
+    let double = a.op == Op::Fmadd64;
+    #[cfg(target_os = "windows")]
+    let arguments = [rcx, rdx, r8];
+    #[cfg(not(target_os = "windows"))]
+    let arguments = [rdi, rsi, rdx];
+    for (argument, value) in arguments.into_iter().zip(a.args) {
+        if double {
+            load64(asm, alloc, value, argument)?;
+        } else {
+            let register = match argument {
+                r if r == rcx => ecx,
+                r if r == rdx => edx,
+                r if r == r8 => r8d,
+                r if r == rdi => edi,
+                _ => esi,
+            };
+            load32(asm, alloc, value, register)?;
+        }
+    }
+    let features = crate::backend::cpu_features::active_features();
+    let hardware = features.has_avx && features.has_fma;
+    let mut helper = asm.create_label();
+    let mut done = asm.create_label();
+    if hardware {
+        if double {
+            asm.movq(xmm1, arguments[0])?;
+            asm.movq(xmm2, arguments[1])?;
+            asm.movq(xmm0, arguments[2])?;
+            asm.vfmadd231sd(xmm0, xmm1, xmm2)?;
+            asm.ucomisd(xmm0, xmm0)?;
+        } else {
+            // MOVQ is also safe for S: arguments were zero extended above.
+            asm.movq(xmm1, arguments[0])?;
+            asm.movq(xmm2, arguments[1])?;
+            asm.movq(xmm0, arguments[2])?;
+            asm.vfmadd231ss(xmm0, xmm1, xmm2)?;
+            asm.ucomiss(xmm0, xmm0)?;
+        }
+        // Native finite/infinite values are fused. NaN selection and invalid
+        // default-NaN differ between x86 and Arm, so use the shared helper.
+        asm.jp(helper)?;
+        if double { asm.movq(rax, xmm0)?; } else { asm.movd(eax, xmm0)?; }
+        asm.jmp(done)?;
+    }
+    asm.set_label(&mut helper)?;
+    if hardware { asm.vzeroupper()?; }
+    let function = if double { scalar_fma_d as *const () } else { scalar_fma_s as *const () };
+    asm.mov(rax, function as usize as i64)?;
+    asm.sub(rsp, CALL_PRECALL_SUB)?;
+    asm.call(rax)?;
+    asm.add(rsp, CALL_PRECALL_SUB)?;
+    asm.set_label(&mut done)?;
+    if let Some(destination) = dst_of(&a, idx) {
+        if double { store64(asm, alloc, destination, rax)?; }
+        else { store32(asm, alloc, destination, eax)?; }
+    }
+    Ok(())
+}
+
+fn emit_op_reciprocal(
+    asm: &mut CodeAssembler,
+    block: &Block,
+    alloc: &Allocation,
+    idx: usize,
+) -> Result<()> {
+    let a = block.code[idx];
+    let double = matches!(a.op, Op::FrsqrtEstimate64 | Op::FrsqrtStep64 | Op::FrecipEstimate64 | Op::FrecipStep64);
+    let step = matches!(a.op, Op::FrsqrtStep32 | Op::FrsqrtStep64 | Op::FrecipStep32 | Op::FrecipStep64);
+    let reciprocal = matches!(a.op, Op::FrecipEstimate32 | Op::FrecipEstimate64 | Op::FrecipStep32 | Op::FrecipStep64);
+    // Context first, then one/two integer bit-pattern arguments. These ops
+    // declare all caller-saved GPR/XMM clobbers, just like the FMA helper.
+    for (argument, value) in [SCRATCH1, SCRATCH3].into_iter().zip(a.args).take(if step { 2 } else { 1 }) {
+        if double { load64(asm, alloc, value, argument)?; }
+        else {
+            let register = match argument {
+                r if r == rdx => edx,
+                r if r == r8 => r8d,
+                r if r == rsi => esi,
+                _ => edx,
+            };
+            load32(asm, alloc, value, register)?;
+        }
+    }
+    asm.mov(ARG0_REG, CTX_REG)?;
+    let function = match (step, double, reciprocal) {
+        (false, false, false) => crate::backend::reciprocal::estimate_s as *const (),
+        (false, true, false) => crate::backend::reciprocal::estimate_d as *const (),
+        (true, false, false) => crate::backend::reciprocal::step_s as *const (),
+        (true, true, false) => crate::backend::reciprocal::step_d as *const (),
+        (false, false, true) => crate::backend::reciprocal::reciprocal_estimate_s as *const (),
+        (false, true, true) => crate::backend::reciprocal::reciprocal_estimate_d as *const (),
+        (true, false, true) => crate::backend::reciprocal::reciprocal_step_s as *const (),
+        (true, true, true) => crate::backend::reciprocal::reciprocal_step_d as *const (),
+    };
+    asm.mov(rax, function as usize as i64)?;
+    asm.sub(rsp, CALL_PRECALL_SUB)?;
+    asm.call(rax)?;
+    asm.add(rsp, CALL_PRECALL_SUB)?;
+    if let Some(destination) = dst_of(&a, idx) {
+        if double { store64(asm, alloc, destination, rax)?; }
+        else { store32(asm, alloc, destination, eax)?; }
+    }
+    Ok(())
+}
+
+fn emit_op_absolute_difference(
+    asm: &mut CodeAssembler,
+    block: &Block,
+    alloc: &Allocation,
+    idx: usize,
+) -> Result<()> {
+    let a = block.code[idx];
+    let double = a.op == Op::FabsDiff64;
+    // Preserve original N/M bit patterns in integer ABI argument registers
+    // before SSE subtraction, whose mixed-NaN priority differs from Arm.
+    let narrow_register = |register| match register {
+        r if r == rdx => edx,
+        r if r == r8 => r8d,
+        r if r == rsi => esi,
+        _ => unreachable!(),
+    };
+    for (argument, value) in [SCRATCH1, SCRATCH3].into_iter().zip(a.args).take(2) {
+        if double { load64(asm, alloc, value, argument)?; }
+        else { load32(asm, alloc, value, narrow_register(argument))?; }
+    }
+    let mut helper = asm.create_label();
+    let mut done = asm.create_label();
+    if double {
+        asm.movq(xmm0, SCRATCH1)?;
+        asm.movq(xmm1, SCRATCH3)?;
+        asm.subsd(xmm0, xmm1)?;
+        asm.ucomisd(xmm0, xmm0)?;
+    } else {
+        asm.movd(xmm0, narrow_register(SCRATCH1))?;
+        asm.movd(xmm1, narrow_register(SCRATCH3))?;
+        asm.subss(xmm0, xmm1)?;
+        asm.ucomiss(xmm0, xmm0)?;
+    }
+    asm.jp(helper)?;
+    // The common numeric path is native target-width FSUB then exact sign
+    // clearing, without a helper call or any widened subtraction.
+    if double {
+        asm.movq(rax, xmm0)?;
+        asm.btr(rax, 63)?;
+    } else {
+        asm.movd(eax, xmm0)?;
+        asm.and(eax, 0x7fff_ffff)?;
+    }
+    asm.jmp(done)?;
+    asm.set_label(&mut helper)?;
+    asm.mov(ARG0_REG, CTX_REG)?;
+    let function = if double {
+        crate::backend::absolute_difference::double as *const ()
+    } else {
+        crate::backend::absolute_difference::single as *const ()
+    };
+    asm.mov(rax, function as usize as i64)?;
+    asm.sub(rsp, CALL_PRECALL_SUB)?;
+    asm.call(rax)?;
+    asm.add(rsp, CALL_PRECALL_SUB)?;
+    asm.set_label(&mut done)?;
+    if let Some(destination) = dst_of(&a, idx) {
+        if double { store64(asm, alloc, destination, rax)?; }
+        else { store32(asm, alloc, destination, eax)?; }
+    }
+    Ok(())
+}
+
+fn emit_op_fp_minmax_number(
+    asm: &mut CodeAssembler,
+    block: &Block,
+    alloc: &Allocation,
+    idx: usize,
+) -> Result<()> {
+    let a = block.code[idx];
+    let double = a.op == Op::FpMinMaxNum64;
+    if double {
+        load64(asm, alloc, a.args[0], SCRATCH1)?;
+        load64(asm, alloc, a.args[1], SCRATCH3)?;
+    } else {
+        // Narrow lanes must also clear unused spill/XMM bits before crossing
+        // the integer ABI, just as a guest W register write zero-extends.
+        #[cfg(target_os = "windows")]
+        let (n_reg, m_reg) = (edx, r8d);
+        #[cfg(not(target_os = "windows"))]
+        let (n_reg, m_reg) = (esi, edx);
+        load32(asm, alloc, a.args[0], n_reg)?;
+        load32(asm, alloc, a.args[1], m_reg)?;
+    }
+    asm.mov(ARG0_REG, CTX_REG)?;
+    asm.mov(ARG3_REG, a.imm as i64)?;
+    let function = if double {
+        crate::backend::fp_minmax_number::double as *const ()
+    } else {
+        crate::backend::fp_minmax_number::single as *const ()
+    };
+    asm.mov(rax, function as usize as i64)?;
+    asm.sub(rsp, CALL_PRECALL_SUB)?;
+    asm.call(rax)?;
+    asm.add(rsp, CALL_PRECALL_SUB)?;
+    if let Some(destination) = dst_of(&a, idx) {
+        if double { store64(asm, alloc, destination, rax)?; }
+        else { store32(asm, alloc, destination, eax)?; }
+    }
+    Ok(())
+}
+
+fn emit_op_integer_reduce(
+    asm: &mut CodeAssembler,
+    block: &Block,
+    alloc: &Allocation,
+    idx: usize,
+) -> Result<()> {
+    let a = block.code[idx];
+    load64(asm, alloc, a.args[0], ARG0_REG)?;
+    load64(asm, alloc, a.args[1], SCRATCH1)?;
+    asm.mov(SCRATCH3, a.imm as i64)?;
+    asm.mov(rax, crate::backend::integer_minmax_reduce::integer_minmax_reduce as *const () as usize as i64)?;
+    asm.sub(rsp, CALL_PRECALL_SUB)?;
+    asm.call(rax)?;
+    asm.add(rsp, CALL_PRECALL_SUB)?;
+    if let Some(destination) = dst_of(&a, idx) { store32(asm, alloc, destination, eax)?; }
+    Ok(())
+}
+
+fn emit_op_fp_reduce(
+    asm: &mut CodeAssembler,
+    block: &Block,
+    alloc: &Allocation,
+    idx: usize,
+) -> Result<()> {
+    let a = block.code[idx];
+    load64(asm, alloc, a.args[0], SCRATCH1)?;
+    load64(asm, alloc, a.args[1], SCRATCH3)?;
+    asm.mov(ARG0_REG, CTX_REG)?;
+    asm.mov(ARG3_REG, a.imm as i64)?;
+    asm.mov(rax, crate::backend::fp_reduce::reduce as *const () as usize as i64)?;
+    asm.sub(rsp, CALL_PRECALL_SUB)?;
+    asm.call(rax)?;
+    asm.add(rsp, CALL_PRECALL_SUB)?;
+    if let Some(destination) = dst_of(&a, idx) { store32(asm, alloc, destination, eax)?; }
+    Ok(())
+}
+
+fn emit_op_saturating_narrow(
+    asm: &mut CodeAssembler,
+    block: &Block,
+    alloc: &Allocation,
+    idx: usize,
+) -> Result<()> {
+    let a = block.code[idx];
+    load64(asm, alloc, a.args[0], SCRATCH1)?;
+    load64(asm, alloc, a.args[1], SCRATCH3)?;
+    asm.mov(ARG0_REG, CTX_REG)?;
+    asm.mov(ARG3_REG, a.imm as i64)?;
+    asm.mov(rax, crate::backend::saturating::narrow as *const () as usize as i64)?;
+    asm.sub(rsp, CALL_PRECALL_SUB)?;
+    asm.call(rax)?;
+    asm.add(rsp, CALL_PRECALL_SUB)?;
+    if let Some(destination) = dst_of(&a, idx) { store64(asm, alloc, destination, rax)?; }
+    Ok(())
+}
+
+fn emit_op_fcvt_zu(
+    asm: &mut CodeAssembler,
+    block: &Block,
+    alloc: &Allocation,
+    idx: usize,
+) -> Result<()> {
+    let a = block.code[idx];
+    let double = matches!(a.op, Op::FcvtZuDW | Op::FcvtZuDX);
+    let dst_is_x = matches!(a.op, Op::FcvtZuSX | Op::FcvtZuDX);
+    let mut zero = asm.create_label();
+    let mut maximum = asm.create_label();
+    let mut low = asm.create_label();
+    let mut done = asm.create_label();
+    if double {
+        load_xmm_d(asm, alloc, a.args[0], xmm0)?;
+    } else {
+        load_xmm_s(asm, alloc, a.args[0], xmm0)?;
+    }
+    asm.pxor(xmm1, xmm1)?;
+    if double {
+        asm.ucomisd(xmm0, xmm1)?;
+    } else {
+        asm.ucomiss(xmm0, xmm1)?;
+    }
+    // NaN, negative values and both signed zeros all convert to zero.
+    asm.jp(zero)?;
+    asm.jbe(zero)?;
+    let width = if dst_is_x { 64 } else { 32 };
+    if double {
+        asm.mov(rcx, ((1023 + width as u64) << 52) as i64)?;
+        asm.movq(xmm1, rcx)?;
+        asm.ucomisd(xmm0, xmm1)?;
+    } else {
+        asm.mov(ecx, ((127 + width) << 23) as i32)?;
+        asm.movd(xmm1, ecx)?;
+        asm.ucomiss(xmm0, xmm1)?;
+    }
+    asm.jae(maximum)?;
+    if dst_is_x {
+        if double {
+            asm.mov(rcx, ((1023u64 + 63) << 52) as i64)?;
+            asm.movq(xmm1, rcx)?;
+            asm.ucomisd(xmm0, xmm1)?;
+        } else {
+            asm.mov(ecx, ((127 + 63) << 23) as i32)?;
+            asm.movd(xmm1, ecx)?;
+            asm.ucomiss(xmm0, xmm1)?;
+        }
+        asm.jb(low)?;
+        // In [2^63,2^64), subtracting 2^63 is exact (Sterbenz's lemma)
+        // and leaves a representable signed integer. Restore its high bit.
+        if double {
+            asm.subsd(xmm0, xmm1)?;
+            asm.cvttsd2si(rax, xmm0)?;
+        } else {
+            asm.subss(xmm0, xmm1)?;
+            asm.cvttss2si(rax, xmm0)?;
+        }
+        asm.mov(rcx, i64::MIN)?;
+        asm.or(rax, rcx)?;
+        asm.jmp(done)?;
+    }
+    asm.set_label(&mut low)?;
+    // The complete unsigned W range fits a signed X conversion as well.
+    if double {
+        asm.cvttsd2si(rax, xmm0)?;
+    } else {
+        asm.cvttss2si(rax, xmm0)?;
+    }
+    asm.jmp(done)?;
+    asm.set_label(&mut maximum)?;
+    if dst_is_x {
+        asm.mov(rax, -1i64)?;
+    } else {
+        asm.mov(eax, -1i32)?;
+    }
+    asm.jmp(done)?;
+    asm.set_label(&mut zero)?;
+    asm.xor(eax, eax)?;
+    asm.set_label(&mut done)?;
+    if let Some(dst) = dst_of(&a, idx) {
+        if dst_is_x {
+            store64(asm, alloc, dst, rax)?;
+        } else {
+            store32(asm, alloc, dst, eax)?;
+        }
+    }
+    Ok(())
+}
+
+fn emit_op_crc32(
+    asm: &mut CodeAssembler,
+    block: &Block,
+    alloc: &Allocation,
+    idx: usize,
+) -> Result<()> {
+    let a = block.code[idx];
+    let polynomial = if a.op.base() == Op::Crc32Ieee8.base() {
+        0xEDB8_8320u32
+    } else {
+        0x82F6_3B78u32
+    };
+    load32(asm, alloc, a.args[0], eax)?;
+    load64(asm, alloc, a.args[1], rcx)?;
+    // Both architectural polynomials use reflected bit order, starting with
+    // the least significant input byte. x86 CRC32 only supports Castagnoli;
+    // emit portable integer code so IEEE and SSE4.1 hosts are correct too.
+    for byte in 0..a.op.size_bytes() {
+        asm.xor(al, cl)?;
+        for _ in 0..8 {
+            asm.shr(eax, 1)?;
+            asm.sbb(edx, edx)?; // -old_crc_bit_0, using SHR's carry.
+            asm.and(edx, polynomial as i32)?;
+            asm.xor(eax, edx)?;
+        }
+        if byte + 1 < a.op.size_bytes() {
+            asm.shr(rcx, 8)?;
+        }
+    }
+    if let Some(dst) = dst_of(&a, idx) {
+        store32(asm, alloc, dst, eax)?;
     }
     Ok(())
 }
@@ -3860,6 +4571,57 @@ fn emit_scvtf(
             store_xmm_d(asm, alloc, d, xmm0)?;
         } else {
             store_xmm_s(asm, alloc, d, xmm0)?;
+        }
+    }
+    Ok(())
+}
+
+fn emit_op_ucvtf(
+    asm: &mut CodeAssembler,
+    block: &Block,
+    alloc: &Allocation,
+    idx: usize,
+) -> Result<()> {
+    let a = block.code[idx];
+    let src_is_x = matches!(a.op, Op::UcvtfXS | Op::UcvtfXD);
+    let double = matches!(a.op, Op::UcvtfWD | Op::UcvtfXD);
+    let mut direct = asm.create_label();
+    let mut done = asm.create_label();
+    if src_is_x {
+        load64(asm, alloc, a.args[0], rax)?;
+        asm.test(rax, rax)?;
+        asm.jns(direct)?;
+        // Unsigned values >= 2^63 do not fit the signed SSE conversion.
+        // Sticky-half retains discarded low bits for nearest-even rounding;
+        // converting that positive half and doubling is correctly rounded.
+        asm.mov(rdx, rax)?;
+        asm.and(edx, 1)?;
+        asm.shr(rax, 1)?;
+        asm.or(rax, rdx)?;
+        if double {
+            asm.cvtsi2sd(xmm0, rax)?;
+            asm.addsd(xmm0, xmm0)?;
+        } else {
+            asm.cvtsi2ss(xmm0, rax)?;
+            asm.addss(xmm0, xmm0)?;
+        }
+        asm.jmp(done)?;
+    } else {
+        // Zero extension puts the entire unsigned W range within signed X.
+        load32(asm, alloc, a.args[0], eax)?;
+    }
+    asm.set_label(&mut direct)?;
+    if double {
+        asm.cvtsi2sd(xmm0, rax)?;
+    } else {
+        asm.cvtsi2ss(xmm0, rax)?;
+    }
+    asm.set_label(&mut done)?;
+    if let Some(dst) = dst_of(&a, idx) {
+        if double {
+            store_xmm_d(asm, alloc, dst, xmm0)?;
+        } else {
+            store_xmm_s(asm, alloc, dst, xmm0)?;
         }
     }
     Ok(())

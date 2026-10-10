@@ -58,16 +58,24 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: FLOATDP3) -> Result<InstStatus> {
         em.get_v_s(ra)
     };
 
-    let prod = fmul(em, n_val, m_val, is_double);
-    let result = match kind {
-        Kind::Fmadd => fadd(em, a_val, prod, is_double),
-        Kind::Fmsub => fsub(em, a_val, prod, is_double),
-        Kind::Fnmadd => {
-            let sum = fadd(em, a_val, prod, is_double);
-            fneg(em, sum, is_double)
-        }
-        Kind::Fnmsub => fsub(em, prod, a_val, is_double),
+    // Arm applies negation to the operands before the single fused rounding.
+    // Negating a rounded result instead changes exact-zero signs and NaNs.
+    let n_val = if matches!(kind, Kind::Fmsub | Kind::Fnmadd) {
+        fneg(em, n_val, is_double)
+    } else {
+        n_val
     };
+    let a_val = if matches!(kind, Kind::Fnmadd | Kind::Fnmsub) {
+        fneg(em, a_val, is_double)
+    } else {
+        a_val
+    };
+    let (op, ty) = if is_double {
+        (Op::Fmadd64, Ty::U64)
+    } else {
+        (Op::Fmadd32, Ty::U32)
+    };
+    let result = em.push(Armlet::new(op, ty).with_args(&[n_val, m_val, a_val]));
 
     if is_double {
         em.set_v_d(rd, result);
@@ -75,33 +83,6 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: FLOATDP3) -> Result<InstStatus> {
         em.set_v_s(rd, result);
     }
     Ok(InstStatus::Continue)
-}
-
-fn fmul(em: &mut IrEmitter<'_>, a: ValueRef, b: ValueRef, is_double: bool) -> ValueRef {
-    let (op, ty) = if is_double {
-        (Op::Fmul64, Ty::U64)
-    } else {
-        (Op::Fmul32, Ty::U32)
-    };
-    em.push(Armlet::new(op, ty).with_args(&[a, b]))
-}
-
-fn fadd(em: &mut IrEmitter<'_>, a: ValueRef, b: ValueRef, is_double: bool) -> ValueRef {
-    let (op, ty) = if is_double {
-        (Op::Fadd64, Ty::U64)
-    } else {
-        (Op::Fadd32, Ty::U32)
-    };
-    em.push(Armlet::new(op, ty).with_args(&[a, b]))
-}
-
-fn fsub(em: &mut IrEmitter<'_>, a: ValueRef, b: ValueRef, is_double: bool) -> ValueRef {
-    let (op, ty) = if is_double {
-        (Op::Fsub64, Ty::U64)
-    } else {
-        (Op::Fsub32, Ty::U32)
-    };
-    em.push(Armlet::new(op, ty).with_args(&[a, b]))
 }
 
 fn fneg(em: &mut IrEmitter<'_>, v: ValueRef, is_double: bool) -> ValueRef {

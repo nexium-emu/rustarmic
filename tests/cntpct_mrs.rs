@@ -45,12 +45,34 @@ const MRS_X0_CNTVCT_EL0: u32 = 0xD53B_E040;
 const MRS_X0_CNTFRQ_EL0: u32 = 0xD53B_E000;
 const BRK_0: u32 = 0xD420_0000;
 
+fn advanced_default_counter_bound() -> u64 {
+    // The first read initializes the shared Instant epoch. Its elapsed time
+    // can validly quantize to zero at 19.2MHz (including one Windows QPC bin).
+    // Establish advancement in bounded setup, not an assumed nonzero origin.
+    let initial = CpuContext::default_cntpct();
+    let started = std::time::Instant::now();
+    loop {
+        let current = CpuContext::default_cntpct();
+        assert!(current >= initial, "default counter moved backwards");
+        if current > initial {
+            return current;
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(100),
+            "default counter did not advance within 100ms from {initial}"
+        );
+        std::thread::yield_now();
+    }
+}
+
 #[test]
 fn cntpct_default_is_nonzero_and_monotonic() {
     let code = build_code(&[MRS_X0_CNTPCT_EL0, MRS_X1_CNTPCT_EL0, BRK_0]);
     let mut ctx = CpuContext::default();
     ctx.pc = CODE_BASE;
+    let before = advanced_default_counter_bound();
     let exit = run_with(code, &mut ctx);
+    let after = CpuContext::default_cntpct();
     assert!(
         matches!(exit, ExitReason::Brk(_)),
         "should hit BRK, got {:?}",
@@ -63,6 +85,12 @@ fn cntpct_default_is_nonzero_and_monotonic() {
         ctx.x[0],
         ctx.x[1]
     );
+    assert!(
+        before <= ctx.x[0] && ctx.x[1] <= after,
+        "guest CNTPCT reads must use the exact shared default epoch: {before} <= {} <= {} <= {after}",
+        ctx.x[0],
+        ctx.x[1]
+    );
 }
 
 #[test]
@@ -70,8 +98,19 @@ fn cntvct_default_is_nonzero() {
     let code = build_code(&[MRS_X0_CNTVCT_EL0, BRK_0]);
     let mut ctx = CpuContext::default();
     ctx.pc = CODE_BASE;
-    run_with(code, &mut ctx);
+    let before = advanced_default_counter_bound();
+    let exit = run_with(code, &mut ctx);
+    let after = CpuContext::default_cntpct();
+    assert!(
+        matches!(exit, ExitReason::Brk(_)),
+        "should hit BRK, got {exit:?}"
+    );
     assert!(ctx.x[0] != 0, "CNTVCT_EL0 should not be stuck at zero");
+    assert!(
+        before <= ctx.x[0] && ctx.x[0] <= after,
+        "guest CNTVCT read must use the exact shared default epoch: {before} <= {} <= {after}",
+        ctx.x[0]
+    );
 }
 
 #[test]
