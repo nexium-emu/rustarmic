@@ -176,7 +176,7 @@ pub fn clobbers_for_op(op: Op) -> ClobberSet {
         | FrsqrtStep32 | FrsqrtStep64 | FrecipEstimate32 | FrecipEstimate64
         | FrecipStep32 | FrecipStep64 | SaturatingNarrow | FabsDiff32 | FabsDiff64
         | FpMinMaxReduce32 | IntMinMaxReduce32 | FpMinMaxNum32 | FpMinMaxNum64
-        | FpAbsoluteCompare32 | FpAbsoluteCompare64 => {
+        | FpAbsoluteCompare32 | FpAbsoluteCompare64 | ScalarFpPair32 | ScalarFpPair64 => {
             c.gpr = CALLER_SAVED_GPRS;
             c.xmm = CALLER_SAVED_XMMS;
             c.result_pinned_to_gpr = Some(gpr_id::RAX);

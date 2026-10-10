@@ -527,6 +527,8 @@ pub enum Op {
     Sha256Hash2 = 0x764,
     Sha256Schedule0 = 0x768,
     Sha256Schedule1 = 0x76C,
+    ScalarFpPair32 = 0x770,
+    ScalarFpPair64 = 0x771,
 
     Mrs = 0x700,
     Msr = 0x704,
@@ -592,6 +594,8 @@ impl Op {
                 | FpMinMaxReduce32
                 | FpMinMaxNum32
                 | FpMinMaxNum64
+                | ScalarFpPair32
+                | ScalarFpPair64
                 | SaturatingBinary
                 | FpAbsoluteCompare32
                 | FpAbsoluteCompare64

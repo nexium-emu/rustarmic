@@ -14,6 +14,7 @@ pub mod prologue;
 pub mod regalloc;
 mod reciprocal;
 mod saturating;
+mod scalar_fp_pair;
 mod simd_binary_status;
 pub mod thunk;
 

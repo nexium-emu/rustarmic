@@ -122,6 +122,7 @@ fn dispatch_op(op: Op) -> Option<EmitFn> {
         FabsDiff32 | FabsDiff64 => emit_op_absolute_difference,
         FpMinMaxReduce32 => emit_op_fp_reduce,
         FpMinMaxNum32 | FpMinMaxNum64 => emit_op_fp_minmax_number,
+        ScalarFpPair32 | ScalarFpPair64 => emit_op_scalar_fp_pair,
         FpAbsoluteCompare32 | FpAbsoluteCompare64 => emit_op_absolute_compare,
         SaturatingBinary => emit_op_saturating_binary,
         IntMinMaxReduce32 => emit_op_integer_reduce,
@@ -4437,6 +4438,37 @@ fn emit_op_fp_minmax_number(
     } else {
         crate::backend::fp_minmax_number::single as *const ()
     };
+    asm.mov(rax, function as usize as i64)?;
+    asm.sub(rsp, CALL_PRECALL_SUB)?;
+    asm.call(rax)?;
+    asm.add(rsp, CALL_PRECALL_SUB)?;
+    if let Some(destination) = dst_of(&a, idx) {
+        if double { store64(asm, alloc, destination, rax)?; }
+        else { store32(asm, alloc, destination, eax)?; }
+    }
+    Ok(())
+}
+
+fn emit_op_scalar_fp_pair(
+    asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize,
+) -> Result<()> {
+    let a = block.code[idx];
+    let double = a.op == Op::ScalarFpPair64;
+    if double {
+        load64(asm, alloc, a.args[0], SCRATCH1)?;
+        load64(asm, alloc, a.args[1], SCRATCH3)?;
+    } else {
+        #[cfg(target_os = "windows")]
+        let (n_reg, m_reg) = (edx, r8d);
+        #[cfg(not(target_os = "windows"))]
+        let (n_reg, m_reg) = (esi, edx);
+        load32(asm, alloc, a.args[0], n_reg)?;
+        load32(asm, alloc, a.args[1], m_reg)?;
+    }
+    asm.mov(ARG0_REG, CTX_REG)?;
+    asm.mov(ARG3_REG, a.imm as i64)?;
+    let function = if double { crate::backend::scalar_fp_pair::double as *const () }
+        else { crate::backend::scalar_fp_pair::single as *const () };
     asm.mov(rax, function as usize as i64)?;
     asm.sub(rsp, CALL_PRECALL_SUB)?;
     asm.call(rax)?;
