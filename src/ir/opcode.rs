@@ -519,6 +519,11 @@ pub enum Op {
     VecSshl32 = 0x74E,
     VecSshl64 = 0x74F,
 
+    AesEncrypt = 0x750,
+    AesDecrypt = 0x754,
+    AesMixColumns = 0x758,
+    AesInverseMixColumns = 0x75C,
+
     Mrs = 0x700,
     Msr = 0x704,
     Hint = 0x708,

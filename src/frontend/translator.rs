@@ -91,6 +91,7 @@ pub fn translate_instruction(em: &mut IrEmitter<'_>, inst: u32) -> Result<InstSt
         Operation::ASIMDELEM(insn) => translate::asimd_elem::translate(em, insn),
         Operation::ASISDELEM(insn) => translate::asimd_elem::translate_scalar(em, insn),
         Operation::ASIMDIMM(insn) => translate::asimd_imm::translate(em, insn),
+        Operation::CRYPTOAES(insn) => translate::crypto_aes::translate(em, insn),
         Operation::ASISDLSO(insn) => translate::asimd_struct::translate_single(em, insn),
         Operation::ASISDLSOP(insn) => translate::asimd_struct::translate_single_post(em, insn),
         Operation::ASISDLSE(insn) => translate::asimd_struct::translate_multiple(em, insn),

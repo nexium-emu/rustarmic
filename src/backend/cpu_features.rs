@@ -10,6 +10,7 @@ pub struct CpuFeatures {
     pub has_fma: bool,
     pub has_gfni: bool,
     pub has_lzcnt: bool,
+    pub has_aesni: bool,
 }
 
 static FEATURES: OnceLock<CpuFeatures> = OnceLock::new();
@@ -53,6 +54,7 @@ fn detect() -> CpuFeatures {
         has_fma: std::arch::is_x86_feature_detected!("fma"),
         has_gfni: (leaf7.ecx & (1 << 8)) != 0,
         has_lzcnt: (leaf_ext.ecx & (1 << 5)) != 0,
+        has_aesni: std::arch::is_x86_feature_detected!("aes"),
     }
 }
 

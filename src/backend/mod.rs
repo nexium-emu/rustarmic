@@ -5,6 +5,7 @@ mod fp_minmax_number;
 mod integer_minmax_reduce;
 pub mod clobbers;
 pub mod cpu_features;
+mod crypto_aes;
 pub mod emit;
 pub mod isel;
 pub mod operand;

@@ -125,6 +125,7 @@ fn dispatch_op(op: Op) -> Option<EmitFn> {
         FpAbsoluteCompare32 | FpAbsoluteCompare64 => emit_op_absolute_compare,
         SaturatingBinary => emit_op_saturating_binary,
         IntMinMaxReduce32 => emit_op_integer_reduce,
+        AesEncrypt | AesDecrypt | AesMixColumns | AesInverseMixColumns => emit_op_crypto_aes,
         Fdiv32 | Fdiv64 => emit_op_fdiv,
         Fmax32 | Fmax64 => emit_op_fmax,
         Fmin32 | Fmin64 => emit_op_fmin,
@@ -3208,6 +3209,50 @@ fn emit_adc_sbc(
         asm.mov(byte_ptr(CTX_REG + cpu_offsets::nzcv() as i32), al)?;
     }
     Ok(())
+}
+
+fn emit_op_crypto_aes(
+    asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize,
+) -> Result<()> {
+    let a = block.code[idx];
+    let destination = dst_of(&a, idx).unwrap();
+    into_xmm_q(asm, alloc, a.args[0], xmm0)?;
+    if crate::backend::cpu_features::active_features().has_aesni {
+        if a.op == Op::AesInverseMixColumns {
+            asm.aesimc(xmm0, xmm0)?;
+        } else {
+            asm.pxor(xmm1, xmm1)?;
+            match a.op {
+                Op::AesEncrypt => asm.aesenclast(xmm0, xmm1)?,
+                Op::AesDecrypt => asm.aesdeclast(xmm0, xmm1)?,
+                Op::AesMixColumns => {
+                    asm.aesdeclast(xmm0, xmm1)?;
+                    asm.aesenc(xmm0, xmm1)?;
+                }
+                _ => unreachable!(),
+            }
+        }
+    } else {
+        let mode = match a.op {
+            Op::AesEncrypt => 0,
+            Op::AesDecrypt => 1,
+            Op::AesMixColumns => 2,
+            Op::AesInverseMixColumns => 3,
+            _ => unreachable!(),
+        };
+        asm.sub(rsp, 32)?;
+        asm.movdqu(xmmword_ptr(rsp), xmm0)?;
+        asm.lea(ARG0_REG, ptr(rsp))?;
+        asm.lea(SCRATCH1, ptr(rsp + 16))?;
+        asm.mov(SCRATCH3, mode as i64)?;
+        asm.sub(rsp, CALL_PRECALL_SUB)?;
+        asm.mov(rax, crate::backend::crypto_aes::transform as *const () as usize as i64)?;
+        asm.call(rax)?;
+        asm.add(rsp, CALL_PRECALL_SUB)?;
+        asm.movdqu(xmm0, xmmword_ptr(rsp + 16))?;
+        asm.add(rsp, 32)?;
+    }
+    store_xmm_q(asm, alloc, destination, xmm0)
 }
 
 fn emit_op_saturating_binary(
