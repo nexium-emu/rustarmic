@@ -7,6 +7,8 @@ use crate::backend::isel::{emit_armlet, emit_cond_check_byte};
 use crate::backend::operand::load64;
 use crate::backend::prologue::{emit_epilogue, emit_prologue};
 use crate::backend::regalloc::{ALLOCATABLE_GPRS, compute_live_ranges, linear_scan};
+use crate::backend::regalloc::{Allocation, Loc};
+use crate::backend::thunk::ThunkKind;
 use crate::error::{Error, Result};
 use crate::ir::block::ExceptionKind;
 use crate::ir::{Block, Terminal};
@@ -16,6 +18,106 @@ pub struct EmittedBlock {
     pub code: Vec<u8>,
     pub chains: Vec<ChainSite>,
     pub body_offset: u32,
+    pub thunk_kind: ThunkKind,
+}
+
+/// Do not use Allocation.used_xmms: it describes the final active/free state,
+/// not every location written earlier in the block. A final machine-code scan
+/// also rejects fixed-register/implicit vector writers missing from metadata.
+fn emitted_thunk_kind(block: &Block, alloc: &Allocation, code: &[u8]) -> ThunkKind {
+    #[cfg(target_os = "windows")]
+    {
+        use iced_x86::{Decoder, DecoderOptions, Mnemonic, OpKind, Register};
+        if alloc.locs.iter().any(|loc| matches!(loc, Loc::Xmm(6..=15)))
+            || block.iter_live().any(|(_, armlet)| {
+                crate::backend::clobbers::clobbers_for_op(armlet.op).xmm.bits() & 0xffc0 != 0
+            })
+        {
+            return ThunkKind::Full;
+        }
+        let mut decoder = Decoder::new(64, code, DecoderOptions::NONE);
+        while decoder.can_decode() {
+            let instruction = decoder.decode();
+            if instruction.is_invalid()
+                || matches!(instruction.mnemonic(), Mnemonic::Fxrstor | Mnemonic::Fxrstor64
+                    | Mnemonic::Xrstor | Mnemonic::Xrstor64 | Mnemonic::Xrstors
+                    | Mnemonic::Xrstors64 | Mnemonic::Vzeroall | Mnemonic::Vzeroupper)
+            {
+                return ThunkKind::Full;
+            }
+            for operand in 0..instruction.op_count() {
+                if instruction.op_kind(operand) == OpKind::Register {
+                    let register = instruction.op_register(operand);
+                    if (Register::XMM6..=Register::XMM15).contains(&register)
+                        || (Register::YMM6..=Register::YMM15).contains(&register)
+                        || (Register::ZMM6..=Register::ZMM15).contains(&register)
+                    {
+                        return ThunkKind::Full;
+                    }
+                }
+            }
+            let memory_index = instruction.memory_index();
+            if (Register::XMM6..=Register::XMM15).contains(&memory_index)
+                || (Register::YMM6..=Register::YMM15).contains(&memory_index)
+                || (Register::ZMM6..=Register::ZMM15).contains(&memory_index)
+            {
+                return ThunkKind::Full;
+            }
+        }
+        if decoder.position() != code.len() {
+            return ThunkKind::Full;
+        }
+        ThunkKind::XmmFree
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (block, alloc, code);
+        ThunkKind::Full
+    }
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod thunk_certificate_tests {
+    use super::*;
+    use iced_x86::{Decoder, DecoderOptions, Mnemonic};
+
+    fn certificate(locs: Vec<Loc>, code: &[u8]) -> ThunkKind {
+        let allocation = Allocation { locs, spill_bytes: 0, used_xmms: 0 };
+        emitted_thunk_kind(&Block::new(0x1000), &allocation, code)
+    }
+
+    #[test]
+    fn expired_historical_xmm_locations_require_full_preservation() {
+        for register in 6..=15 {
+            assert_eq!(certificate(vec![Loc::Xmm(register)], &[0xc3]), ThunkKind::Full);
+        }
+        assert_eq!(certificate(vec![Loc::Reg(3)], &[0xc3]), ThunkKind::XmmFree);
+    }
+
+    #[test]
+    fn fixed_vector_operands_and_malformed_code_require_full_preservation() {
+        for code in [&[0xf3, 0x0f, 0x6f, 0xf0][..], &[0x66, 0x0f, 0xef, 0xff][..], &[0x0f][..]] {
+            assert_eq!(certificate(Vec::new(), code), ThunkKind::Full);
+        }
+        assert_eq!(certificate(Vec::new(), &[0x48, 0x83, 0xc0, 0x01, 0xc3]), ThunkKind::XmmFree);
+    }
+
+    #[test]
+    fn implicit_restore_and_zero_vector_writers_include_all_64_bit_aliases() {
+        for (code, mnemonic) in [
+            (&[0x0f, 0xae, 0x08][..], Mnemonic::Fxrstor),
+            (&[0x48, 0x0f, 0xae, 0x08][..], Mnemonic::Fxrstor64),
+            (&[0x0f, 0xae, 0x28][..], Mnemonic::Xrstor),
+            (&[0x48, 0x0f, 0xae, 0x28][..], Mnemonic::Xrstor64),
+            (&[0x0f, 0xc7, 0x18][..], Mnemonic::Xrstors),
+            (&[0x48, 0x0f, 0xc7, 0x18][..], Mnemonic::Xrstors64),
+            (&[0xc5, 0xfc, 0x77][..], Mnemonic::Vzeroall),
+            (&[0xc5, 0xf8, 0x77][..], Mnemonic::Vzeroupper),
+        ] {
+            assert_eq!(Decoder::new(64, code, DecoderOptions::NONE).decode().mnemonic(), mnemonic);
+            assert_eq!(certificate(Vec::new(), code), ThunkKind::Full);
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -168,10 +270,12 @@ pub fn emit_block(block: &Block) -> Result<EmittedBlock> {
         .map_err(|e| Error::Backend(e.to_string()))? as u32;
 
     let code = result.inner.code_buffer;
+    let thunk_kind = emitted_thunk_kind(block, &alloc, &code);
     Ok(EmittedBlock {
         code,
         chains,
         body_offset,
+        thunk_kind,
     })
 }
 

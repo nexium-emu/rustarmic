@@ -23,6 +23,15 @@ const fn frame_size() -> i32 {
 
 const THUNK_FRAME: i32 = frame_size();
 
+/// Raw-code callers must use Full. XmmFree is only selected for emitted code
+/// with a conservative certificate that it never touches Win64 XMM6..15.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ThunkKind {
+    #[default]
+    Full,
+    XmmFree,
+}
+
 #[cfg(target_os = "windows")]
 const ARG_BLOCK: AsmRegister64 = rcx;
 #[cfg(target_os = "windows")]
@@ -34,7 +43,13 @@ const ARG_BLOCK: AsmRegister64 = rdi;
 const ARG_CTX: AsmRegister64 = rsi;
 
 pub fn emit_thunk_bytes() -> Result<Vec<u8>> {
+    emit_thunk_bytes_for(ThunkKind::Full)
+}
+
+pub(crate) fn emit_thunk_bytes_for(kind: ThunkKind) -> Result<Vec<u8>> {
     let mut asm = CodeAssembler::new(64).map_err(into_err)?;
+    #[cfg(not(target_os = "windows"))]
+    let _ = kind;
 
     asm.push(rbp).map_err(into_err)?;
     asm.mov(rbp, rsp).map_err(into_err)?;
@@ -47,7 +62,7 @@ pub fn emit_thunk_bytes() -> Result<Vec<u8>> {
     asm.sub(rsp, THUNK_FRAME).map_err(into_err)?;
 
     #[cfg(target_os = "windows")]
-    {
+    if kind == ThunkKind::Full {
         for i in 0..10i32 {
             let xmm_reg = match i {
                 0 => xmm6,
@@ -71,7 +86,7 @@ pub fn emit_thunk_bytes() -> Result<Vec<u8>> {
     asm.call(ARG_BLOCK).map_err(into_err)?;
 
     #[cfg(target_os = "windows")]
-    {
+    if kind == ThunkKind::Full {
         for i in 0..10i32 {
             let xmm_reg = match i {
                 0 => xmm6,

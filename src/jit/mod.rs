@@ -188,10 +188,11 @@ impl Jit {
             }
             let pc = ctx.pc;
             let remaining = budget - retired;
-            let cached = self.cache.lookup_meta(pc);
-            let cached_fits = cached.is_some_and(|(_, count)| u64::from(count) <= remaining);
-            let host_fn = if cached_fits {
-                cached.unwrap().0
+            let cached = self.cache.lookup_dispatch_meta(pc);
+            let cached_fits = cached.is_some_and(|entry| u64::from(entry.guest_insns) <= remaining);
+            let (host_fn, thunk_kind) = if cached_fits {
+                let entry = cached.unwrap();
+                (entry.host_ptr, entry.thunk_kind)
             } else {
                 let mut translate = self.config.translate;
                 let cache_block = remaining >= u64::from(translate.max_insts.max(1));
@@ -261,7 +262,7 @@ impl Jit {
                         "compile pc={pc:#x} insns={insns} ir_live={ir_live} host_bytes={host_bytes}",
                     );
                 }
-                let installed = match self.cache.install(
+                let installed = match self.cache.install_emitted(
                     pc,
                     self.block.end_pc,
                     self.block.cycles,
@@ -269,11 +270,12 @@ impl Jit {
                     &emitted.chains,
                     emitted.body_offset,
                     cache_block,
+                    emitted.thunk_kind,
                 ) {
                     Ok(ptr) => ptr,
                     Err(Error::CodeCacheFull) => {
                         self.cache.reset()?;
-                        self.cache.install(
+                        self.cache.install_emitted(
                             pc,
                             self.block.end_pc,
                             self.block.cycles,
@@ -281,6 +283,7 @@ impl Jit {
                             &emitted.chains,
                             emitted.body_offset,
                             cache_block,
+                            emitted.thunk_kind,
                         )?
                     }
                     Err(error) => return Err(error),
@@ -289,20 +292,21 @@ impl Jit {
                 // table, but their emitted pointer remains valid until the
                 // next cache epoch reset.
                 if cache_block {
-                    self.cache.lookup(pc).ok_or(Error::CodeCacheFull)?
+                    let entry = self.cache.lookup_dispatch_meta(pc).ok_or(Error::CodeCacheFull)?;
+                    (entry.host_ptr, entry.thunk_kind)
                 } else {
-                    installed
+                    (installed, emitted.thunk_kind)
                 }
             };
 
             let block_insns = if cached_fits {
-                cached.unwrap().1
+                cached.unwrap().guest_insns
             } else {
                 self.block.cycles.max(1)
             };
 
             let next_pc = unsafe {
-                let thunk: JitFn = core::mem::transmute(self.cache.thunk());
+                let thunk: JitFn = core::mem::transmute(self.cache.thunk_for(thunk_kind));
                 thunk(host_fn as u64, ctx as *mut CpuContext)
             };
 
