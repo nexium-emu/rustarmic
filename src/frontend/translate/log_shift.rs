@@ -73,8 +73,7 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: LOG_SHIFT) -> Result<InstStatus> 
     };
 
     if matches!(op, LogOp::Ands | LogOp::Bics) {
-        let zero = em.const_u64(0);
-        em.subs(result, zero, size);
+        em.logic_flags(result, size);
     }
 
     em.set_gpr(rd, result, size);

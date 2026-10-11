@@ -14,6 +14,8 @@ enum Kind {
     Max,
     Min,
     Nmul,
+    MaxNm,
+    MinNm,
 }
 
 pub fn translate(em: &mut IrEmitter<'_>, insn: FLOATDP2) -> Result<InstStatus> {
@@ -29,12 +31,12 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: FLOATDP2) -> Result<InstStatus> {
         FDIV_Fd_S_S_Fn_S_S_Fm_S_S(i) => (i.0, Kind::Div),
         FMAX_Fd_Fn_Fm(i) => (i.0, Kind::Max),
         FMAX_Fd_S_S_Fn_S_S_Fm_S_S(i) => (i.0, Kind::Max),
-        FMAXNM_Fd_Fn_Fm(i) => (i.0, Kind::Max),
-        FMAXNM_Fd_S_S_Fn_S_S_Fm_S_S(i) => (i.0, Kind::Max),
+        FMAXNM_Fd_Fn_Fm(i) => (i.0, Kind::MaxNm),
+        FMAXNM_Fd_S_S_Fn_S_S_Fm_S_S(i) => (i.0, Kind::MaxNm),
         FMIN_Fd_Fn_Fm(i) => (i.0, Kind::Min),
         FMIN_Fd_S_S_Fn_S_S_Fm_S_S(i) => (i.0, Kind::Min),
-        FMINNM_Fd_Fn_Fm(i) => (i.0, Kind::Min),
-        FMINNM_Fd_S_S_Fn_S_S_Fm_S_S(i) => (i.0, Kind::Min),
+        FMINNM_Fd_Fn_Fm(i) => (i.0, Kind::MinNm),
+        FMINNM_Fd_S_S_Fn_S_S_Fm_S_S(i) => (i.0, Kind::MinNm),
         FNMUL_Fd_Fn_Fm(i) => (i.0, Kind::Nmul),
         FNMUL_Fd_S_S_Fn_S_S_Fm_S_S(i) => (i.0, Kind::Nmul),
     };
@@ -90,7 +92,10 @@ fn fbin(em: &mut IrEmitter<'_>, a: ValueRef, b: ValueRef, k: Kind, is_double: bo
         (Kind::Max, true) => (Op::Fmax64, Ty::U64),
         (Kind::Min, false) => (Op::Fmin32, Ty::U32),
         (Kind::Min, true) => (Op::Fmin64, Ty::U64),
+        (Kind::MaxNm | Kind::MinNm, false) => (Op::FpMinMaxNum32, Ty::U32),
+        (Kind::MaxNm | Kind::MinNm, true) => (Op::FpMinMaxNum64, Ty::U64),
         (Kind::Nmul, _) => unreachable!("handled above"),
     };
-    em.push(Armlet::new(op, ty).with_args(&[a, b]))
+    let minimum = matches!(k, Kind::MinNm);
+    em.push(Armlet::new(op, ty).with_args(&[a, b]).with_imm(minimum as u64))
 }

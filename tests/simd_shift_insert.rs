@@ -11,6 +11,10 @@ use rustarmic::jit::code_cache::{CodeCache, ThunkFn};
 use rustarmic::optimizer::optimize;
 use rustarmic::{CpuContext, Error, Jit, JitConfig, Memory, StopReason};
 
+// A BRK stop leaves ctx.pc at the BRK: the ARM ARM preferred exception return
+// address for a Breakpoint Instruction exception is the BRK itself (Unicorn
+// agrees). These assertions originally expected the following instruction.
+
 const CODE: u64 = 0x1000;
 const BRK: u32 = 0xd420_0000;
 const GUARD: u64 = 0xface_1234_5678_9abc;
@@ -248,7 +252,7 @@ fn matrix(left: bool, scalar: bool) {
                             "{instruction:08x}/{features:?}"
                         );
                         assert_eq!(result.retired, 2);
-                        assert_eq!(ctx.pc, CODE + 8);
+                        assert_eq!(ctx.pc, CODE + 4);
                         check(&ctx, expected_x, wanted);
                         assert_eq!(code.0, words);
                     }
@@ -350,7 +354,7 @@ fn mixed_insert_chain_preserves_each_budget_cutpoint_and_full_width_endpoint() {
                     StopReason::BudgetExhausted
                 }
             );
-            assert_eq!(ctx.pc, CODE + budget * 4);
+            assert_eq!(ctx.pc, CODE + budget * 4 - if budget == 5 { 4 } else { 0 });
             check(&ctx, expected_x, wanted);
             if budget < 5 {
                 for &(left, size, q, scalar, shift, rn, rd) in
@@ -371,7 +375,7 @@ fn mixed_insert_chain_preserves_each_budget_cutpoint_and_full_width_endpoint() {
                     (result.stop, result.retired),
                     (StopReason::Brk(0), 5 - budget)
                 );
-                assert_eq!(ctx.pc, CODE + 20);
+                assert_eq!(ctx.pc, CODE + 16);
                 check(&ctx, expected_x, wanted);
             }
             assert_eq!(code.0, words);

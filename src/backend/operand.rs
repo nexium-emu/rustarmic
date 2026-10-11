@@ -114,6 +114,30 @@ pub fn xmm(n: u8) -> AsmRegisterXmm {
     }
 }
 
+/// rbp-relative offset of a 16-byte temporary below every spill slot (the
+/// spill area is limited to `BLOCK_SCRATCH_BYTES - 16`), used to move
+/// immediates into XMM registers without clobbering a GPR.
+pub const IMM_TEMP_OFFSET: i32 =
+    crate::backend::regalloc::SPILL_BASE + crate::backend::thunk::BLOCK_SCRATCH_BYTES;
+
+/// Spill frame bytes available to the register allocator.
+pub const SPILL_LIMIT: i32 = crate::backend::thunk::BLOCK_SCRATCH_BYTES - 16;
+
+fn mov_imm64(asm: &mut CodeAssembler, dst: AsmRegister64, v: u64) -> Result<()> {
+    if v <= u32::MAX as u64 {
+        // 32-bit moves zero-extend and encode shorter.
+        let d32 = gpr32(reg64_index(dst));
+        asm.mov(d32, v as u32 as i32).map_err(into_err)?;
+    } else {
+        asm.mov(dst, v as i64).map_err(into_err)?;
+    }
+    Ok(())
+}
+
+fn reg64_index(r: AsmRegister64) -> u8 {
+    (0..16u8).find(|&i| gpr64(i) == r).expect("GPR")
+}
+
 pub fn load64(
     asm: &mut CodeAssembler,
     alloc: &Allocation,
@@ -133,6 +157,7 @@ pub fn load64(
         Loc::Spill(off) => {
             asm.mov(dst, qword_ptr(rbp - off)).map_err(into_err)?;
         }
+        Loc::Imm(v) => mov_imm64(asm, dst, v)?,
         Loc::None => return Err(Error::Backend(format!("load64 from Loc::None ({:?})", vr))),
     }
     Ok(())
@@ -156,6 +181,9 @@ pub fn load32(
         }
         Loc::Spill(off) => {
             asm.mov(dst, dword_ptr(rbp - off)).map_err(into_err)?;
+        }
+        Loc::Imm(v) => {
+            asm.mov(dst, v as u32 as i32).map_err(into_err)?;
         }
         Loc::None => return Err(Error::Backend(format!("load32 from Loc::None ({:?})", vr))),
     }
@@ -181,7 +209,8 @@ pub fn store64(
         Loc::Spill(off) => {
             asm.mov(qword_ptr(rbp - off), src).map_err(into_err)?;
         }
-        Loc::None => {}
+        // Constants are immutable; their defining op has nothing to store.
+        Loc::Imm(_) | Loc::None => {}
     }
     Ok(())
 }
@@ -207,7 +236,8 @@ pub fn store32(
             asm.mov(dword_ptr(rbp - (off - 4)), 0i32)
                 .map_err(into_err)?;
         }
-        Loc::None => {}
+        // Constants are immutable; their defining op has nothing to store.
+        Loc::Imm(_) | Loc::None => {}
     }
     Ok(())
 }
@@ -227,6 +257,12 @@ pub fn load_xmm_s(
             }
         }
         Loc::Spill(off) => asm.movd(dst, dword_ptr(rbp - off)).map_err(into_err)?,
+        Loc::Imm(v) => {
+            asm.mov(dword_ptr(rbp - IMM_TEMP_OFFSET), v as u32 as i32)
+                .map_err(into_err)?;
+            asm.movd(dst, dword_ptr(rbp - IMM_TEMP_OFFSET))
+                .map_err(into_err)?;
+        }
         Loc::None => {
             return Err(Error::Backend(format!(
                 "load_xmm_s from Loc::None ({:?})",
@@ -252,6 +288,14 @@ pub fn load_xmm_d(
             }
         }
         Loc::Spill(off) => asm.movq(dst, qword_ptr(rbp - off)).map_err(into_err)?,
+        Loc::Imm(v) => {
+            asm.mov(dword_ptr(rbp - IMM_TEMP_OFFSET), v as u32 as i32)
+                .map_err(into_err)?;
+            asm.mov(dword_ptr(rbp - (IMM_TEMP_OFFSET - 4)), (v >> 32) as u32 as i32)
+                .map_err(into_err)?;
+            asm.movq(dst, qword_ptr(rbp - IMM_TEMP_OFFSET))
+                .map_err(into_err)?;
+        }
         Loc::None => {
             return Err(Error::Backend(format!(
                 "load_xmm_d from Loc::None ({:?})",
@@ -277,7 +321,8 @@ pub fn store_xmm_s(
             }
         }
         Loc::Spill(off) => asm.movd(dword_ptr(rbp - off), src).map_err(into_err)?,
-        Loc::None => {}
+        // Constants are immutable; their defining op has nothing to store.
+        Loc::Imm(_) | Loc::None => {}
     }
     Ok(())
 }
@@ -297,7 +342,8 @@ pub fn store_xmm_d(
             }
         }
         Loc::Spill(off) => asm.movq(qword_ptr(rbp - off), src).map_err(into_err)?,
-        Loc::None => {}
+        // Constants are immutable; their defining op has nothing to store.
+        Loc::Imm(_) | Loc::None => {}
     }
     Ok(())
 }
@@ -316,7 +362,7 @@ pub fn load_xmm_q(
             }
         }
         Loc::Spill(off) => asm.movdqu(dst, xmmword_ptr(rbp - off)).map_err(into_err)?,
-        Loc::Reg(_) | Loc::None => {
+        Loc::Reg(_) | Loc::Imm(_) | Loc::None => {
             return Err(Error::Backend(format!(
                 "load_xmm_q from invalid loc ({:?})",
                 vr
@@ -341,7 +387,8 @@ pub fn store_xmm_q(
         }
         Loc::Spill(off) => asm.movdqu(xmmword_ptr(rbp - off), src).map_err(into_err)?,
         Loc::Reg(_) => return Err(Error::Backend(format!("store_xmm_q to GPR loc ({:?})", vr))),
-        Loc::None => {}
+        // Constants are immutable; their defining op has nothing to store.
+        Loc::Imm(_) | Loc::None => {}
     }
     Ok(())
 }
@@ -359,7 +406,7 @@ pub fn get_xmm_q(
                 .map_err(into_err)?;
             Ok(fallback)
         }
-        Loc::Reg(_) | Loc::None => Err(Error::Backend(format!(
+        Loc::Reg(_) | Loc::Imm(_) | Loc::None => Err(Error::Backend(format!(
             "get_xmm_q from invalid loc ({:?})",
             vr
         ))),
@@ -382,7 +429,7 @@ pub fn into_xmm_q(
         Loc::Spill(off) => asm
             .movdqu(target, xmmword_ptr(rbp - off))
             .map_err(into_err)?,
-        Loc::Reg(_) | Loc::None => {
+        Loc::Reg(_) | Loc::Imm(_) | Loc::None => {
             return Err(Error::Backend(format!(
                 "into_xmm_q from invalid loc ({:?})",
                 vr

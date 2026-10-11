@@ -16,6 +16,8 @@ enum Kind {
     RintM,
     RintP,
     Fcvt,
+    /// FRINT{N,Z,X,I}; I rounds like X, in the current mode.
+    Rint(u8),
 }
 
 pub fn translate(em: &mut IrEmitter<'_>, insn: FLOATDP1) -> Result<InstStatus> {
@@ -36,6 +38,10 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: FLOATDP1) -> Result<InstStatus> {
         FRINTP_Fd_Fn(i) => (i.0, Kind::RintP),
         FRINTP_Fd_S_S_Fn_S_S(i) => (i.0, Kind::RintP),
         FCVT_Fd_Fn(i) => (i.0, Kind::Fcvt),
+        FRINTN_Fd_Fn(i) => (i.0, Kind::Rint(b'n')),
+        FRINTZ_Fd_Fn(i) => (i.0, Kind::Rint(b'z')),
+        FRINTX_Fd_Fn(i) => (i.0, Kind::Rint(b'x')),
+        FRINTI_Fd_Fn(i) => (i.0, Kind::Rint(b'x')),
         _ => {
             return Err(Error::Unsupported {
                 pc: em.current_pc,
@@ -63,6 +69,19 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: FLOATDP1) -> Result<InstStatus> {
             });
         }
     };
+
+    if let Kind::Rint(mode) = kind {
+        let v = em.get_v_q(rn);
+        let r = round_lanes(em, v, mode, is_double, false);
+        if is_double {
+            let lo = em.vec_extract_lo64(r);
+            em.set_v_d(rd, lo);
+        } else {
+            let s = em.vec_extract_u32(r, 0);
+            em.set_v_s(rd, s);
+        }
+        return Ok(InstStatus::Continue);
+    }
 
     let src = if is_double {
         em.get_v_d(rn)
@@ -99,7 +118,7 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: FLOATDP1) -> Result<InstStatus> {
             };
             em.push(Armlet::new(op, ty).with_args(&[src]))
         }
-        Kind::Fcvt => unreachable!("handled before this match"),
+        Kind::Fcvt | Kind::Rint(_) => unreachable!("handled before this match"),
     };
 
     if is_double {
@@ -208,4 +227,23 @@ fn translate_fcvt(
         }
     }
     Ok(InstStatus::Continue)
+}
+
+/// Rounds the lanes of `v` to integral values: `mode` is one of the
+/// FRINT suffixes n / p / m / z / a / x.
+pub(crate) fn round_lanes(
+    em: &mut IrEmitter<'_>,
+    v: crate::ir::ValueRef,
+    mode: u8,
+    double: bool,
+    q: bool,
+) -> crate::ir::ValueRef {
+    match mode {
+        b'n' => em.vec_frintn(v, double, q),
+        b'p' => em.vec_frintp(v, double, q),
+        b'm' => em.vec_frintm(v, double, q),
+        b'z' => em.vec_frintz(v, double, q),
+        b'a' => em.vec_frinta(v, double, q),
+        _ => em.vec_frintx(v, double, q),
+    }
 }

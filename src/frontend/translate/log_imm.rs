@@ -54,8 +54,7 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: LOG_IMM) -> Result<InstStatus> {
     };
 
     if matches!(op, LogOp::Ands) {
-        let zero = em.const_u64(0);
-        em.subs(result, zero, size);
+        em.logic_flags(result, size);
     }
 
     em.set_gpr_or_sp(rd, result, size, sp_form_dst);

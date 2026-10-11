@@ -103,6 +103,10 @@ pub fn clobbers_for_op(op: Op) -> ClobberSet {
             c.result_pinned_to_gpr = Some(gpr_id::RAX);
         }
 
+        LogicFlags32 | LogicFlags64 => {
+            c.gpr = GprMask::RAX | GprMask::RCX;
+        }
+
         AddsFlags32 | AddsFlags64 | SubsFlags32 | SubsFlags64
         | Adcs32 | Adcs64 | Sbcs32 | Sbcs64 => {
             c.gpr = GprMask::RAX
@@ -174,7 +178,9 @@ pub fn clobbers_for_op(op: Op) -> ClobberSet {
 
         Load8 | Load16 | Load32 | Load64 | Load128 | Store8 | Store16 | Store32 | Store64
         | Store128 | LoadEx8 | LoadEx16 | LoadEx32 | LoadEx64 | StoreEx8 | StoreEx16
-        | StoreEx32 | StoreEx64 => {
+        | StoreEx32 | StoreEx64 | LoadEx128 | StoreEx128 | AtomicCas128 | AtomicRmw8
+        | AtomicRmw16 | AtomicRmw32 | AtomicRmw64 | AtomicCas8 | AtomicCas16 | AtomicCas32
+        | AtomicCas64 => {
             c.gpr = CALLER_SAVED_GPRS;
             c.xmm = CALLER_SAVED_XMMS;
             if matches!(
@@ -191,12 +197,21 @@ pub fn clobbers_for_op(op: Op) -> ClobberSet {
                     | StoreEx16
                     | StoreEx32
                     | StoreEx64
+                    | StoreEx128
+                    | AtomicRmw8
+                    | AtomicRmw16
+                    | AtomicRmw32
+                    | AtomicRmw64
+                    | AtomicCas8
+                    | AtomicCas16
+                    | AtomicCas32
+                    | AtomicCas64
             ) {
                 c.result_pinned_to_gpr = Some(gpr_id::RAX);
             }
         }
 
-        Mrs | Fmadd32 | Fmadd64 | FrsqrtEstimate32 | FrsqrtEstimate64
+        Mrs | CallHelper | Fmadd32 | Fmadd64 | FrsqrtEstimate32 | FrsqrtEstimate64
         | FrsqrtStep32 | FrsqrtStep64 | FrecipEstimate32 | FrecipEstimate64
         | FrecipStep32 | FrecipStep64 | SaturatingNarrow | FabsDiff32 | FabsDiff64
         | FpMinMaxReduce32 | IntMinMaxReduce32 | FpMinMaxNum32 | FpMinMaxNum64

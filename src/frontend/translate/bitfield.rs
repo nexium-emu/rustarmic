@@ -28,7 +28,9 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: BITFIELD) -> Result<InstStatus> {
     let rn = bits(raw, 5, 5) as u8;
     let rd = bits(raw, 0, 5) as u8;
 
-    if sf != n {
+    // 32-bit forms with immr<5> or imms<5> set are UNDEFINED (and would
+    // underflow the shift arithmetic below).
+    if sf != n || (sf == 0 && (immr >= 32 || imms >= 32)) {
         return Err(Error::Decode {
             pc: em.current_pc,
             opcode: raw,

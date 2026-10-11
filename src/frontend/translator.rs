@@ -32,6 +32,7 @@ pub fn translate_instruction(em: &mut IrEmitter<'_>, inst: u32) -> Result<InstSt
         opcode: inst,
     })?;
 
+    let mark = em.block.mark();
     let result = match opcode.operation {
         Operation::MOVEWIDE(insn) => translate::movewide::translate(em, insn),
         Operation::ADDSUB_IMM(insn) => translate::addsub_imm::translate(em, insn),
@@ -95,15 +96,30 @@ pub fn translate_instruction(em: &mut IrEmitter<'_>, inst: u32) -> Result<InstSt
         Operation::CRYPTOSHA2(insn) => translate::crypto_sha256::translate_two(em, insn),
         Operation::CRYPTOSHA3(insn) => translate::crypto_sha256::translate_three(em, insn),
         Operation::CRYPTOSM4(insn) => translate::crypto_sm4::translate(em, insn),
-        Operation::ASISDLSO(insn) => translate::asimd_struct::translate_single(em, insn),
-        Operation::ASISDLSOP(insn) => translate::asimd_struct::translate_single_post(em, insn),
-        Operation::ASISDLSE(insn) => translate::asimd_struct::translate_multiple(em, insn),
-        Operation::ASISDLSEP(insn) => translate::asimd_struct::translate_multiple_post(em, insn),
+        Operation::ASISDLSO(_) => translate::asisd_ldst::translate_single(em, inst, false),
+        Operation::ASISDLSOP(_) => translate::asisd_ldst::translate_single(em, inst, true),
+        Operation::ASISDLSE(_) => translate::asisd_ldst::translate_multiple(em, inst, false),
+        Operation::ASISDLSEP(_) => translate::asisd_ldst::translate_multiple(em, inst, true),
+        Operation::LDSTNAPAIR_OFFS(_) => translate::ldst_alias::translate_nap(em, inst),
+        Operation::LDST_UNPRIV(_) => translate::ldst_alias::translate_unpriv(em, inst),
+        Operation::SME_MISC(decoder::SME_MISC::RPRFM_RPRFMOP_Rm_SIMD_ADDR_SIMPLE(_)) => {
+            Ok(InstStatus::Continue)
+        }
         _ => Err(Error::Unsupported {
             pc: em.current_pc,
             opcode: inst,
         }),
     };
+
+    // Anything without an inline lowering that the out-of-line helpers
+    // implement becomes one helper call.  Drop whatever the inline
+    // translator emitted before giving up.
+    if let Err(Error::Unsupported { .. }) = result
+        && let Some(plan) = crate::interp::plan(inst)
+    {
+        em.block.rollback(mark);
+        return translate::helper::translate(em, inst, plan);
+    }
 
     // Some generated disarm64 family enums use `opcode: 0` for their
     // catch-all arm. Preserve the fetched instruction so every unsupported
@@ -114,6 +130,17 @@ pub fn translate_instruction(em: &mut IrEmitter<'_>, inst: u32) -> Result<InstSt
     }
 }
 
+/// Translates guest code starting at `start_pc` into `block`.
+///
+/// With `opts.multiblock`, translation continues through unconditional
+/// direct branches (`B`, `BL`) while the instruction cap allows, so one host
+/// block can cover several non-contiguous guest ranges; they are recorded
+/// in `block.ranges` for invalidation.  A branch is not followed when its
+/// target is already part of the block (loops end the block and chain).
+/// If anything after a followed branch cannot be translated (unmapped,
+/// undecodable or unsupported), everything from that branch on is rolled
+/// back and the block ends at the branch exactly as without multiblock, so
+/// faults and stops are reported at the same guest PC and retired count.
 pub fn translate_block_into(
     block: &mut Block,
     start_pc: u64,
@@ -122,25 +149,77 @@ pub fn translate_block_into(
 ) -> Result<()> {
     block.reset(start_pc);
     let mut pc = start_pc;
+    let mut seg_start = start_pc;
+    // State right after the last followed branch: (mark, cycles, ranges
+    // before it, the branch's terminal, branch pc).
+    let mut followed: Option<((usize, u32), u32, usize, Terminal, u64)> = None;
+    let max = opts.max_insts.max(1);
 
-    for _ in 0..opts.max_insts {
-        let inst = fetch(pc).ok_or(Error::GuestMemory { addr: pc })?;
-        let mut em = IrEmitter::new(block, pc);
-
-        match translate_instruction(&mut em, inst)? {
-            InstStatus::Continue => {
-                pc = pc.wrapping_add(4);
-                block.cycles = block.cycles.saturating_add(1);
+    let result = (|| -> Result<bool> {
+        while block.cycles < max {
+            let inst = fetch(pc).ok_or(Error::GuestMemory { addr: pc })?;
+            let mut em = IrEmitter::new(block, pc);
+            let status = translate_instruction(&mut em, inst)?;
+            #[cfg(feature = "fault-injection")]
+            if status == InstStatus::Continue {
+                crate::frontend::fault_injection::apply(&mut em, inst);
             }
-            InstStatus::Terminator => {
-                block.cycles = block.cycles.saturating_add(1);
-                block.end_pc = pc.wrapping_add(4);
-                return Ok(());
+            block.cycles = block.cycles.saturating_add(1);
+            match status {
+                InstStatus::Continue => pc = pc.wrapping_add(4),
+                InstStatus::Terminator => {
+                    let seg_end = pc.wrapping_add(4);
+                    if let Terminal::DirectBranch { target_pc, .. } = block.terminal
+                        && opts.multiblock
+                        && block.cycles < max
+                        && target_pc & 3 == 0
+                        && !covered(block, seg_start, seg_end, target_pc)
+                    {
+                        let ranges_before = block.ranges.len();
+                        block.ranges.push((seg_start, seg_end));
+                        followed = Some((block.mark(), block.cycles, ranges_before, block.terminal, pc));
+                        block.terminal = Terminal::Invalid;
+                        pc = target_pc;
+                        seg_start = target_pc;
+                        continue;
+                    }
+                    block.end_pc = seg_end;
+                    block.ranges.push((seg_start, seg_end));
+                    return Ok(true);
+                }
             }
         }
-    }
+        Ok(false)
+    })();
 
-    block.end_pc = pc;
-    block.terminal = Terminal::LinkBlock { next_pc: pc };
-    Ok(())
+    match result {
+        Ok(true) => Ok(()),
+        Ok(false) => {
+            block.end_pc = pc;
+            if pc != seg_start || block.ranges.is_empty() {
+                block.ranges.push((seg_start, pc));
+            }
+            block.terminal = Terminal::LinkBlock { next_pc: pc };
+            Ok(())
+        }
+        Err(error) => {
+            let Some((mark, cycles, ranges_before, terminal, branch_pc)) = followed else {
+                return Err(error);
+            };
+            block.rollback(mark);
+            block.cycles = cycles;
+            block.terminal = terminal;
+            block.end_pc = branch_pc.wrapping_add(4);
+            // Keep the range that ends with the branch, drop later ones.
+            block.ranges.truncate(ranges_before + 1);
+            Ok(())
+        }
+    }
+}
+
+/// True when `pc` lies in a range already translated into `block` or in the
+/// current segment `[seg_start, seg_end)`.
+fn covered(block: &Block, seg_start: u64, seg_end: u64, pc: u64) -> bool {
+    (seg_start <= pc && pc < seg_end)
+        || block.ranges.iter().any(|&(s, e)| s <= pc && pc < e)
 }

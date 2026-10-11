@@ -80,6 +80,10 @@ pub enum Op {
     Neg16 = 0x135,
     Neg32 = 0x136,
     Neg64 = 0x137,
+    /// NZCV from a logical result (ANDS/BICS/TST): N, Z from the value,
+    /// C = V = 0.
+    LogicFlags32 = 0x13A,
+    LogicFlags64 = 0x13B,
 
     Lsl8 = 0x140,
     Lsl16 = 0x141,
@@ -261,6 +265,23 @@ pub enum Op {
     StorePair16 = 0x42D,
     StorePair32 = 0x42E,
     StorePair64 = 0x42F,
+
+    /// Atomic RMW: args [addr, operand], imm = `jit::atomic::AtomicOp`;
+    /// returns the old value.
+    AtomicRmw8 = 0x430,
+    AtomicRmw16 = 0x431,
+    AtomicRmw32 = 0x432,
+    AtomicRmw64 = 0x433,
+    /// Compare-and-swap: args [addr, expected, new]; returns the old value.
+    AtomicCas8 = 0x434,
+    AtomicCas16 = 0x435,
+    AtomicCas32 = 0x436,
+    AtomicCas64 = 0x437,
+    /// 128-bit forms (U128 values): load-exclusive, store-exclusive
+    /// (args [addr, value], returns status) and CAS (args as above).
+    LoadEx128 = 0x438,
+    StoreEx128 = 0x43C,
+    AtomicCas128 = 0x440,
 
     Fmov32 = 0x502,
     Fmov64 = 0x503,
@@ -543,6 +564,12 @@ pub enum Op {
     Hvc = 0x714,
     MemoryBarrier = 0x718,
     Clrex = 0x71C,
+
+    /// Out-of-line instruction helper: args are copied to
+    /// `CpuContext::helper_args`, the guest encoding (imm bits 32..64) to
+    /// `helper_insn`, and `jit::helpers::HELPERS[imm as u32]` is called; the
+    /// result (ty U32 / U64 / U128 or Void) comes back in `helper_ret`.
+    CallHelper = 0x800,
 }
 
 impl Op {
@@ -583,6 +610,19 @@ impl Op {
                 | AddsFlags64
                 | SubsFlags32
                 | SubsFlags64
+                | LogicFlags32
+                | LogicFlags64
+                | AtomicRmw8
+                | AtomicRmw16
+                | AtomicRmw32
+                | AtomicRmw64
+                | AtomicCas8
+                | AtomicCas16
+                | AtomicCas32
+                | AtomicCas64
+                | LoadEx128
+                | StoreEx128
+                | AtomicCas128
                 | Fcmp32
                 | Fcmp64
                 | FrsqrtEstimate32
@@ -616,6 +656,7 @@ impl Op {
                 | Hint
                 | MemoryBarrier
                 | Clrex
+                | CallHelper
         ) {
             return true;
         }

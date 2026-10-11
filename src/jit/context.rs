@@ -2,11 +2,6 @@ use crate::arch::{NUM_GPRS, NUM_VREGS};
 
 pub type MemReadFn = unsafe extern "C" fn(*mut CpuContext, addr: u64, size: u8);
 pub type MemWriteFn = unsafe extern "C" fn(*mut CpuContext, addr: u64, size: u8);
-/// Store `io_value[0]` only if memory still matches `exclusive_value`.
-/// Return architectural STXR status: zero on success, one on failure. Embedders
-/// must install an atomic implementation for concurrent ordinary memory writes.
-/// Memory faults use the existing CpuContext fault fields, as for MemWriteFn.
-pub type MemWriteExclusiveFn = unsafe extern "C" fn(*mut CpuContext, addr: u64, size: u8) -> u32;
 
 #[repr(C, align(64))]
 pub struct CpuContext {
@@ -15,7 +10,11 @@ pub struct CpuContext {
     pub v: [[u64; 2]; NUM_VREGS],
     pub pc: u64,
     pub exclusive_addr: u64,
+    /// Value observed by the last load-exclusive (zero-extended); a
+    /// store-exclusive succeeds only if memory still holds it.
     pub exclusive_value: u64,
+    /// High half of `exclusive_value` for 128-bit exclusive pairs.
+    pub exclusive_value_hi: u64,
     pub mem_base: *mut u8,
     pub mem_base_va: u64,
     pub mem_size: u64,
@@ -27,7 +26,6 @@ pub struct CpuContext {
     pub read_cntpct: unsafe extern "C" fn(*mut CpuContext) -> u64,
     pub mem_read: MemReadFn,
     pub mem_write: MemWriteFn,
-    pub mem_write_exclusive: MemWriteExclusiveFn,
     pub io_value: [u64; 2],
     pub fpcr: u32,
     pub fpsr: u32,
@@ -40,7 +38,42 @@ pub struct CpuContext {
     pub mem_fault_cause: u8,
     pub mem_fault_addr: u64,
     pub mem_fault_pc: u64,
+    /// PC of the first callback access skipped because an earlier access of
+    /// the run faulted (0 when none was).  That access has not happened, so
+    /// `JitConfig::resume_after_fault` resumes there.
+    pub mem_fault_skip_pc: u64,
+    /// Page-table fastmem: one byte per 4 KiB guest page.  Bit 0 set means a
+    /// load may go straight to `mem_base + va`; bit 1 the same for stores.
+    /// Any other access takes the `mem_read` / `mem_write` callbacks.  Only
+    /// consulted when `JitConfig::fastmem_page_bits` is set.
+    pub page_table: *const u8,
+    /// Guest instructions generated code may still retire before returning;
+    /// `run_bounded` sets it per slice and the default does not limit a
+    /// directly invoked block.
+    pub budget_remaining: i64,
+    /// Direct-mapped dispatch table probed by generated indirect branches
+    /// (`code_cache::DispatchSlot`).  Set by the `Jit` before each run.
+    pub dispatch_table: *const u8,
+    /// Atomic read-modify-write callback for accesses the inline fastmem
+    /// path does not take (see `jit::atomic` for the protocol).  Must be
+    /// atomic with respect to other host threads running guest code.
+    pub mem_atomic: crate::jit::atomic::MemAtomicFn,
+    /// Expected value for a `mem_atomic` compare-and-swap.
+    pub atomic_expected: [u64; 2],
+    /// Operands for an out-of-line instruction helper (`Op::CallHelper`).
+    /// Generated code fills these right before the call; 32/64-bit values
+    /// are zero-extended to 128 bits.
+    pub helper_args: [[u64; 2]; 4],
+    /// Result of the last instruction helper.
+    pub helper_ret: [u64; 2],
+    /// Encoding of the guest instruction the helper implements.
+    pub helper_insn: u32,
 }
+
+/// `page_table` entry bit: loads may bypass the read callback.
+pub const PAGE_DIRECT_READ: u8 = 1;
+/// `page_table` entry bit: stores may bypass the write callback.
+pub const PAGE_DIRECT_WRITE: u8 = 2;
 
 unsafe impl Send for CpuContext {}
 
@@ -77,42 +110,6 @@ unsafe extern "C" fn default_mem_write(_: *mut CpuContext, addr: u64, size: u8) 
     )
 }
 
-// Compatibility for existing single-core callback embedders. The mutex only
-// serializes this helper's exclusive writes: ordinary callbacks do not acquire
-// it. This is not an atomic CAS against concurrent ordinary writes, nor an ARM
-// global reservation monitor (same-value writes/ABA are not detected). Production
-// multicore embedders must supply a genuinely atomic mem_write_exclusive hook.
-unsafe extern "C" fn default_mem_write_exclusive(
-    context: *mut CpuContext,
-    address: u64,
-    size: u8,
-) -> u32 {
-    static EXCLUSIVE_CALLBACKS: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _guard = EXCLUSIVE_CALLBACKS
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
-    let context_ref = unsafe { &mut *context };
-    let desired = context_ref.io_value;
-    let expected = context_ref.exclusive_value;
-    let read = context_ref.mem_read;
-    let write = context_ref.mem_write;
-    unsafe { read(context, address, size) };
-    let context_ref = unsafe { &mut *context };
-    let mask = match size {
-        1 => u8::MAX as u64,
-        2 => u16::MAX as u64,
-        4 => u32::MAX as u64,
-        8 => u64::MAX,
-        _ => return 1,
-    };
-    if context_ref.mem_fault != 0 || context_ref.io_value[0] & mask != expected & mask {
-        return 1;
-    }
-    context_ref.io_value = desired;
-    unsafe { write(context, address, size) };
-    u32::from(unsafe { (*context).mem_fault != 0 })
-}
-
 impl Default for CpuContext {
     fn default() -> Self {
         Self {
@@ -122,6 +119,7 @@ impl Default for CpuContext {
             pc: 0,
             exclusive_addr: 0,
             exclusive_value: 0,
+            exclusive_value_hi: 0,
             mem_base: core::ptr::null_mut(),
             mem_base_va: 0,
             mem_size: 0,
@@ -133,7 +131,6 @@ impl Default for CpuContext {
             read_cntpct: default_read_cntpct,
             mem_read: default_mem_read,
             mem_write: default_mem_write,
-            mem_write_exclusive: default_mem_write_exclusive,
             io_value: [0; 2],
             fpcr: 0,
             fpsr: 0,
@@ -146,6 +143,15 @@ impl Default for CpuContext {
             mem_fault_cause: 0,
             mem_fault_addr: 0,
             mem_fault_pc: 0,
+            mem_fault_skip_pc: 0,
+            page_table: core::ptr::null(),
+            budget_remaining: i64::MAX,
+            dispatch_table: core::ptr::null(),
+            mem_atomic: crate::jit::atomic::default_mem_atomic,
+            atomic_expected: [0; 2],
+            helper_args: [[0; 2]; 4],
+            helper_ret: [0; 2],
+            helper_insn: 0,
         }
     }
 }
@@ -225,9 +231,6 @@ pub mod cpu_offsets {
     pub const fn mem_write() -> usize {
         offset_of!(CpuContext, mem_write)
     }
-    pub const fn mem_write_exclusive() -> usize {
-        offset_of!(CpuContext, mem_write_exclusive)
-    }
     #[inline]
     pub const fn io_value() -> usize {
         offset_of!(CpuContext, io_value)
@@ -264,4 +267,54 @@ pub mod cpu_offsets {
     pub const fn mem_fault_pc() -> usize {
         offset_of!(CpuContext, mem_fault_pc)
     }
+    #[inline]
+    pub const fn mem_fault_skip_pc() -> usize {
+        offset_of!(CpuContext, mem_fault_skip_pc)
+    }
+    #[inline]
+    pub const fn should_halt() -> usize {
+        offset_of!(CpuContext, should_halt)
+    }
+    #[inline]
+    pub const fn page_table() -> usize {
+        offset_of!(CpuContext, page_table)
+    }
+    #[inline]
+    pub const fn budget_remaining() -> usize {
+        offset_of!(CpuContext, budget_remaining)
+    }
+    #[inline]
+    pub const fn mem_atomic() -> usize {
+        offset_of!(CpuContext, mem_atomic)
+    }
+    #[inline]
+    pub const fn atomic_expected() -> usize {
+        offset_of!(CpuContext, atomic_expected)
+    }
+    #[inline]
+    pub const fn dispatch_table() -> usize {
+        offset_of!(CpuContext, dispatch_table)
+    }
+    #[inline]
+    pub const fn helper_arg(i: usize) -> usize {
+        offset_of!(CpuContext, helper_args) + i * 16
+    }
+    #[inline]
+    pub const fn helper_ret() -> usize {
+        offset_of!(CpuContext, helper_ret)
+    }
+    #[inline]
+    pub const fn helper_insn() -> usize {
+        offset_of!(CpuContext, helper_insn)
+    }
 }
+
+// Generated code tests `should_halt` and `mem_fault` with one 16-bit compare.
+const _: () = assert!(
+    core::mem::offset_of!(CpuContext, mem_fault) == core::mem::offset_of!(CpuContext, should_halt) + 1
+);
+
+const _: () = assert!(
+    core::mem::offset_of!(CpuContext, exclusive_value_hi)
+        == core::mem::offset_of!(CpuContext, exclusive_value) + 8
+);

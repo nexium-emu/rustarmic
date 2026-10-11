@@ -103,12 +103,16 @@ fn dispatch_op(op: Op) -> Option<EmitFn> {
         Neg32 | Neg64 => emit_op_neg,
 
         AddsFlags32 | AddsFlags64 | SubsFlags32 | SubsFlags64 => emit_op_flagged_addsub,
+        LogicFlags32 | LogicFlags64 => emit_op_logic_flags,
 
         Load8 | Load16 | Load32 | Load64 | Load128 => emit_op_load,
         Store8 | Store16 | Store32 | Store64 | Store128 => emit_op_store,
 
-        LoadEx8 | LoadEx16 | LoadEx32 | LoadEx64 => emit_op_load_ex,
-        StoreEx8 | StoreEx16 | StoreEx32 | StoreEx64 => emit_op_store_ex,
+        LoadEx8 | LoadEx16 | LoadEx32 | LoadEx64 | LoadEx128 => emit_op_load_ex,
+        StoreEx8 | StoreEx16 | StoreEx32 | StoreEx64 | StoreEx128 => emit_op_store_ex,
+        AtomicRmw8 | AtomicRmw16 | AtomicRmw32 | AtomicRmw64 => emit_op_atomic_rmw,
+        AtomicCas8 | AtomicCas16 | AtomicCas32 | AtomicCas64 => emit_op_atomic_cas,
+        AtomicCas128 => emit_op_atomic_cas128,
 
         Csel32 | Csel64 => emit_op_csel,
 
@@ -247,6 +251,7 @@ fn dispatch_op(op: Op) -> Option<EmitFn> {
 
         Hint | MemoryBarrier => emit_nop,
         Clrex => emit_op_clrex,
+        CallHelper => emit_op_call_helper,
 
         Mrs => emit_op_mrs,
         Msr => emit_op_msr,
@@ -291,6 +296,9 @@ fn emit_op_const_u32(
 ) -> Result<()> {
     let a = block.code[idx];
     let d = dst_of(&a, idx).unwrap();
+    if matches!(alloc.loc(d), Loc::Imm(_) | Loc::None) {
+        return Ok(()); // rematerialised at each use
+    }
     asm.mov(eax, (a.imm as u32) as i32)?;
     store32(asm, alloc, d, eax)?;
     Ok(())
@@ -303,6 +311,9 @@ fn emit_op_const_u64(
 ) -> Result<()> {
     let a = block.code[idx];
     let d = dst_of(&a, idx).unwrap();
+    if matches!(alloc.loc(d), Loc::Imm(_) | Loc::None) {
+        return Ok(()); // rematerialised at each use
+    }
     asm.mov(SCRATCH0, a.imm as i64)?;
     store64(asm, alloc, d, SCRATCH0)?;
     Ok(())
@@ -669,6 +680,30 @@ fn emit_op_flagged_addsub(
     emit_flagged_addsub(asm, alloc, a, dst_of(&a, idx))
 }
 
+fn emit_op_logic_flags(
+    asm: &mut CodeAssembler,
+    block: &Block,
+    alloc: &Allocation,
+    idx: usize,
+) -> Result<()> {
+    let a = block.code[idx];
+    if a.op == Op::LogicFlags64 {
+        load64(asm, alloc, a.args[0], rax)?;
+        asm.test(rax, rax)?;
+    } else {
+        load32(asm, alloc, a.args[0], eax)?;
+        asm.test(eax, eax)?;
+    }
+    // NZCV = N<<3 | Z<<2; C and V are zero for logical operations.
+    asm.sets(al)?;
+    asm.sete(cl)?;
+    asm.shl(al, 3i32)?;
+    asm.shl(cl, 2i32)?;
+    asm.or(al, cl)?;
+    asm.mov(byte_ptr(CTX_REG + cpu_offsets::nzcv() as i32), al)?;
+    Ok(())
+}
+
 fn emit_op_load(
     asm: &mut CodeAssembler,
     block: &Block,
@@ -681,7 +716,8 @@ fn emit_op_load(
     } else {
         a.op.size_bytes()
     };
-    emit_load(asm, alloc, a, dst_of(&a, idx), bytes, block.use_fastmem)
+    let elem = element_bytes(a, bytes);
+    emit_load(asm, alloc, a, dst_of(&a, idx), bytes, elem, FastmemMode::of(block))
 }
 fn emit_op_store(
     asm: &mut CodeAssembler,
@@ -695,7 +731,17 @@ fn emit_op_store(
     } else {
         a.op.size_bytes()
     };
-    emit_store(asm, alloc, a, bytes, block.use_fastmem)
+    let elem = element_bytes(a, bytes);
+    emit_store(asm, alloc, a, bytes, elem, FastmemMode::of(block))
+}
+
+/// Width of the callback accesses a `bytes`-wide load or store splits into
+/// (`imm`, set by `IrEmitter::load_elements` / `store_elements`).
+fn element_bytes(a: Armlet, bytes: u32) -> u32 {
+    match a.imm {
+        1 | 2 | 4 | 8 if (a.imm as u32) < bytes => a.imm as u32,
+        _ => bytes,
+    }
 }
 fn emit_op_load_ex(
     asm: &mut CodeAssembler,
@@ -704,7 +750,12 @@ fn emit_op_load_ex(
     idx: usize,
 ) -> Result<()> {
     let a = block.code[idx];
-    emit_load_ex(asm, alloc, a, dst_of(&a, idx), a.op.size_bytes())
+    let bytes = if a.op == Op::LoadEx128 {
+        16
+    } else {
+        a.op.size_bytes()
+    };
+    emit_load_ex(asm, alloc, a, dst_of(&a, idx), bytes, FastmemMode::of(block))
 }
 fn emit_op_store_ex(
     asm: &mut CodeAssembler,
@@ -713,7 +764,42 @@ fn emit_op_store_ex(
     idx: usize,
 ) -> Result<()> {
     let a = block.code[idx];
-    emit_store_ex(asm, alloc, a, dst_of(&a, idx), a.op.size_bytes())
+    let bytes = if a.op == Op::StoreEx128 {
+        16
+    } else {
+        a.op.size_bytes()
+    };
+    emit_store_ex(asm, alloc, a, dst_of(&a, idx), bytes, FastmemMode::of(block))
+}
+
+fn emit_op_atomic_rmw(
+    asm: &mut CodeAssembler,
+    block: &Block,
+    alloc: &Allocation,
+    idx: usize,
+) -> Result<()> {
+    let a = block.code[idx];
+    emit_atomic_rmw(asm, alloc, a, dst_of(&a, idx), a.op.size_bytes(), FastmemMode::of(block))
+}
+
+fn emit_op_atomic_cas(
+    asm: &mut CodeAssembler,
+    block: &Block,
+    alloc: &Allocation,
+    idx: usize,
+) -> Result<()> {
+    let a = block.code[idx];
+    emit_atomic_cas(asm, alloc, a, dst_of(&a, idx), a.op.size_bytes(), FastmemMode::of(block))
+}
+
+fn emit_op_atomic_cas128(
+    asm: &mut CodeAssembler,
+    block: &Block,
+    alloc: &Allocation,
+    idx: usize,
+) -> Result<()> {
+    let a = block.code[idx];
+    emit_atomic_cas128(asm, alloc, a, dst_of(&a, idx))
 }
 
 fn emit_op_csel(
@@ -1978,8 +2064,73 @@ emit_vec_fbin!(emit_op_vec_fadd, addps, addpd);
 emit_vec_fbin!(emit_op_vec_fsub, subps, subpd);
 emit_vec_fbin!(emit_op_vec_fmul, mulps, mulpd);
 emit_vec_fbin!(emit_op_vec_fdiv, divps, divpd);
-emit_vec_fbin!(emit_op_vec_fmax, maxps, maxpd);
-emit_vec_fbin!(emit_op_vec_fmin, minps, minpd);
+/// FMAX / FMIN (vector).  x86 `maxps` / `minps` return the second operand
+/// for equal inputs and for NaNs; Arm orders -0 below +0 and propagates
+/// NaNs.  Combining both operand orders fixes the signed zeros (AND for
+/// max, OR for min) and NaN lanes take `a + b`, which propagates a NaN
+/// operand (the first one when both are NaN).
+fn emit_vec_fmaxmin(
+    asm: &mut CodeAssembler,
+    block: &Block,
+    alloc: &Allocation,
+    idx: usize,
+    max: bool,
+) -> Result<()> {
+    let a = block.code[idx];
+    let d = dst_of(&a, idx).unwrap();
+    let q_form = (a.imm & 1) != 0;
+    let double = vec_fp_is_double(a.op);
+    let working = working_xmm_for(alloc, d, xmm0);
+    into_xmm_q(asm, alloc, a.args[0], working)?;
+    let other = get_xmm_q(asm, alloc, a.args[1], xmm1)?;
+    asm.movaps(xmm2, working)?;
+    asm.movaps(xmm3, other)?;
+    match (double, max) {
+        (false, true) => {
+            asm.maxps(xmm2, other)?;
+            asm.maxps(xmm3, working)?;
+            asm.andps(xmm2, xmm3)?;
+        }
+        (false, false) => {
+            asm.minps(xmm2, other)?;
+            asm.minps(xmm3, working)?;
+            asm.orps(xmm2, xmm3)?;
+        }
+        (true, true) => {
+            asm.maxpd(xmm2, other)?;
+            asm.maxpd(xmm3, working)?;
+            asm.andpd(xmm2, xmm3)?;
+        }
+        (true, false) => {
+            asm.minpd(xmm2, other)?;
+            asm.minpd(xmm3, working)?;
+            asm.orpd(xmm2, xmm3)?;
+        }
+    }
+    asm.movaps(xmm3, working)?;
+    if double {
+        asm.cmpunordpd(xmm3, other)?;
+        asm.addpd(working, other)?;
+    } else {
+        asm.cmpunordps(xmm3, other)?;
+        asm.addps(working, other)?;
+    }
+    asm.andps(working, xmm3)?;
+    asm.andnps(xmm3, xmm2)?;
+    asm.orps(working, xmm3)?;
+    if !q_form {
+        asm.movq(working, working)?;
+    }
+    store_xmm_q(asm, alloc, d, working)
+}
+
+fn emit_op_vec_fmax(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    emit_vec_fmaxmin(asm, block, alloc, idx, true)
+}
+
+fn emit_op_vec_fmin(asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize) -> Result<()> {
+    emit_vec_fmaxmin(asm, block, alloc, idx, false)
+}
 
 fn emit_op_vec_fneg(
     asm: &mut CodeAssembler,
@@ -3064,6 +3215,69 @@ fn emit_op_vec_ins_gpr(
     store_xmm_q(asm, alloc, d, working)
 }
 
+fn emit_op_call_helper(
+    asm: &mut CodeAssembler,
+    block: &Block,
+    alloc: &Allocation,
+    idx: usize,
+) -> Result<()> {
+    let a = block.code[idx];
+    for (i, &arg) in a.args.iter().enumerate() {
+        if arg.is_none() {
+            continue;
+        }
+        let off = cpu_offsets::helper_arg(i) as i32;
+        match block.code[arg.as_usize()].ty {
+            Ty::U128 => {
+                let x = get_xmm_q(asm, alloc, arg, xmm0)?;
+                asm.movdqu(xmmword_ptr(CTX_REG + off), x)?;
+            }
+            Ty::U64 => {
+                load64(asm, alloc, arg, rax)?;
+                asm.mov(qword_ptr(CTX_REG + off), rax)?;
+                asm.mov(qword_ptr(CTX_REG + off + 8), 0i32)?;
+            }
+            _ => {
+                load32(asm, alloc, arg, eax)?;
+                asm.mov(qword_ptr(CTX_REG + off), rax)?;
+                asm.mov(qword_ptr(CTX_REG + off + 8), 0i32)?;
+            }
+        }
+    }
+    let helper = (a.imm & 0xFFFF_FFFF) as usize;
+    let f = *crate::jit::helpers::HELPERS
+        .get(helper)
+        .ok_or_else(|| Error::Backend(format!("unknown helper {helper}")))?;
+    asm.mov(
+        dword_ptr(CTX_REG + cpu_offsets::helper_insn() as i32),
+        (a.imm >> 32) as u32 as i32,
+    )?;
+    asm.mov(rax, f as usize as i64)?;
+    asm.mov(ARG0_REG, CTX_REG)?;
+    asm.sub(rsp, CALL_PRECALL_SUB)?;
+    asm.call(rax)?;
+    asm.add(rsp, CALL_PRECALL_SUB)?;
+    if let Some(d) = dst_of(&a, idx) {
+        let ret = cpu_offsets::helper_ret() as i32;
+        match a.ty {
+            Ty::U128 => {
+                let w = working_xmm_for(alloc, d, xmm0);
+                asm.movdqu(w, xmmword_ptr(CTX_REG + ret))?;
+                store_xmm_q(asm, alloc, d, w)?;
+            }
+            Ty::U64 => {
+                asm.mov(rax, qword_ptr(CTX_REG + ret))?;
+                store64(asm, alloc, d, rax)?;
+            }
+            _ => {
+                asm.mov(eax, dword_ptr(CTX_REG + ret))?;
+                store32(asm, alloc, d, eax)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn emit_op_clrex(
     asm: &mut CodeAssembler,
     _block: &Block,
@@ -3160,6 +3374,91 @@ fn apply_bin_64(
     Ok(())
 }
 
+/// The value of `v` as an x86 imm32 operand for a `bits`-wide operation,
+/// when it is a rematerialised constant the immediate form encodes exactly
+/// (64-bit forms sign-extend the immediate).
+pub(crate) fn imm_operand(alloc: &Allocation, v: ValueRef, bits: u32) -> Option<i32> {
+    let Loc::Imm(x) = alloc.loc(v) else {
+        return None;
+    };
+    if bits == 64 {
+        i32::try_from(x as i64).ok()
+    } else {
+        Some(x as u32 as i32)
+    }
+}
+
+fn apply_bin_imm_64(asm: &mut CodeAssembler, k: BinKind, l: AsmRegister64, imm: i32) -> Result<()> {
+    match k {
+        BinKind::Add => asm.add(l, imm)?,
+        BinKind::Sub => asm.sub(l, imm)?,
+        BinKind::And => asm.and(l, imm)?,
+        BinKind::Or => asm.or(l, imm)?,
+        BinKind::Xor => asm.xor(l, imm)?,
+        BinKind::Imul => asm.imul_3(l, l, imm)?,
+    }
+    Ok(())
+}
+
+fn apply_bin_imm_32(asm: &mut CodeAssembler, k: BinKind, l: AsmRegister32, imm: i32) -> Result<()> {
+    match k {
+        BinKind::Add => asm.add(l, imm)?,
+        BinKind::Sub => asm.sub(l, imm)?,
+        BinKind::And => asm.and(l, imm)?,
+        BinKind::Or => asm.or(l, imm)?,
+        BinKind::Xor => asm.xor(l, imm)?,
+        BinKind::Imul => asm.imul_3(l, l, imm)?,
+    }
+    Ok(())
+}
+
+/// `dst = args[0] op imm` when one operand is an encodable immediate.
+fn emit_binop_imm(
+    asm: &mut CodeAssembler,
+    alloc: &Allocation,
+    a: Armlet,
+    dst: Option<ValueRef>,
+    k: BinKind,
+    bits: u32,
+) -> Result<bool> {
+    let commutative = !matches!(k, BinKind::Sub);
+    let (lhs, imm) = match imm_operand(alloc, a.args[1], bits) {
+        Some(imm) => (a.args[0], imm),
+        None => match imm_operand(alloc, a.args[0], bits) {
+            Some(imm) if commutative => (a.args[1], imm),
+            _ => return Ok(false),
+        },
+    };
+    if bits == 64 {
+        if let Some(d) = dst
+            && let Loc::Reg(r) = alloc.loc(d)
+            && alloc.loc(lhs) == Loc::Reg(r)
+        {
+            apply_bin_imm_64(asm, k, gpr64(r), imm)?;
+            return Ok(true);
+        }
+        load64(asm, alloc, lhs, SCRATCH0)?;
+        apply_bin_imm_64(asm, k, SCRATCH0, imm)?;
+        if let Some(d) = dst {
+            store64(asm, alloc, d, SCRATCH0)?;
+        }
+    } else {
+        if let Some(d) = dst
+            && let Loc::Reg(r) = alloc.loc(d)
+            && alloc.loc(lhs) == Loc::Reg(r)
+        {
+            apply_bin_imm_32(asm, k, gpr32(r), imm)?;
+            return Ok(true);
+        }
+        load32(asm, alloc, lhs, eax)?;
+        apply_bin_imm_32(asm, k, eax, imm)?;
+        if let Some(d) = dst {
+            store32(asm, alloc, d, eax)?;
+        }
+    }
+    Ok(true)
+}
+
 fn emit_binop(
     asm: &mut CodeAssembler,
     alloc: &Allocation,
@@ -3168,6 +3467,9 @@ fn emit_binop(
     k: BinKind,
     bits: u32,
 ) -> Result<()> {
+    if emit_binop_imm(asm, alloc, a, dst, k, bits)? {
+        return Ok(());
+    }
     if bits == 64 {
         if let Some(d) = dst {
             if let Loc::Reg(r) = alloc.loc(d) {
@@ -3293,47 +3595,59 @@ fn emit_flagged_addsub(
     let is_64 = matches!(a.op, Op::AddsFlags64 | Op::SubsFlags64);
     let is_sub = matches!(a.op, Op::SubsFlags32 | Op::SubsFlags64);
 
+    let imm = imm_operand(alloc, a.args[1], if is_64 { 64 } else { 32 });
     if is_64 {
         load64(asm, alloc, a.args[0], SCRATCH0)?;
-        load64(asm, alloc, a.args[1], SCRATCH1)?;
-        if is_sub {
-            asm.sub(SCRATCH0, SCRATCH1)?;
-        } else {
-            asm.add(SCRATCH0, SCRATCH1)?;
+        match (imm, is_sub) {
+            (Some(imm), true) => asm.sub(SCRATCH0, imm)?,
+            (Some(imm), false) => asm.add(SCRATCH0, imm)?,
+            (None, sub) => {
+                load64(asm, alloc, a.args[1], SCRATCH1)?;
+                if sub {
+                    asm.sub(SCRATCH0, SCRATCH1)?;
+                } else {
+                    asm.add(SCRATCH0, SCRATCH1)?;
+                }
+            }
         }
         if let Some(d) = dst {
             store64(asm, alloc, d, SCRATCH0)?;
         }
     } else {
         load32(asm, alloc, a.args[0], eax)?;
-        load32(asm, alloc, a.args[1], gpr32(scratch1_id()))?;
-        if is_sub {
-            asm.sub(eax, gpr32(scratch1_id()))?;
-        } else {
-            asm.add(eax, gpr32(scratch1_id()))?;
+        match (imm, is_sub) {
+            (Some(imm), true) => asm.sub(eax, imm)?,
+            (Some(imm), false) => asm.add(eax, imm)?,
+            (None, sub) => {
+                load32(asm, alloc, a.args[1], gpr32(scratch1_id()))?;
+                if sub {
+                    asm.sub(eax, gpr32(scratch1_id()))?;
+                } else {
+                    asm.add(eax, gpr32(scratch1_id()))?;
+                }
+            }
         }
         if let Some(d) = dst {
             store32(asm, alloc, d, eax)?;
         }
     }
 
-    asm.sets(r8b)?;
+    // NZCV = N<<3 | Z<<2 | C<<1 | V, built by shifting into AL.  All four
+    // host flags are captured before the first flag-clobbering instruction.
+    asm.sets(al)?;
     asm.sete(r9b)?;
     asm.setc(r10b)?;
     asm.seto(r11b)?;
+    asm.add(al, al)?;
+    asm.or(al, r9b)?;
+    asm.add(al, al)?;
+    asm.or(al, r10b)?;
     if is_sub {
-        asm.xor(r10b, 1i32)?;
+        // ARM C is "no borrow".
+        asm.xor(al, 1i32)?;
     }
-    asm.movzx(eax, r8b)?;
-    asm.shl(eax, 3i32)?;
-    asm.movzx(ecx, r9b)?;
-    asm.shl(ecx, 2i32)?;
-    asm.or(eax, ecx)?;
-    asm.movzx(ecx, r10b)?;
-    asm.shl(ecx, 1i32)?;
-    asm.or(eax, ecx)?;
-    asm.movzx(ecx, r11b)?;
-    asm.or(eax, ecx)?;
+    asm.add(al, al)?;
+    asm.or(al, r11b)?;
     asm.mov(byte_ptr(CTX_REG + cpu_offsets::nzcv() as i32), al)?;
     Ok(())
 }
@@ -3915,23 +4229,95 @@ fn emit_bswap(
     Ok(())
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FastmemMode {
+    /// Every access calls the memory callbacks.
+    Off,
+    /// Legacy single flat window described by `mem_base_va` / `mem_size`.
+    Window,
+    /// Per-page permission table; the payload is the guest address width.
+    PageTable(u8),
+}
+
+impl FastmemMode {
+    fn of(block: &Block) -> Self {
+        if block.fastmem_page_bits >= 13 && block.fastmem_page_bits <= 42 {
+            FastmemMode::PageTable(block.fastmem_page_bits)
+        } else if block.use_fastmem {
+            FastmemMode::Window
+        } else {
+            FastmemMode::Off
+        }
+    }
+}
+
+/// Emits the inline guard for a direct access.  On entry SCRATCH1 holds the
+/// guest address; on fallthrough `SCRATCH0 + SCRATCH2` addresses the host
+/// byte.  SCRATCH1 and ARG3 (the store value) are preserved on every path.
+fn emit_fastmem_guard(
+    asm: &mut CodeAssembler,
+    mode: FastmemMode,
+    bytes: u32,
+    perm_bit: u8,
+    lbl_slow: CodeLabel,
+) -> Result<()> {
+    match mode {
+        FastmemMode::Off => unreachable!(),
+        FastmemMode::Window => emit_fastmem_bounds_check(asm, bytes, lbl_slow)?,
+        FastmemMode::PageTable(bits) => {
+            if bytes > 1 {
+                // Accesses that straddle a page boundary take the callback:
+                // the two pages may have different permissions.
+                asm.mov(eax, gpr32(scratch1_id()))?;
+                asm.and(eax, 0xFFFi32)?;
+                asm.cmp(eax, (0x1000 - bytes) as i32)?;
+                asm.ja(lbl_slow)?;
+            }
+            asm.mov(SCRATCH0, SCRATCH1)?;
+            asm.shr(SCRATCH0, 12i32)?;
+            asm.cmp(SCRATCH0, (1u64 << (bits - 12)) as i32)?;
+            asm.jae(lbl_slow)?;
+            asm.mov(
+                SCRATCH2,
+                qword_ptr(CTX_REG + cpu_offsets::page_table() as i32),
+            )?;
+            asm.test(byte_ptr(SCRATCH2 + SCRATCH0), perm_bit as i32)?;
+            asm.jz(lbl_slow)?;
+            asm.mov(SCRATCH2, SCRATCH1)?;
+            asm.mov(
+                SCRATCH0,
+                qword_ptr(CTX_REG + cpu_offsets::mem_base() as i32),
+            )?;
+            return Ok(());
+        }
+    }
+    asm.mov(
+        SCRATCH0,
+        qword_ptr(CTX_REG + cpu_offsets::mem_base() as i32),
+    )?;
+    Ok(())
+}
+
 fn emit_load(
     asm: &mut CodeAssembler,
     alloc: &Allocation,
     a: Armlet,
     dst: Option<ValueRef>,
     bytes: u32,
-    use_fastmem: bool,
+    elem: u32,
+    mode: FastmemMode,
 ) -> Result<()> {
     load64(asm, alloc, a.args[0], SCRATCH1)?;
 
-    if use_fastmem {
+    if mode != FastmemMode::Off {
         let mut lbl_slow = asm.create_label();
         let mut lbl_done = asm.create_label();
-        emit_fastmem_bounds_check(asm, bytes, lbl_slow)?;
-        asm.mov(
-            SCRATCH0,
-            qword_ptr(CTX_REG + cpu_offsets::mem_base() as i32),
+        emit_fastmem_guard(
+            asm,
+            mode,
+            bytes,
+            crate::jit::context::PAGE_DIRECT_READ,
+            lbl_slow,
         )?;
         match bytes {
             1 => asm.movzx(eax, byte_ptr(SCRATCH0 + SCRATCH2))?,
@@ -3943,10 +4329,10 @@ fn emit_load(
         }
         asm.jmp(lbl_done)?;
         asm.set_label(&mut lbl_slow)?;
-        emit_load_slow_path(asm, bytes, a.pc)?;
+        emit_load_slow_path(asm, bytes, elem, a.pc)?;
         asm.set_label(&mut lbl_done)?;
     } else {
-        emit_load_slow_path(asm, bytes, a.pc)?;
+        emit_load_slow_path(asm, bytes, elem, a.pc)?;
     }
 
     if let Some(d) = dst {
@@ -3965,7 +4351,8 @@ fn emit_store(
     alloc: &Allocation,
     a: Armlet,
     bytes: u32,
-    use_fastmem: bool,
+    elem: u32,
+    mode: FastmemMode,
 ) -> Result<()> {
     match bytes {
         16 => load_xmm_q(asm, alloc, a.args[1], xmm0)?,
@@ -3974,13 +4361,15 @@ fn emit_store(
     }
     load64(asm, alloc, a.args[0], SCRATCH1)?;
 
-    if use_fastmem {
+    if mode != FastmemMode::Off {
         let mut lbl_slow = asm.create_label();
         let mut lbl_done = asm.create_label();
-        emit_fastmem_bounds_check(asm, bytes, lbl_slow)?;
-        asm.mov(
-            SCRATCH0,
-            qword_ptr(CTX_REG + cpu_offsets::mem_base() as i32),
+        emit_fastmem_guard(
+            asm,
+            mode,
+            bytes,
+            crate::jit::context::PAGE_DIRECT_WRITE,
+            lbl_slow,
         )?;
         match bytes {
             1 => asm.mov(byte_ptr(SCRATCH0 + SCRATCH2), gpr8(arg3_reg_id()))?,
@@ -3992,10 +4381,10 @@ fn emit_store(
         }
         asm.jmp(lbl_done)?;
         asm.set_label(&mut lbl_slow)?;
-        emit_store_slow_path(asm, bytes, a.pc)?;
+        emit_store_slow_path(asm, bytes, elem, a.pc)?;
         asm.set_label(&mut lbl_done)?;
     } else {
-        emit_store_slow_path(asm, bytes, a.pc)?;
+        emit_store_slow_path(asm, bytes, elem, a.pc)?;
     }
     Ok(())
 }
@@ -4031,17 +4420,47 @@ fn emit_fastmem_bounds_check(
     Ok(())
 }
 
-fn emit_load_slow_path(asm: &mut CodeAssembler, bytes: u32, guest_pc: u64) -> Result<()> {
+/// Once an earlier access in this block faulted (`ctx.mem_fault`), later
+/// callback accesses are skipped: the first faulting address is the one
+/// reported and nothing after the fault reaches the embedder (a fault in
+/// the middle of a multi-register access reports its first failing part).
+/// The first skipped access records its PC (expected in SCRATCH0, which
+/// the callers have just stored to `ctx.pc`) in `ctx.mem_fault_skip_pc`.
+fn emit_skip_if_faulted(asm: &mut CodeAssembler, skip: CodeLabel) -> Result<()> {
+    let mut proceed = asm.create_label();
+    asm.cmp(byte_ptr(CTX_REG + cpu_offsets::mem_fault() as i32), 0)?;
+    asm.je(proceed)?;
+    let skip_pc = CTX_REG + cpu_offsets::mem_fault_skip_pc() as i32;
+    asm.cmp(qword_ptr(skip_pc), 0)?;
+    asm.jne(skip)?;
+    asm.mov(qword_ptr(skip_pc), SCRATCH0)?;
+    asm.jmp(skip)?;
+    asm.set_label(&mut proceed)?;
+    Ok(())
+}
+
+fn emit_load_slow_path(
+    asm: &mut CodeAssembler,
+    bytes: u32,
+    elem: u32,
+    guest_pc: u64,
+) -> Result<()> {
     if !matches!(bytes, 1 | 2 | 4 | 8 | 16) {
         return Err(Error::Backend("unsupported load width".into()));
     }
+    if elem < bytes {
+        return emit_load_elements(asm, bytes, elem, guest_pc);
+    }
+    let mut skip = asm.create_label();
     asm.mov(SCRATCH0, guest_pc as i64)?;
     asm.mov(qword_ptr(CTX_REG + cpu_offsets::pc() as i32), SCRATCH0)?;
+    emit_skip_if_faulted(asm, skip)?;
     asm.mov(SCRATCH3, bytes as i64)?;
     asm.mov(ARG0_REG, CTX_REG)?;
     asm.sub(rsp, CALL_PRECALL_SUB)?;
     asm.call(qword_ptr(CTX_REG + cpu_offsets::mem_read() as i32))?;
     asm.add(rsp, CALL_PRECALL_SUB)?;
+    asm.set_label(&mut skip)?;
     let io_off = cpu_offsets::io_value() as i32;
     match bytes {
         1 => asm.movzx(eax, byte_ptr(CTX_REG + io_off))?,
@@ -4054,13 +4473,78 @@ fn emit_load_slow_path(asm: &mut CodeAssembler, bytes: u32, guest_pc: u64) -> Re
     Ok(())
 }
 
-fn emit_store_slow_path(asm: &mut CodeAssembler, bytes: u32, guest_pc: u64) -> Result<()> {
+/// Callback load of `bytes` as ascending `elem`-sized reads, assembled in a
+/// 32-byte stack frame (address at `[rsp]`, data at `[rsp + 16]`).  Elements
+/// skipped after a fault read as zero.
+fn emit_load_elements(asm: &mut CodeAssembler, bytes: u32, elem: u32, guest_pc: u64) -> Result<()> {
+    let io_off = cpu_offsets::io_value() as i32;
+    asm.sub(rsp, 32)?;
+    asm.mov(qword_ptr(rsp), SCRATCH1)?;
+    asm.mov(qword_ptr(rsp + 16), 0i32)?;
+    asm.mov(qword_ptr(rsp + 24), 0i32)?;
+    asm.mov(SCRATCH0, guest_pc as i64)?;
+    asm.mov(qword_ptr(CTX_REG + cpu_offsets::pc() as i32), SCRATCH0)?;
+    for k in 0..(bytes / elem) as i32 {
+        let offset = k * elem as i32;
+        let mut skip = asm.create_label();
+        asm.mov(SCRATCH0, guest_pc as i64)?;
+        emit_skip_if_faulted(asm, skip)?;
+        asm.mov(SCRATCH1, qword_ptr(rsp))?;
+        if offset != 0 {
+            asm.add(SCRATCH1, offset)?;
+        }
+        asm.mov(SCRATCH3, elem as i64)?;
+        asm.mov(ARG0_REG, CTX_REG)?;
+        asm.sub(rsp, CALL_PRECALL_SUB)?;
+        asm.call(qword_ptr(CTX_REG + cpu_offsets::mem_read() as i32))?;
+        asm.add(rsp, CALL_PRECALL_SUB)?;
+        let slot = rsp + 16 + offset;
+        match elem {
+            1 => {
+                asm.mov(al, byte_ptr(CTX_REG + io_off))?;
+                asm.mov(byte_ptr(slot), al)?;
+            }
+            2 => {
+                asm.mov(ax, word_ptr(CTX_REG + io_off))?;
+                asm.mov(word_ptr(slot), ax)?;
+            }
+            4 => {
+                asm.mov(eax, dword_ptr(CTX_REG + io_off))?;
+                asm.mov(dword_ptr(slot), eax)?;
+            }
+            _ => {
+                asm.mov(rax, qword_ptr(CTX_REG + io_off))?;
+                asm.mov(qword_ptr(slot), rax)?;
+            }
+        }
+        asm.set_label(&mut skip)?;
+    }
+    if bytes == 16 {
+        asm.movdqu(xmm0, xmmword_ptr(rsp + 16))?;
+    } else {
+        asm.mov(rax, qword_ptr(rsp + 16))?;
+    }
+    asm.add(rsp, 32)?;
+    Ok(())
+}
+
+fn emit_store_slow_path(
+    asm: &mut CodeAssembler,
+    bytes: u32,
+    elem: u32,
+    guest_pc: u64,
+) -> Result<()> {
     if !matches!(bytes, 1 | 2 | 4 | 8 | 16) {
         return Err(Error::Backend("unsupported store width".into()));
     }
+    if elem < bytes {
+        return emit_store_elements(asm, bytes, elem, guest_pc);
+    }
+    let mut skip = asm.create_label();
     let io_off = cpu_offsets::io_value() as i32;
     asm.mov(SCRATCH0, guest_pc as i64)?;
     asm.mov(qword_ptr(CTX_REG + cpu_offsets::pc() as i32), SCRATCH0)?;
+    emit_skip_if_faulted(asm, skip)?;
     match bytes {
         1 => asm.mov(byte_ptr(CTX_REG + io_off), gpr8(arg3_reg_id()))?,
         2 => asm.mov(word_ptr(CTX_REG + io_off), gpr16(arg3_reg_id()))?,
@@ -4074,45 +4558,327 @@ fn emit_store_slow_path(asm: &mut CodeAssembler, bytes: u32, guest_pc: u64) -> R
     asm.sub(rsp, CALL_PRECALL_SUB)?;
     asm.call(qword_ptr(CTX_REG + cpu_offsets::mem_write() as i32))?;
     asm.add(rsp, CALL_PRECALL_SUB)?;
+    asm.set_label(&mut skip)?;
+    asm.nop()?;
     Ok(())
 }
 
+/// Callback store of `bytes` (in ARG3, or xmm0 for 16) as ascending
+/// `elem`-sized writes, from a 32-byte stack frame laid out as in
+/// [`emit_load_elements`].
+fn emit_store_elements(asm: &mut CodeAssembler, bytes: u32, elem: u32, guest_pc: u64) -> Result<()> {
+    let io_off = cpu_offsets::io_value() as i32;
+    asm.sub(rsp, 32)?;
+    asm.mov(qword_ptr(rsp), SCRATCH1)?;
+    if bytes == 16 {
+        asm.movdqu(xmmword_ptr(rsp + 16), xmm0)?;
+    } else {
+        asm.mov(qword_ptr(rsp + 16), ARG3_REG)?;
+    }
+    asm.mov(SCRATCH0, guest_pc as i64)?;
+    asm.mov(qword_ptr(CTX_REG + cpu_offsets::pc() as i32), SCRATCH0)?;
+    for k in 0..(bytes / elem) as i32 {
+        let offset = k * elem as i32;
+        let mut skip = asm.create_label();
+        asm.mov(SCRATCH0, guest_pc as i64)?;
+        emit_skip_if_faulted(asm, skip)?;
+        let slot = rsp + 16 + offset;
+        match elem {
+            1 => asm.movzx(eax, byte_ptr(slot))?,
+            2 => asm.movzx(eax, word_ptr(slot))?,
+            4 => asm.mov(eax, dword_ptr(slot))?,
+            _ => asm.mov(rax, qword_ptr(slot))?,
+        }
+        asm.mov(qword_ptr(CTX_REG + io_off), rax)?;
+        asm.mov(qword_ptr(CTX_REG + io_off + 8), 0i32)?;
+        asm.mov(SCRATCH1, qword_ptr(rsp))?;
+        if offset != 0 {
+            asm.add(SCRATCH1, offset)?;
+        }
+        asm.mov(SCRATCH3, elem as i64)?;
+        asm.mov(ARG0_REG, CTX_REG)?;
+        asm.sub(rsp, CALL_PRECALL_SUB)?;
+        asm.call(qword_ptr(CTX_REG + cpu_offsets::mem_write() as i32))?;
+        asm.add(rsp, CALL_PRECALL_SUB)?;
+        asm.set_label(&mut skip)?;
+    }
+    asm.add(rsp, 32)?;
+    Ok(())
+}
+
+/// Zero-extends the `bytes`-wide value in `rax`.
+fn zext_rax(asm: &mut CodeAssembler, bytes: u32) -> Result<()> {
+    match bytes {
+        1 => asm.movzx(eax, al)?,
+        2 => asm.movzx(eax, ax)?,
+        4 => asm.mov(eax, eax)?,
+        _ => {}
+    }
+    Ok(())
+}
+
+fn sized_mem(bytes: u32, base: AsmRegister64) -> AsmMemoryOperand {
+    match bytes {
+        1 => byte_ptr(base),
+        2 => word_ptr(base),
+        4 => dword_ptr(base),
+        _ => qword_ptr(base),
+    }
+}
+
+/// `lock cmpxchg`-family helpers on `[r10]` with a register of width `bytes`.
+fn cmpxchg_sized(asm: &mut CodeAssembler, bytes: u32, src: u8) -> Result<()> {
+    let m = sized_mem(bytes, r10);
+    match bytes {
+        1 => asm.lock().cmpxchg(m, gpr8(src))?,
+        2 => asm.lock().cmpxchg(m, gpr16(src))?,
+        4 => asm.lock().cmpxchg(m, gpr32(src))?,
+        _ => asm.lock().cmpxchg(m, gpr64(src))?,
+    }
+    Ok(())
+}
+
+/// Guest atomic read-modify-write.  Preconditions: SCRATCH1 = guest
+/// address, ARG3 = operand (the new value for `Cas`), r11 = expected value
+/// (`Cas` only).  Leaves the old memory value zero-extended in rax.
+///
+/// Pages the fastmem guard admits for direct stores are updated with a
+/// locked x86 instruction on the host address (atomic against every other
+/// host thread); everything else goes through `ctx.mem_atomic`.
+fn emit_atomic_core(
+    asm: &mut CodeAssembler,
+    bytes: u32,
+    op: crate::jit::atomic::AtomicOp,
+    mode: FastmemMode,
+    guest_pc: u64,
+) -> Result<()> {
+    use crate::jit::atomic::AtomicOp as A;
+    if !matches!(bytes, 1 | 2 | 4 | 8) {
+        return Err(Error::Backend("unsupported atomic width".into()));
+    }
+    let arg3 = arg3_reg_id();
+    let mut lbl_slow = asm.create_label();
+    let mut lbl_done = asm.create_label();
+    let direct = mode != FastmemMode::Off;
+    if direct {
+        emit_fastmem_guard(
+            asm,
+            mode,
+            bytes,
+            crate::jit::context::PAGE_DIRECT_WRITE,
+            lbl_slow,
+        )?;
+        asm.lea(r10, qword_ptr(SCRATCH0 + SCRATCH2))?;
+        let m = sized_mem(bytes, r10);
+        match op {
+            A::Add | A::Swp => {
+                asm.mov(rax, ARG3_REG)?;
+                let is_add = op == A::Add;
+                match (bytes, is_add) {
+                    (1, true) => asm.lock().xadd(m, al)?,
+                    (2, true) => asm.lock().xadd(m, ax)?,
+                    (4, true) => asm.lock().xadd(m, eax)?,
+                    (_, true) => asm.lock().xadd(m, rax)?,
+                    (1, false) => asm.xchg(m, al)?,
+                    (2, false) => asm.xchg(m, ax)?,
+                    (4, false) => asm.xchg(m, eax)?,
+                    (_, false) => asm.xchg(m, rax)?,
+                }
+                zext_rax(asm, bytes)?;
+            }
+            A::Cas => {
+                asm.mov(rax, r11)?;
+                cmpxchg_sized(asm, bytes, arg3)?;
+                zext_rax(asm, bytes)?;
+            }
+            _ => {
+                match bytes {
+                    1 => asm.movzx(eax, byte_ptr(r10))?,
+                    2 => asm.movzx(eax, word_ptr(r10))?,
+                    4 => asm.mov(eax, dword_ptr(r10))?,
+                    _ => asm.mov(rax, qword_ptr(r10))?,
+                }
+                let mut lbl_retry = asm.create_label();
+                asm.set_label(&mut lbl_retry)?;
+                asm.mov(r11, rax)?;
+                match op {
+                    A::Clr => {
+                        asm.mov(r8, ARG3_REG)?;
+                        asm.not(r8)?;
+                        asm.and(r11, r8)?;
+                    }
+                    A::Eor => asm.xor(r11, ARG3_REG)?,
+                    A::Set => asm.or(r11, ARG3_REG)?,
+                    A::Smax | A::Smin | A::Umax | A::Umin => {
+                        match bytes {
+                            1 => asm.cmp(al, gpr8(arg3))?,
+                            2 => asm.cmp(ax, gpr16(arg3))?,
+                            4 => asm.cmp(eax, gpr32(arg3))?,
+                            _ => asm.cmp(rax, ARG3_REG)?,
+                        }
+                        // Take the operand when it wins the comparison.
+                        match op {
+                            A::Smax => asm.cmovl(r11, ARG3_REG)?,
+                            A::Smin => asm.cmovg(r11, ARG3_REG)?,
+                            A::Umax => asm.cmovb(r11, ARG3_REG)?,
+                            _ => asm.cmova(r11, ARG3_REG)?,
+                        }
+                    }
+                    _ => unreachable!(),
+                }
+                cmpxchg_sized(asm, bytes, 11)?;
+                asm.jne(lbl_retry)?;
+                zext_rax(asm, bytes)?;
+            }
+        }
+        asm.jmp(lbl_done)?;
+        asm.set_label(&mut lbl_slow)?;
+    }
+    let io_off = cpu_offsets::io_value() as i32;
+    asm.mov(qword_ptr(CTX_REG + io_off), ARG3_REG)?;
+    asm.mov(qword_ptr(CTX_REG + io_off + 8), 0i32)?;
+    if op == A::Cas {
+        let exp = cpu_offsets::atomic_expected() as i32;
+        asm.mov(qword_ptr(CTX_REG + exp), r11)?;
+        asm.mov(qword_ptr(CTX_REG + exp + 8), 0i32)?;
+    }
+    asm.mov(SCRATCH0, guest_pc as i64)?;
+    asm.mov(qword_ptr(CTX_REG + cpu_offsets::pc() as i32), SCRATCH0)?;
+    asm.mov(SCRATCH3, bytes as i64)?;
+    asm.mov(gpr32(arg3), op as i32)?;
+    asm.mov(ARG0_REG, CTX_REG)?;
+    asm.sub(rsp, CALL_PRECALL_SUB)?;
+    asm.call(qword_ptr(CTX_REG + cpu_offsets::mem_atomic() as i32))?;
+    asm.add(rsp, CALL_PRECALL_SUB)?;
+    match bytes {
+        1 => asm.movzx(eax, byte_ptr(CTX_REG + io_off))?,
+        2 => asm.movzx(eax, word_ptr(CTX_REG + io_off))?,
+        4 => asm.mov(eax, dword_ptr(CTX_REG + io_off))?,
+        _ => asm.mov(rax, qword_ptr(CTX_REG + io_off))?,
+    }
+    if direct {
+        asm.set_label(&mut lbl_done)?;
+    }
+    Ok(())
+}
+
+/// 128-bit compare-and-swap through `ctx.mem_atomic` (the embedder's
+/// callback does `lock cmpxchg16b` or takes a fallback lock).  Expects the
+/// expected value already in `ctx.atomic_expected`, the new value in
+/// `ctx.io_value` and the guest address in SCRATCH1; the old value is left
+/// in `ctx.io_value`.
+fn emit_cas128_call(asm: &mut CodeAssembler, guest_pc: u64) -> Result<()> {
+    asm.mov(SCRATCH0, guest_pc as i64)?;
+    asm.mov(qword_ptr(CTX_REG + cpu_offsets::pc() as i32), SCRATCH0)?;
+    asm.mov(SCRATCH3, 16i64)?;
+    asm.mov(
+        gpr32(arg3_reg_id()),
+        crate::jit::atomic::AtomicOp::Cas as i32,
+    )?;
+    asm.mov(ARG0_REG, CTX_REG)?;
+    asm.sub(rsp, CALL_PRECALL_SUB)?;
+    asm.call(qword_ptr(CTX_REG + cpu_offsets::mem_atomic() as i32))?;
+    asm.add(rsp, CALL_PRECALL_SUB)?;
+    Ok(())
+}
+
+fn emit_atomic_rmw(
+    asm: &mut CodeAssembler,
+    alloc: &Allocation,
+    a: Armlet,
+    dst: Option<ValueRef>,
+    bytes: u32,
+    mode: FastmemMode,
+) -> Result<()> {
+    let op = crate::jit::atomic::AtomicOp::from_u8(a.imm as u8)
+        .filter(|op| *op != crate::jit::atomic::AtomicOp::Cas)
+        .ok_or_else(|| Error::Backend("bad atomic op".into()))?;
+    if bytes == 8 {
+        load64(asm, alloc, a.args[1], ARG3_REG)?;
+    } else {
+        load32(asm, alloc, a.args[1], gpr32(arg3_reg_id()))?;
+    }
+    load64(asm, alloc, a.args[0], SCRATCH1)?;
+    emit_atomic_core(asm, bytes, op, mode, a.pc)?;
+    if let Some(d) = dst {
+        if bytes == 8 {
+            store64(asm, alloc, d, rax)?;
+        } else {
+            store32(asm, alloc, d, eax)?;
+        }
+    }
+    Ok(())
+}
+
+fn emit_atomic_cas(
+    asm: &mut CodeAssembler,
+    alloc: &Allocation,
+    a: Armlet,
+    dst: Option<ValueRef>,
+    bytes: u32,
+    mode: FastmemMode,
+) -> Result<()> {
+    if bytes == 8 {
+        load64(asm, alloc, a.args[1], r11)?;
+        load64(asm, alloc, a.args[2], ARG3_REG)?;
+    } else {
+        load32(asm, alloc, a.args[1], r11d)?;
+        load32(asm, alloc, a.args[2], gpr32(arg3_reg_id()))?;
+    }
+    load64(asm, alloc, a.args[0], SCRATCH1)?;
+    emit_atomic_core(asm, bytes, crate::jit::atomic::AtomicOp::Cas, mode, a.pc)?;
+    if let Some(d) = dst {
+        if bytes == 8 {
+            store64(asm, alloc, d, rax)?;
+        } else {
+            store32(asm, alloc, d, eax)?;
+        }
+    }
+    Ok(())
+}
+
+fn emit_atomic_cas128(
+    asm: &mut CodeAssembler,
+    alloc: &Allocation,
+    a: Armlet,
+    dst: Option<ValueRef>,
+) -> Result<()> {
+    load_xmm_q(asm, alloc, a.args[1], xmm1)?;
+    asm.movdqu(
+        xmmword_ptr(CTX_REG + cpu_offsets::atomic_expected() as i32),
+        xmm1,
+    )?;
+    load_xmm_q(asm, alloc, a.args[2], xmm0)?;
+    asm.movdqu(xmmword_ptr(CTX_REG + cpu_offsets::io_value() as i32), xmm0)?;
+    load64(asm, alloc, a.args[0], SCRATCH1)?;
+    emit_cas128_call(asm, a.pc)?;
+    asm.movdqu(xmm0, xmmword_ptr(CTX_REG + cpu_offsets::io_value() as i32))?;
+    if let Some(d) = dst {
+        store_xmm_q(asm, alloc, d, xmm0)?;
+    }
+    Ok(())
+}
+
+/// Load-exclusive: an ordinary load that also arms the local monitor with
+/// the address, size and the value observed.
 fn emit_load_ex(
     asm: &mut CodeAssembler,
     alloc: &Allocation,
     a: Armlet,
     dst: Option<ValueRef>,
     bytes: u32,
+    mode: FastmemMode,
 ) -> Result<()> {
-    if !matches!(bytes, 1 | 2 | 4 | 8) {
+    if !matches!(bytes, 1 | 2 | 4 | 8 | 16) {
         return Err(Error::Backend("unsupported ldex width".into()));
     }
-    load64(asm, alloc, a.args[0], SCRATCH1)?;
-    asm.mov(SCRATCH0, a.pc as i64)?;
-    asm.mov(qword_ptr(CTX_REG + cpu_offsets::pc() as i32), SCRATCH0)?;
-    asm.mov(SCRATCH3, bytes as i64)?;
-    asm.mov(ARG0_REG, CTX_REG)?;
-    asm.sub(rsp, CALL_PRECALL_SUB)?;
-    asm.call(qword_ptr(CTX_REG + cpu_offsets::mem_read() as i32))?;
-    asm.add(rsp, CALL_PRECALL_SUB)?;
-    let io_off = cpu_offsets::io_value() as i32;
-    match bytes {
-        1 => asm.movzx(eax, byte_ptr(CTX_REG + io_off))?,
-        2 => asm.movzx(eax, word_ptr(CTX_REG + io_off))?,
-        4 => asm.mov(eax, dword_ptr(CTX_REG + io_off))?,
-        8 => asm.mov(rax, qword_ptr(CTX_REG + io_off))?,
-        _ => unreachable!(),
-    }
-    // Save the actual zero-extended loaded value before storing its SSA result
-    // or reloading the address into scratch registers. STXR's callback compares
-    // memory atomically with these bits, not just the local address/size pair.
-    asm.mov(qword_ptr(CTX_REG + cpu_offsets::exclusive_value() as i32), rax)?;
-    if let Some(d) = dst {
-        match bytes {
-            1 | 2 | 4 => store32(asm, alloc, d, eax)?,
-            8 => store64(asm, alloc, d, rax)?,
-            _ => unreachable!(),
-        }
+    emit_load(asm, alloc, a, dst, bytes, bytes, mode)?;
+    let ev = cpu_offsets::exclusive_value() as i32;
+    if bytes == 16 {
+        asm.movdqu(xmmword_ptr(CTX_REG + ev), xmm0)?;
+    } else {
+        asm.mov(qword_ptr(CTX_REG + ev), rax)?;
+        asm.mov(qword_ptr(CTX_REG + ev + 8), 0i32)?;
     }
     load64(asm, alloc, a.args[0], SCRATCH1)?;
     asm.mov(
@@ -4123,7 +4889,6 @@ fn emit_load_ex(
         byte_ptr(CTX_REG + cpu_offsets::exclusive_size() as i32),
         bytes as i32,
     )?;
-    // A faulting exclusive load must not leave a usable local reservation.
     let mut load_succeeded = asm.create_label();
     asm.cmp(byte_ptr(CTX_REG + cpu_offsets::mem_fault() as i32), 0)?;
     asm.je(load_succeeded)?;
@@ -4132,13 +4897,20 @@ fn emit_load_ex(
     Ok(())
 }
 
+/// Store-exclusive: succeeds (status 0) iff the local monitor matches and
+/// memory still holds the value the load-exclusive observed, decided by one
+/// atomic compare-exchange.  The monitor is cleared either way.
 fn emit_store_ex(
     asm: &mut CodeAssembler,
     alloc: &Allocation,
     a: Armlet,
     dst: Option<ValueRef>,
     bytes: u32,
+    mode: FastmemMode,
 ) -> Result<()> {
+    if !matches!(bytes, 1 | 2 | 4 | 8 | 16) {
+        return Err(Error::Backend("unsupported stex width".into()));
+    }
     let mut lbl_fail = asm.create_label();
     let mut lbl_done = asm.create_label();
 
@@ -4154,29 +4926,39 @@ fn emit_store_ex(
     )?;
     asm.jne(lbl_fail)?;
 
-    if !matches!(bytes, 1 | 2 | 4 | 8) {
-        return Err(Error::Backend("unsupported stex width".into()));
-    }
-    if bytes == 8 {
-        load64(asm, alloc, a.args[1], ARG3_REG)?;
+    let ev = cpu_offsets::exclusive_value() as i32;
+    if bytes == 16 {
+        load_xmm_q(asm, alloc, a.args[1], xmm0)?;
+        asm.movdqu(xmmword_ptr(CTX_REG + cpu_offsets::io_value() as i32), xmm0)?;
+        asm.movdqu(xmm1, xmmword_ptr(CTX_REG + ev))?;
+        asm.movdqu(
+            xmmword_ptr(CTX_REG + cpu_offsets::atomic_expected() as i32),
+            xmm1,
+        )?;
+        load64(asm, alloc, a.args[0], SCRATCH1)?;
+        emit_cas128_call(asm, a.pc)?;
+        asm.movdqu(xmm0, xmmword_ptr(CTX_REG + cpu_offsets::io_value() as i32))?;
+        asm.movdqu(xmm1, xmmword_ptr(CTX_REG + ev))?;
+        asm.pcmpeqb(xmm0, xmm1)?;
+        asm.pmovmskb(eax, xmm0)?;
+        asm.cmp(eax, 0xFFFFi32)?;
     } else {
-        load32(asm, alloc, a.args[1], gpr32(arg3_reg_id()))?;
+        if bytes == 8 {
+            load64(asm, alloc, a.args[1], ARG3_REG)?;
+        } else {
+            load32(asm, alloc, a.args[1], gpr32(arg3_reg_id()))?;
+        }
+        asm.mov(r11, qword_ptr(CTX_REG + ev))?;
+        emit_atomic_core(asm, bytes, crate::jit::atomic::AtomicOp::Cas, mode, a.pc)?;
+        match bytes {
+            1 => asm.cmp(al, byte_ptr(CTX_REG + ev))?,
+            2 => asm.cmp(ax, word_ptr(CTX_REG + ev))?,
+            4 => asm.cmp(eax, dword_ptr(CTX_REG + ev))?,
+            _ => asm.cmp(rax, qword_ptr(CTX_REG + ev))?,
+        }
     }
-    let io_off = cpu_offsets::io_value() as i32;
-    asm.mov(SCRATCH0, a.pc as i64)?;
-    asm.mov(qword_ptr(CTX_REG + cpu_offsets::pc() as i32), SCRATCH0)?;
-    match bytes {
-        1 => asm.mov(byte_ptr(CTX_REG + io_off), gpr8(arg3_reg_id()))?,
-        2 => asm.mov(word_ptr(CTX_REG + io_off), gpr16(arg3_reg_id()))?,
-        4 => asm.mov(dword_ptr(CTX_REG + io_off), gpr32(arg3_reg_id()))?,
-        8 => asm.mov(qword_ptr(CTX_REG + io_off), ARG3_REG)?,
-        _ => unreachable!(),
-    }
-    asm.mov(SCRATCH3, bytes as i64)?;
-    asm.mov(ARG0_REG, CTX_REG)?;
-    asm.sub(rsp, CALL_PRECALL_SUB)?;
-    asm.call(qword_ptr(CTX_REG + cpu_offsets::mem_write_exclusive() as i32))?;
-    asm.add(rsp, CALL_PRECALL_SUB)?;
+    asm.setne(al)?;
+    asm.movzx(eax, al)?;
     asm.jmp(lbl_done)?;
 
     asm.set_label(&mut lbl_fail)?;
@@ -4278,6 +5060,57 @@ enum FpBinKind {
     Min,
 }
 
+/// Scalar FMAX / FMIN / FMAXNM / FMINNM on xmm0 (a) and xmm1 (b), result
+/// in xmm0.  x86 `maxs*` / `mins*` return the second operand for equal
+/// inputs and NaNs; this orders -0 below +0, propagates NaNs and, for the
+/// NM forms (`imm` = 1), prefers the number over a single NaN.
+fn emit_scalar_fmaxmin(asm: &mut CodeAssembler, double: bool, max: bool) -> Result<()> {
+    let unord = |asm: &mut CodeAssembler, x: AsmRegisterXmm, y: AsmRegisterXmm| -> Result<()> {
+        if double {
+            asm.cmpunordsd(x, y)?;
+        } else {
+            asm.cmpunordss(x, y)?;
+        }
+        Ok(())
+    };
+    asm.movaps(xmm2, xmm0)?;
+    asm.movaps(xmm3, xmm1)?;
+    match (double, max) {
+        (false, true) => {
+            asm.maxss(xmm2, xmm1)?;
+            asm.maxss(xmm3, xmm0)?;
+        }
+        (false, false) => {
+            asm.minss(xmm2, xmm1)?;
+            asm.minss(xmm3, xmm0)?;
+        }
+        (true, true) => {
+            asm.maxsd(xmm2, xmm1)?;
+            asm.maxsd(xmm3, xmm0)?;
+        }
+        (true, false) => {
+            asm.minsd(xmm2, xmm1)?;
+            asm.minsd(xmm3, xmm0)?;
+        }
+    }
+    if max {
+        asm.andps(xmm2, xmm3)?;
+    } else {
+        asm.orps(xmm2, xmm3)?;
+    }
+    asm.movaps(xmm3, xmm0)?;
+    unord(asm, xmm3, xmm1)?;
+    if double {
+        asm.addsd(xmm0, xmm1)?;
+    } else {
+        asm.addss(xmm0, xmm1)?;
+    }
+    asm.andps(xmm0, xmm3)?;
+    asm.andnps(xmm3, xmm2)?;
+    asm.orps(xmm0, xmm3)?;
+    Ok(())
+}
+
 fn emit_fbinop(
     asm: &mut CodeAssembler,
     alloc: &Allocation,
@@ -4294,8 +5127,8 @@ fn emit_fbinop(
             FpBinKind::Sub => asm.subsd(xmm0, xmm1)?,
             FpBinKind::Mul => asm.mulsd(xmm0, xmm1)?,
             FpBinKind::Div => asm.divsd(xmm0, xmm1)?,
-            FpBinKind::Max => asm.maxsd(xmm0, xmm1)?,
-            FpBinKind::Min => asm.minsd(xmm0, xmm1)?,
+            FpBinKind::Max => emit_scalar_fmaxmin(asm, true, true)?,
+            FpBinKind::Min => emit_scalar_fmaxmin(asm, true, false)?,
         }
         if let Some(d) = dst {
             store_xmm_d(asm, alloc, d, xmm0)?;
@@ -4308,8 +5141,8 @@ fn emit_fbinop(
             FpBinKind::Sub => asm.subss(xmm0, xmm1)?,
             FpBinKind::Mul => asm.mulss(xmm0, xmm1)?,
             FpBinKind::Div => asm.divss(xmm0, xmm1)?,
-            FpBinKind::Max => asm.maxss(xmm0, xmm1)?,
-            FpBinKind::Min => asm.minss(xmm0, xmm1)?,
+            FpBinKind::Max => emit_scalar_fmaxmin(asm, false, true)?,
+            FpBinKind::Min => emit_scalar_fmaxmin(asm, false, false)?,
         }
         if let Some(d) = dst {
             store_xmm_s(asm, alloc, d, xmm0)?;

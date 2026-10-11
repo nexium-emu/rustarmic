@@ -35,11 +35,8 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: LOADLIT) -> Result<InstStatus> {
                 em.set_v_d(rt, val);
             }
             0b10 => {
-                let lo = em.load(addr, 8);
-                let eight = em.const_u64(8);
-                let addr_hi = em.add(addr, eight, RegSize::X);
-                let hi = em.load(addr_hi, 8);
-                let q = em.vec_build_q(lo, hi);
+                // One 16-byte access: a single callback / fastmem probe.
+                let q = em.load(addr, 16);
                 em.set_v_q(rt, q);
             }
             _ => {

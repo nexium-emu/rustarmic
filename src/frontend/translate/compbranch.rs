@@ -26,6 +26,7 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: COMPBRANCH) -> Result<InstStatus>
     em.block.terminal = Terminal::CompareBranchZero {
         value: val,
         inverse,
+        is_64: sf == 1,
         taken_pc: target,
         not_taken_pc: em.current_pc.wrapping_add(4),
     };

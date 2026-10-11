@@ -11,12 +11,34 @@ enum Kind {
     StoreEx { bytes: u32 },
     Load { bytes: u32, target_x: bool },
     Store { bytes: u32 },
+    /// LDXP / LDAXP; `wide` = 64-bit registers (one 128-bit access).
+    LoadExPair { wide: bool },
+    /// STXP / STLXP.
+    StoreExPair { wide: bool },
 }
 
 fn size_from_bit30(raw: u32) -> (u32, bool) {
     let size = bits(raw, 30, 2);
     let bytes = 1u32 << size;
     (bytes, bytes == 8)
+}
+
+fn load_ex_pair(raw: u32) -> (u32, Kind) {
+    (
+        raw,
+        Kind::LoadExPair {
+            wide: bits(raw, 30, 1) == 1,
+        },
+    )
+}
+
+fn store_ex_pair(raw: u32) -> (u32, Kind) {
+    (
+        raw,
+        Kind::StoreExPair {
+            wide: bits(raw, 30, 1) == 1,
+        },
+    )
 }
 
 pub fn translate(em: &mut IrEmitter<'_>, insn: LDSTEXCL) -> Result<InstStatus> {
@@ -170,6 +192,11 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: LDSTEXCL) -> Result<InstStatus> {
             (i.0, Kind::Store { bytes: b })
         }
 
+        LDXP_Rt_Rt2_ADDR_SIMPLE(i) => load_ex_pair(i.0),
+        LDAXP_Rt_Rt2_ADDR_SIMPLE(i) => load_ex_pair(i.0),
+        STXP_Rs_Rt_Rt2_ADDR_SIMPLE(i) => store_ex_pair(i.0),
+        STLXP_Rs_Rt_Rt2_ADDR_SIMPLE(i) => store_ex_pair(i.0),
+
         _ => {
             return Err(Error::Unsupported {
                 pc: em.current_pc,
@@ -210,6 +237,42 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: LDSTEXCL) -> Result<InstStatus> {
                 _ => unreachable!(),
             };
             let result = em.push(Armlet::new(op, Ty::U32).with_args(&[addr, val]));
+            if rs != ZR_ENCODING {
+                em.set_w(rs, result);
+            }
+        }
+        Kind::LoadExPair { wide } => {
+            let rt2 = bits(raw, 10, 5) as u8;
+            if wide {
+                let q = em.push(Armlet::new(Op::LoadEx128, Ty::U128).with_args(&[addr]));
+                let lo = em.vec_extract_lo64(q);
+                let hi = em.vec_extract_hi64(q);
+                em.set_x(rt, lo);
+                em.set_x(rt2, hi);
+            } else {
+                let v = em.push(Armlet::new(Op::LoadEx64, Ty::U64).with_args(&[addr]));
+                let sh = em.const_u64(32);
+                let hi = em.lsr(v, sh, RegSize::X);
+                em.set_w(rt, v);
+                em.set_w(rt2, hi);
+            }
+        }
+        Kind::StoreExPair { wide } => {
+            let rs = bits(raw, 16, 5) as u8;
+            let rt2 = bits(raw, 10, 5) as u8;
+            let lo = em.get_x(rt);
+            let hi = em.get_x(rt2);
+            let result = if wide {
+                let q = em.vec_build_q(lo, hi);
+                em.push(Armlet::new(Op::StoreEx128, Ty::U32).with_args(&[addr, q]))
+            } else {
+                let m = em.const_u64(0xFFFF_FFFF);
+                let lo = em.and(lo, m, RegSize::X);
+                let sh = em.const_u64(32);
+                let hi = em.lsl(hi, sh, RegSize::X);
+                let v = em.or(lo, hi, RegSize::X);
+                em.push(Armlet::new(Op::StoreEx64, Ty::U32).with_args(&[addr, v]))
+            };
             if rs != ZR_ENCODING {
                 em.set_w(rs, result);
             }

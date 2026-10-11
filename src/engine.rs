@@ -143,7 +143,10 @@ impl SharedRuntime {
         let jit_config = JitConfig {
             code_cache_bytes: config.code_cache_bytes,
             use_fastmem: matches!(config.memory_mode, MemoryMode::Fastmem),
+            fastmem_page_bits: None,
+            link_blocks: true,
             host_features: Some(config.host_features),
+            resume_after_fault: false,
             translate: crate::frontend::TranslateOptions {
                 max_insts: config.max_block_insts,
                 ..Default::default()

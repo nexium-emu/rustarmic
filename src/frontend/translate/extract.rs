@@ -33,7 +33,11 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: EXTRACT) -> Result<InstStatus> {
         });
     }
 
-    let result = if rn == rm {
+    let result = if imms == 0 {
+        // lsb 0 selects Rm unchanged; the general form would need a shift
+        // by the full width, which x86 reduces modulo the width.
+        em.get_gpr(rm, size)
+    } else if rn == rm {
         let v = em.get_gpr(rn, size);
         let amt = em.const_u64(imms as u64);
         em.ror(v, amt, size)

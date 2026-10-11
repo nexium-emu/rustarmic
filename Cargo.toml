@@ -41,11 +41,17 @@ log = { version = "0.4", optional = true }
 [dev-dependencies]
 rand = "0.8"
 rand_chacha = "0.3"
+# Instruction metadata (feature sets) for the coverage scan in tests/.
+disarm64_defn = "0.1"
 
 [features]
 default = []
 unicorn = ["dep:unicorn-engine"]
 tracing = ["dep:log"]
+# Test-only: lets a `Jit` deliberately miscompile chosen instructions
+# (`Jit::fault_injection`) so differential harnesses can prove they catch a
+# wrong result at the exact instruction.  Never enable in a shipping build.
+fault-injection = []
 
 [profile.release]
 panic = "abort"
@@ -63,3 +69,8 @@ required-features = ["unicorn"]
 [[test]]
 name = "smoke"
 path = "tests/smoke.rs"
+
+[[test]]
+name = "lockstep_replay"
+path = "tests/lockstep_replay.rs"
+required-features = ["unicorn"]

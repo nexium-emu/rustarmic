@@ -143,6 +143,7 @@ fn dispatch_bench(counts: Option<&[u64]>, working_sets: &[usize], target: Durati
         // Keep the original default cache size; larger rings must stay fully
         // warm rather than measuring cache rollover/recompilation by accident.
         config.code_cache_bytes = (1024usize * 1024).max(working_set * 4096);
+        config.translate.multiblock = false;
         let mut jit = Jit::new(config).unwrap();
         let mut warm = context();
         let warmed = jit

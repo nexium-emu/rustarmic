@@ -94,3 +94,34 @@ fn q_pair_store_uses_w_form_computed_base_address() {
     assert_eq!(jit.x[14], uni.x[14]);
     assert_eq!(jit.pc, uni.pc);
 }
+
+#[test]
+fn signed_byte_and_half_loads_match_unicorn() {
+    mem_init(0x20_000);
+    // Store 0x8080_8080 at x0, then load it back with every LDRS{B,H}
+    // addressing form into X (opc = 10) and W (opc = 11) targets.
+    let code = snippet(&[
+        0x5290_1005, // movz w5, #0x8080
+        0x72B0_1005, // movk w5, #0x8080, lsl 16
+        0xB900_0005, // str w5, [x0]
+        0x3980_0001, // ldrsb x1, [x0]
+        0x39C0_0002, // ldrsb w2, [x0]
+        0x7980_0003, // ldrsh x3, [x0]
+        0x79C0_0004, // ldrsh w4, [x0]
+        0x3880_0006, // ldursb x6, [x0]
+        0x38C0_0007, // ldursb w7, [x0]
+        0x7880_0008, // ldursh x8, [x0]
+        0x78C0_0009, // ldursh w9, [x0]
+        0x38BF_680A, // ldrsb x10, [x0, xzr]
+        0x78FF_680B, // ldrsh w11, [x0, xzr]
+        0x38C0_0C0C, // ldrsb w12, [x0, #0]!
+        0x7880_040D, // ldrsh x13, [x0], #0
+        0xD420_0000,
+    ]);
+    let mut init = baseline_state();
+    init.x[0] = harness::DATA_BASE + 0x9000;
+    let (uni, jit) = run_pair(&code, init);
+    for r in 1..14 {
+        assert_eq!(jit.x[r], uni.x[r], "x{r}");
+    }
+}

@@ -214,6 +214,46 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDSAME) -> Result<InstStatus> 
     let rn = bits(raw, 5, 5) as u8;
     let rd = bits(raw, 0, 5) as u8;
 
+    // Reserved integer arrangements: 1D, and 2D for ops without 64-bit
+    // elements.
+    let integer = matches!(
+        kind,
+        Kind::Add
+            | Kind::Sub
+            | Kind::Mul
+            | Kind::CmEq
+            | Kind::CmGt
+            | Kind::CmGe
+            | Kind::CmHi
+            | Kind::CmHs
+            | Kind::Smin
+            | Kind::Smax
+            | Kind::Umin
+            | Kind::Umax
+            | Kind::Addp
+            | Kind::Smaxp
+            | Kind::Sminp
+            | Kind::Umaxp
+            | Kind::Uminp
+    );
+    let no_64 = matches!(
+        kind,
+        Kind::Smin
+            | Kind::Smax
+            | Kind::Umin
+            | Kind::Umax
+            | Kind::Smaxp
+            | Kind::Sminp
+            | Kind::Umaxp
+            | Kind::Uminp
+    );
+    if integer && size == 3 && (!q || no_64) {
+        return Err(Error::Unsupported {
+            pc: em.current_pc,
+            opcode: raw,
+        });
+    }
+
     let vn = em.get_v_q(rn);
     let vm = em.get_v_q(rm);
 

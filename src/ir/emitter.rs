@@ -1024,6 +1024,20 @@ impl<'b> IrEmitter<'b> {
         )
     }
 
+    /// Sets NZCV the way ARM logical flag-setting ops do: N and Z from
+    /// `result`, C = 0, V = 0.
+    pub fn logic_flags(&mut self, result: ValueRef, size: RegSize) {
+        let op = match size {
+            RegSize::W => Op::LogicFlags32,
+            RegSize::X => Op::LogicFlags64,
+        };
+        self.push(
+            Armlet::new(op, Ty::Void)
+                .with_args(&[result])
+                .with_flags(ArmletFlags::NZCV_LIVE),
+        );
+    }
+
     pub fn and(&mut self, a: ValueRef, b: ValueRef, size: RegSize) -> ValueRef {
         let (op, ty) = match size {
             RegSize::W => (Op::And32, Ty::U32),
@@ -1092,6 +1106,43 @@ impl<'b> IrEmitter<'b> {
         self.push(Armlet::new(op, ty).with_args(&[addr]))
     }
 
+    /// A `size_bytes` load made of `elem_bytes` element accesses: one host
+    /// access on the fastmem path, ascending element-sized callbacks otherwise.
+    pub fn load_elements(&mut self, addr: ValueRef, size_bytes: u32, elem_bytes: u32) -> ValueRef {
+        let (op, ty) = match size_bytes {
+            8 => (Op::Load64, Ty::U64),
+            16 => (Op::Load128, Ty::U128),
+            _ => return self.load(addr, size_bytes),
+        };
+        let elem = if elem_bytes < size_bytes { elem_bytes } else { 0 };
+        self.push(
+            Armlet::new(op, ty)
+                .with_args(&[addr])
+                .with_imm(u64::from(elem)),
+        )
+    }
+
+    /// Store counterpart of [`IrEmitter::load_elements`].
+    pub fn store_elements(
+        &mut self,
+        addr: ValueRef,
+        value: ValueRef,
+        size_bytes: u32,
+        elem_bytes: u32,
+    ) {
+        let op = match size_bytes {
+            8 => Op::Store64,
+            16 => Op::Store128,
+            _ => return self.store(addr, value, size_bytes),
+        };
+        let elem = if elem_bytes < size_bytes { elem_bytes } else { 0 };
+        self.push(
+            Armlet::new(op, Ty::Void)
+                .with_args(&[addr, value])
+                .with_imm(u64::from(elem)),
+        );
+    }
+
     pub fn store(&mut self, addr: ValueRef, value: ValueRef, size_bytes: u32) {
         let op = match size_bytes {
             1 => Op::Store8,
@@ -1102,6 +1153,25 @@ impl<'b> IrEmitter<'b> {
             _ => unreachable!(),
         };
         self.push(Armlet::new(op, Ty::Void).with_args(&[addr, value]));
+    }
+
+    /// Calls instruction helper `helper` (an index into
+    /// `jit::helpers::HELPERS`) for guest encoding `insn` with up to four
+    /// operands; `ty` is the result type (`Ty::Void` for none).
+    pub fn call_helper(&mut self, helper: u32, insn: u32, args: &[ValueRef], ty: Ty) -> ValueRef {
+        debug_assert!(args.len() <= 4);
+        self.push(
+            Armlet::new(Op::CallHelper, ty)
+                .with_args(args)
+                .with_imm(((insn as u64) << 32) | helper as u64),
+        )
+    }
+
+    /// 128-bit constant built from two 64-bit halves.
+    pub fn const_u128(&mut self, lo: u64, hi: u64) -> ValueRef {
+        let l = self.const_u64(lo);
+        let h = self.const_u64(hi);
+        self.vec_build_q(l, h)
     }
 
     pub fn branch(&mut self, target_pc: u64, link: bool) {

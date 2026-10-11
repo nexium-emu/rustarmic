@@ -84,11 +84,7 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: LDST_UNSCALED) -> Result<InstStat
         }
         Kind::FpLoad => {
             if bytes == 16 {
-                let lo = em.load(addr, 8);
-                let eight = em.const_u64(8);
-                let addr_hi = em.add(addr, eight, RegSize::X);
-                let hi = em.load(addr_hi, 8);
-                let q = em.vec_build_q(lo, hi);
+                let q = em.load(addr, 16);
                 em.set_v_q(rt, q);
             } else if bytes == 8 {
                 let v = em.load(addr, bytes);
@@ -114,12 +110,7 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: LDST_UNSCALED) -> Result<InstStat
         Kind::FpStore => {
             if bytes == 16 {
                 let q = em.get_v_q(rt);
-                let lo = em.vec_extract_lo64(q);
-                let hi = em.vec_extract_hi64(q);
-                em.store(addr, lo, 8);
-                let eight = em.const_u64(8);
-                let addr_hi = em.add(addr, eight, RegSize::X);
-                em.store(addr_hi, hi, 8);
+                em.store(addr, q, 16);
             } else {
                 let v = if bytes == 8 {
                     em.get_v_d(rt)

@@ -1,3 +1,5 @@
+#[cfg(feature = "fault-injection")]
+pub mod fault_injection;
 pub mod translate;
 pub mod translator;
 

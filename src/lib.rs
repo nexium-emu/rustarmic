@@ -3,6 +3,7 @@ pub mod backend;
 pub mod engine;
 pub mod error;
 pub mod frontend;
+pub mod interp;
 pub mod ir;
 pub mod jit;
 pub mod optimizer;

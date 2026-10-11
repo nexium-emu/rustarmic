@@ -7,6 +7,10 @@ use rustarmic::jit::code_cache::{CodeCache, ThunkFn};
 use rustarmic::optimizer::optimize;
 use rustarmic::{CpuContext, Jit, JitConfig, Memory, StopReason};
 
+// A BRK stop leaves ctx.pc at the BRK: the ARM ARM preferred exception return
+// address for a Breakpoint Instruction exception is the BRK itself (Unicorn
+// agrees). These assertions originally expected the following instruction.
+
 const CODE: u64 = 0x1000;
 const BRK: u32 = 0xd420_0000;
 const GUARD: u64 = 0xface_1234_5678_9abc;
@@ -280,7 +284,7 @@ fn all_byte_shift_values_counts_q_forms_aliases_hardware_and_fallback() {
                                 "{word:08x}/{input}/{features:?}"
                             );
                             assert_eq!(result.retired, 2);
-                            assert_eq!(ctx.pc, CODE + 8);
+                            assert_eq!(ctx.pc, CODE + 4);
                             check_guards(&ctx, expected_x, expected);
                             assert_eq!(code.0, words);
                         }
@@ -523,7 +527,7 @@ fn fused_guest_chains_retire_each_instruction_and_resume_at_every_budget() {
                                 StopReason::BudgetExhausted
                             }
                         );
-                        assert_eq!(ctx.pc, CODE + budget * 4);
+                        assert_eq!(ctx.pc, CODE + budget * 4 - if budget == 5 { 4 } else { 0 });
                         check_guards(&ctx, expected_x, expected);
                         if budget < 5 {
                             for &(kind, q, shift) in operations.iter().skip(budget as usize) {
@@ -532,7 +536,7 @@ fn fused_guest_chains_retire_each_instruction_and_resume_at_every_budget() {
                             let second = jit.run_bounded(&mut ctx, &mut code, 5 - budget).unwrap();
                             assert_eq!(second.retired, 5 - budget);
                             assert_eq!(second.stop, StopReason::Brk(0));
-                            assert_eq!(ctx.pc, CODE + 20);
+                            assert_eq!(ctx.pc, CODE + 16);
                             check_guards(&ctx, expected_x, expected);
                         }
                         assert_eq!(code.0, words);

@@ -8,6 +8,10 @@ use rustarmic::jit::code_cache::{CodeCache, ThunkFn};
 use rustarmic::optimizer::optimize;
 use rustarmic::{CpuContext, CpuFeatures, Jit, JitConfig, Memory, StopReason};
 
+// A BRK stop leaves ctx.pc at the BRK: the ARM ARM preferred exception return
+// address for a Breakpoint Instruction exception is the BRK itself (Unicorn
+// agrees). These assertions originally expected the following instruction.
+
 const CODE: u64 = 0x1000;
 const GUARD: u64 = 0xface_1234_5678_9abc;
 const BRK: u32 = 0xd420_0000;
@@ -116,7 +120,7 @@ fn execute(jit: &mut Jit, code: &mut Code, source: [u64; 2], q: bool, rn: u32, r
     let outcome = jit.run_bounded(&mut ctx, code, 2).unwrap();
     assert_eq!(outcome.stop, StopReason::Brk(0));
     assert_eq!(outcome.retired, 2);
-    assert_eq!(ctx.pc, CODE + 8);
+    assert_eq!(ctx.pc, CODE + 4);
     check(&ctx, x, wanted);
     assert_eq!(code.0, words);
 }

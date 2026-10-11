@@ -12,7 +12,6 @@ enum FpKind {
     FMla,
     FMls,
     FMul,
-    FMulx,
 }
 
 #[derive(Clone, Copy)]
@@ -28,7 +27,11 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDELEM) -> Result<InstStatus> 
         FMLA_Vd_Vn_Em(i) => translate_fp(em, i.0, FpKind::FMla),
         FMLS_Vd_Vn_Em(i) => translate_fp(em, i.0, FpKind::FMls),
         FMUL_Vd_Vn_Em(i) => translate_fp(em, i.0, FpKind::FMul),
-        FMULX_Vd_Vn_Em(i) => translate_fp(em, i.0, FpKind::FMulx),
+        // FMULX differs from FMUL for 0 * inf; the helper models it.
+        FMULX_Vd_Vn_Em(i) => Err(Error::Unsupported {
+            pc: em.current_pc,
+            opcode: i.0,
+        }),
 
         FMLA_Vd_Vn_Em16(i) => Err(Error::Unsupported {
             pc: em.current_pc,
@@ -177,7 +180,6 @@ pub fn translate_scalar(em: &mut IrEmitter<'_>, insn: ASISDELEM) -> Result<InstS
             let op = if double { Op::Fmadd64 } else { Op::Fmadd32 };
             em.push(Armlet::new(op, ty).with_args(&[n, m, a]))
         }
-        FpKind::FMulx => unreachable!(),
     };
     // Scalar writes replace the complete SIMD register, clearing unused bits.
     if double {
@@ -225,7 +227,6 @@ fn translate_fp(em: &mut IrEmitter<'_>, raw: u32, kind: FpKind) -> Result<InstSt
             em.vec_fmls(vd_prev, vn, broadcast, double, q)
         }
         FpKind::FMul => em.vec_fmul(vn, broadcast, double, q),
-        FpKind::FMulx => em.vec_fmul(vn, broadcast, double, q),
     };
     em.set_v_q(rd, result);
     Ok(InstStatus::Continue)

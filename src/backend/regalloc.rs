@@ -8,6 +8,10 @@ pub enum Loc {
     Reg(u8),
     Xmm(u8),
     Spill(i32),
+    /// A 32/64-bit constant that is rematerialised at each use instead of
+    /// occupying a register or slot.  `ConstU32` values are stored
+    /// zero-extended, matching how 32-bit values read back as 64 bits.
+    Imm(u64),
     None,
 }
 
@@ -86,6 +90,15 @@ impl Allocation {
 }
 
 pub fn compute_live_ranges(block: &Block) -> Vec<LiveRange> {
+    compute_live_ranges_with(block, &[])
+}
+
+/// Like [`compute_live_ranges`], additionally keeping `terminal_uses` live
+/// until the end of the block (values the terminal re-reads).
+pub fn compute_live_ranges_with(
+    block: &Block,
+    terminal_uses: &[crate::ir::ValueRef],
+) -> Vec<LiveRange> {
     let n = block.code.len();
     let mut ranges = vec![LiveRange::DEAD; n];
 
@@ -107,7 +120,11 @@ pub fn compute_live_ranges(block: &Block) -> Vec<LiveRange> {
         Terminal::IndirectBranch { target, .. } => [Some(target), None],
         _ => [None, None],
     };
-    for v in term_refs.into_iter().flatten() {
+    for v in term_refs
+        .into_iter()
+        .flatten()
+        .chain(terminal_uses.iter().copied())
+    {
         if v.is_some() {
             let i = v.as_usize();
             if i < n && !ranges[i].is_dead() && ranges[i].end() < last_live {
@@ -122,11 +139,8 @@ pub fn compute_live_ranges(block: &Block) -> Vec<LiveRange> {
     // are allocated in the same location when possible, so propagating a
     // user's full live range through arbitrary arithmetic would over-extend
     // unrelated operands.
-    let live_nodes: Vec<_> = block
-        .iter_live()
-        .map(|(vr, armlet)| (vr, *armlet))
-        .collect();
-    for (vr, armlet) in live_nodes {
+    // `iter_live` borrows only `block`; no snapshot allocation is needed.
+    for (vr, armlet) in block.iter_live() {
         let user_t = pos[vr.as_usize()];
         for arg in armlet.args.iter() {
             if arg.is_some() {
@@ -172,6 +186,8 @@ pub fn op_prefers_two_address(op: Op) -> bool {
 }
 
 const SAVED_SIZE: i32 = 40;
+/// rbp offset where spill slots start (below the thunk's saved registers).
+pub const SPILL_BASE: i32 = SAVED_SIZE;
 
 pub fn linear_scan(block: &Block, ranges: &[LiveRange], pool: &[u8]) -> Allocation {
     let n = ranges.len();
@@ -234,6 +250,18 @@ pub fn linear_scan(block: &Block, ranges: &[LiveRange], pool: &[u8]) -> Allocati
                 true
             }
         });
+
+        match block.code[vr_idx].op {
+            Op::ConstU32 => {
+                locs[vr_idx] = Loc::Imm(block.code[vr_idx].imm & 0xFFFF_FFFF);
+                continue;
+            }
+            Op::ConstU64 => {
+                locs[vr_idx] = Loc::Imm(block.code[vr_idx].imm);
+                continue;
+            }
+            _ => {}
+        }
 
         if block.code[vr_idx].ty == Ty::U128 {
             let safe = !interior_xmm_clobber_mask(&xmm_clobber_masks, range).bits();
@@ -409,6 +437,7 @@ mod tests {
                 .with_imm(0x2000),
         );
         b.terminal = Terminal::CompareBranchZero {
+            is_64: true,
             value: val,
             inverse: false,
             taken_pc: 0x2000,
@@ -447,7 +476,7 @@ mod tests {
         let mut em = IrEmitter::new(&mut b, 0x1000);
         let mut vrs = Vec::new();
         for _ in 0..ALLOCATABLE_GPRS.len() {
-            vrs.push(em.const_u64(0));
+            vrs.push(em.get_x(0));
         }
         for &vr in &vrs {
             em.set_x(0, vr);
@@ -477,7 +506,7 @@ mod tests {
         let extra = 3;
         let mut vrs = Vec::new();
         for _ in 0..(pool + extra) {
-            vrs.push(em.const_u64(0));
+            vrs.push(em.get_x(0));
         }
         for &vr in &vrs {
             em.set_x(0, vr);
@@ -493,6 +522,7 @@ mod tests {
                 Loc::Reg(_) => in_reg += 1,
                 Loc::Spill(_) | Loc::Xmm(_) => spilled += 1,
                 Loc::None => panic!("live value should not be Loc::None"),
+                Loc::Imm(_) => panic!("non-constant value got Loc::Imm"),
             }
         }
         assert_eq!(spilled, extra);
@@ -505,7 +535,7 @@ mod tests {
         let mut b = fresh_block();
         let mut em = IrEmitter::new(&mut b, 0x1000);
         for _ in 0..(ALLOCATABLE_GPRS.len() + 4) {
-            let c = em.const_u64(0);
+            let c = em.get_x(0);
             em.set_x(0, c);
         }
 
@@ -525,7 +555,7 @@ mod tests {
     fn identity_shares_reg_with_src_when_src_dies_at_identity() {
         let mut b = fresh_block();
         let mut em = IrEmitter::new(&mut b, 0x1000);
-        let src = em.const_u64(0xABCD);
+        let src = em.get_x(5);
         let id = em.push(Armlet::new(Op::Identity, Ty::U64).with_args(&[src]));
         em.set_x(0, id);
 
@@ -618,7 +648,7 @@ mod tests {
         let mut b = fresh_block();
         let mut em = IrEmitter::new(&mut b, 0x1000);
         let amount = em.const_u64(1);
-        let val = em.const_u64(0xDEAD);
+        let val = em.get_x(7);
         let shifted = em.push(Armlet::new(Op::Lsl64, Ty::U64).with_args(&[val, amount]));
         let _ = em.add(val, shifted, RegSize::X);
 
@@ -630,5 +660,26 @@ mod tests {
             "val crosses a shift that clobbers RCX, so it cannot live in RCX (got {:?})",
             alloc.locs[val.as_usize()]
         );
+    }
+
+    #[test]
+    fn constants_are_rematerialised_not_allocated() {
+        use crate::arch::RegSize;
+
+        let mut b = fresh_block();
+        let mut em = IrEmitter::new(&mut b, 0x1000);
+        let c32 = em.const_u32(0xFFFF_FFFF);
+        let c64 = em.const_u64(0x1234_5678_9ABC_DEF0);
+        let x = em.get_x(1);
+        let sum = em.add(x, c64, RegSize::X);
+        let w = em.add(x, c32, RegSize::W);
+        em.set_x(0, sum);
+        em.set_x(2, w);
+
+        let ranges = compute_live_ranges(&b);
+        let alloc = linear_scan(&b, &ranges, ALLOCATABLE_GPRS);
+        assert_eq!(alloc.locs[c32.as_usize()], Loc::Imm(0xFFFF_FFFF));
+        assert_eq!(alloc.locs[c64.as_usize()], Loc::Imm(0x1234_5678_9ABC_DEF0));
+        assert!(matches!(alloc.locs[x.as_usize()], Loc::Reg(_)));
     }
 }

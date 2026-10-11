@@ -1,3 +1,8 @@
+//! Store-exclusive is a value compare-and-swap through `CpuContext::mem_atomic`
+//! (`AtomicOp::Cas`); upstream wrote these tests against a separate
+//! `mem_write_exclusive` callback with the same semantics.
+
+use rustarmic::jit::atomic::AtomicOp;
 use rustarmic::{CpuContext, Jit, JitConfig, Memory, StopReason};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Barrier};
@@ -55,20 +60,24 @@ unsafe extern "C" fn write(context: *mut CpuContext, address: u64, size: u8) {
     }
 }
 
-unsafe extern "C" fn exclusive_write(context: *mut CpuContext, address: u64, size: u8) -> u32 {
+/// `mem_atomic` compare-and-swap: replaces the `size`-byte value at `address`
+/// with `io_value[0]` only if it equals `atomic_expected[0]`, returning the
+/// observed value in `io_value[0]`.
+unsafe extern "C" fn exclusive_write(context: *mut CpuContext, address: u64, size: u8, op: u8) {
     assert_eq!(address, DATA);
+    assert_eq!(op, AtomicOp::Cas as u8);
     let cell = unsafe { backing(context) };
-    let expected = unsafe { (*context).exclusive_value };
+    let expected = unsafe { (*context).atomic_expected[0] } & mask(size);
     let desired = unsafe { (*context).io_value[0] } & mask(size);
-    let current = cell.load(Ordering::SeqCst);
-    if current & mask(size) != expected {
-        return 1;
+    let mut current = cell.load(Ordering::SeqCst);
+    while current & mask(size) == expected {
+        let replacement = (current & !mask(size)) | desired;
+        match cell.compare_exchange(current, replacement, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => break,
+            Err(actual) => current = actual,
+        }
     }
-    let desired = (current & !mask(size)) | desired;
-    u32::from(
-        cell.compare_exchange(current, desired, Ordering::SeqCst, Ordering::SeqCst)
-            .is_err(),
-    )
+    unsafe { (*context).io_value = [current & mask(size), 0] };
 }
 
 fn context(cell: &AtomicU64) -> CpuContext {
@@ -80,7 +89,7 @@ fn context(cell: &AtomicU64) -> CpuContext {
     context.mem_size = 8;
     context.mem_read = read;
     context.mem_write = write;
-    context.mem_write_exclusive = exclusive_write;
+    context.mem_atomic = exclusive_write;
     context
 }
 
@@ -237,8 +246,9 @@ fn concurrent_guest_retry_loops_complete_without_lost_updates() {
     assert_eq!(cell.load(Ordering::SeqCst), INCREMENTS * 2);
 }
 
-unsafe extern "C" fn denied_write(context: *mut CpuContext, address: u64, size: u8) -> u32 {
+unsafe extern "C" fn denied_write(context: *mut CpuContext, address: u64, size: u8, _op: u8) {
     unsafe {
+        (*context).io_value = [0, 0];
         (*context).mem_fault = 1;
         (*context).mem_fault_access = 1;
         (*context).mem_fault_cause = 1;
@@ -246,7 +256,6 @@ unsafe extern "C" fn denied_write(context: *mut CpuContext, address: u64, size: 
         (*context).mem_fault_size = size;
         (*context).mem_fault_pc = (*context).pc;
     }
-    1
 }
 
 unsafe extern "C" fn denied_read(context: *mut CpuContext, address: u64, size: u8) {
@@ -265,7 +274,7 @@ unsafe extern "C" fn denied_read(context: *mut CpuContext, address: u64, size: u
 fn exclusive_callback_write_fault_is_precise_and_consumes_reservation() {
     let cell = AtomicU64::new(7);
     let mut context = context(&cell);
-    context.mem_write_exclusive = denied_write;
+    context.mem_atomic = denied_write;
     context.x[3] = 9;
     let mut memory = CodeMem(words(8, false));
     let mut jit = Jit::new(JitConfig::default()).unwrap();

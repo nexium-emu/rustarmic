@@ -1,9 +1,10 @@
 use disarm64::decoder::LSE_ATOMIC;
 
-use crate::arch::{Cond, RegSize};
+use crate::arch::RegSize;
 use crate::error::{Error, Result};
 use crate::frontend::translator::InstStatus;
 use crate::ir::{Armlet, IrEmitter, Op, Ty, ValueRef};
+use crate::jit::atomic::AtomicOp;
 use crate::util::bits::bits;
 
 #[derive(Clone, Copy)]
@@ -29,6 +30,10 @@ macro_rules! dispatch {
             match insn {
                 $( LSE_ATOMIC::$v_sz(i) => atomic_rmw(em, i.0, AtomicKind::$k_sz, 0), )*
                 $( LSE_ATOMIC::$v_fx(i) => atomic_rmw(em, i.0, AtomicKind::$k_fx, $b), )*
+                LSE_ATOMIC::CASP_Rs_PAIRREG_Rt_PAIRREG_ADDR_SIMPLE(i) => casp(em, i.0),
+                LSE_ATOMIC::CASPA_Rs_PAIRREG_Rt_PAIRREG_ADDR_SIMPLE(i) => casp(em, i.0),
+                LSE_ATOMIC::CASPL_Rs_PAIRREG_Rt_PAIRREG_ADDR_SIMPLE(i) => casp(em, i.0),
+                LSE_ATOMIC::CASPAL_Rs_PAIRREG_Rt_PAIRREG_ADDR_SIMPLE(i) => casp(em, i.0),
                 _ => Err(Error::Unsupported { pc: em.current_pc, opcode: 0 }),
             }
         }
@@ -180,27 +185,51 @@ fn atomic_rmw(
     let rn = bits(raw, 5, 5) as u8;
     let rt = bits(raw, 0, 5) as u8;
     let size = if bytes == 8 { RegSize::X } else { RegSize::W };
+    let ty = if bytes == 8 { Ty::U64 } else { Ty::U32 };
+    let sized = |base: Op| -> Op {
+        match (base, bytes) {
+            (Op::AtomicCas8, 1) => Op::AtomicCas8,
+            (Op::AtomicCas8, 2) => Op::AtomicCas16,
+            (Op::AtomicCas8, 4) => Op::AtomicCas32,
+            (Op::AtomicCas8, _) => Op::AtomicCas64,
+            (_, 1) => Op::AtomicRmw8,
+            (_, 2) => Op::AtomicRmw16,
+            (_, 4) => Op::AtomicRmw32,
+            _ => Op::AtomicRmw64,
+        }
+    };
 
+    // One host atomic per instruction: the read-modify-write must be
+    // indivisible with respect to other cores, and LSE atomics leave NZCV
+    // untouched.
     let addr = em.get_x_or_sp(rn, true);
     let rs_val = em.get_gpr(rs, size);
-
-    let old = em.load(addr, bytes);
-
     match kind {
         AtomicKind::Cas => {
             let rt_val = em.get_gpr(rt, size);
-            em.subs(old, rs_val, size);
-            let new_val = csel(em, rt_val, old, Cond::EQ, size);
-            em.store(addr, new_val, bytes);
+            let old = em.push(
+                Armlet::new(sized(Op::AtomicCas8), ty).with_args(&[addr, rs_val, rt_val]),
+            );
             em.set_gpr(rs, old, size);
         }
-        AtomicKind::Swp => {
-            em.store(addr, rs_val, bytes);
-            em.set_gpr(rt, old, size);
-        }
         _ => {
-            let new_val = apply_op(em, old, rs_val, kind, size);
-            em.store(addr, new_val, bytes);
+            let op = match kind {
+                AtomicKind::Add => AtomicOp::Add,
+                AtomicKind::Clr => AtomicOp::Clr,
+                AtomicKind::Eor => AtomicOp::Eor,
+                AtomicKind::Set => AtomicOp::Set,
+                AtomicKind::Smax => AtomicOp::Smax,
+                AtomicKind::Smin => AtomicOp::Smin,
+                AtomicKind::Umax => AtomicOp::Umax,
+                AtomicKind::Umin => AtomicOp::Umin,
+                AtomicKind::Swp => AtomicOp::Swp,
+                AtomicKind::Cas => unreachable!(),
+            };
+            let old = em.push(
+                Armlet::new(sized(Op::AtomicRmw8), ty)
+                    .with_args(&[addr, rs_val])
+                    .with_imm(op as u64),
+            );
             em.set_gpr(rt, old, size);
         }
     }
@@ -208,57 +237,49 @@ fn atomic_rmw(
     Ok(InstStatus::Continue)
 }
 
-fn apply_op(
-    em: &mut IrEmitter<'_>,
-    old: ValueRef,
-    rs: ValueRef,
-    kind: AtomicKind,
-    size: RegSize,
-) -> ValueRef {
-    match kind {
-        AtomicKind::Add => em.add(old, rs, size),
-        AtomicKind::Clr => {
-            let not_rs = bitwise_not(em, rs, size);
-            em.and(old, not_rs, size)
-        }
-        AtomicKind::Eor => em.eor(old, rs, size),
-        AtomicKind::Set => em.or(old, rs, size),
-        AtomicKind::Smax => signed_select(em, old, rs, Cond::GT, size),
-        AtomicKind::Smin => signed_select(em, old, rs, Cond::LT, size),
-        AtomicKind::Umax => signed_select(em, old, rs, Cond::HI, size),
-        AtomicKind::Umin => signed_select(em, old, rs, Cond::CC, size),
-        AtomicKind::Swp | AtomicKind::Cas => unreachable!(),
+/// CASP / CASPA / CASPL / CASPAL: compare-and-swap of a register pair.
+fn casp(em: &mut IrEmitter<'_>, raw: u32) -> Result<InstStatus> {
+    let wide = bits(raw, 30, 1) == 1;
+    let rs = bits(raw, 16, 5) as u8;
+    let rn = bits(raw, 5, 5) as u8;
+    let rt = bits(raw, 0, 5) as u8;
+    if rs & 1 != 0 || rt & 1 != 0 {
+        return Err(Error::Unsupported {
+            pc: em.current_pc,
+            opcode: raw,
+        });
     }
-}
-
-fn bitwise_not(em: &mut IrEmitter<'_>, v: ValueRef, size: RegSize) -> ValueRef {
-    let (op, ty) = match size {
-        RegSize::W => (Op::Not32, Ty::U32),
-        RegSize::X => (Op::Not64, Ty::U64),
+    let addr = em.get_x_or_sp(rn, true);
+    let pair = |em: &mut IrEmitter<'_>, r: u8| -> ValueRef {
+        let lo = em.get_x(r);
+        let hi = em.get_x(r + 1);
+        if wide {
+            em.vec_build_q(lo, hi)
+        } else {
+            let m = em.const_u64(0xFFFF_FFFF);
+            let lo = em.and(lo, m, RegSize::X);
+            let sh = em.const_u64(32);
+            let hi = em.lsl(hi, sh, RegSize::X);
+            em.or(lo, hi, RegSize::X)
+        }
     };
-    em.push(Armlet::new(op, ty).with_args(&[v]))
-}
-
-fn signed_select(
-    em: &mut IrEmitter<'_>,
-    old: ValueRef,
-    rs: ValueRef,
-    cond: Cond,
-    size: RegSize,
-) -> ValueRef {
-    em.subs(old, rs, size);
-    csel(em, old, rs, cond, size)
-}
-
-fn csel(em: &mut IrEmitter<'_>, a: ValueRef, b: ValueRef, cond: Cond, size: RegSize) -> ValueRef {
-    let (op, ty) = match size {
-        RegSize::W => (Op::Csel32, Ty::U32),
-        RegSize::X => (Op::Csel64, Ty::U64),
-    };
-    let nzcv = em.get_nzcv();
-    em.push(
-        Armlet::new(op, ty)
-            .with_args(&[a, b, nzcv])
-            .with_imm(cond as u64),
-    )
+    let expected = pair(em, rs);
+    let new = pair(em, rt);
+    if wide {
+        let old = em.push(
+            Armlet::new(Op::AtomicCas128, Ty::U128).with_args(&[addr, expected, new]),
+        );
+        let lo = em.vec_extract_lo64(old);
+        let hi = em.vec_extract_hi64(old);
+        em.set_x(rs, lo);
+        em.set_x(rs + 1, hi);
+    } else {
+        let old =
+            em.push(Armlet::new(Op::AtomicCas64, Ty::U64).with_args(&[addr, expected, new]));
+        let sh = em.const_u64(32);
+        let hi = em.lsr(old, sh, RegSize::X);
+        em.set_w(rs, old);
+        em.set_w(rs + 1, hi);
+    }
+    Ok(InstStatus::Continue)
 }

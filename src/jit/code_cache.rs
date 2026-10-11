@@ -2,30 +2,74 @@
 
 use std::cell::Cell;
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 
 use region::{Allocation, Protection};
+use smallvec::SmallVec;
 
-use crate::backend::{emit_thunk_bytes, ChainSite};
 use crate::backend::thunk::{emit_thunk_bytes_for, ThunkKind};
+use crate::backend::{emit_thunk_bytes, ChainSite};
 use crate::error::{Error, Result};
 
 pub type ThunkFn =
     unsafe extern "C" fn(block_fn: u64, ctx: *mut crate::jit::context::CpuContext) -> u64;
 
-const DISPATCH_CACHE_ENTRIES: usize = 1024;
+/// Folded-multiply hasher for guest-PC keys; SipHash costs more than the rest
+/// of a dispatcher lookup and a collision only costs a slower probe.
+#[derive(Default, Clone, Copy)]
+pub struct PcHasher(u64);
 
-pub struct CodeCache {
-    region: Allocation,
-    cursor: usize,
-    capacity: usize,
-    table: HashMap<u64, Entry>,
-    // Private to one Jit, just like the authoritative table. Exact PC tags
-    // make collisions ordinary misses; only normal table entries are cached.
-    dispatch_cache: [Cell<Option<(u64, DispatchMeta)>>; DISPATCH_CACHE_ENTRIES],
-    pending: HashMap<u64, Vec<*mut u8>>,
-    thunk: *const u8,
-    xmm_free_thunk: *const u8,
+impl Hasher for PcHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.write_u64(u64::from(b));
+        }
+    }
+    #[inline]
+    fn write_u64(&mut self, v: u64) {
+        let product = u128::from(self.0 ^ v) * 0x9E37_79B9_7F4A_7C15;
+        self.0 = (product as u64) ^ ((product >> 64) as u64);
+    }
+    #[inline]
+    fn write_u32(&mut self, v: u32) {
+        self.write_u64(u64::from(v));
+    }
 }
+
+type PcMap<K, V> = HashMap<K, V, BuildHasherDefault<PcHasher>>;
+
+/// One slot of the direct-mapped dispatch table probed by the Rust
+/// dispatcher and by generated indirect branches before the hash map.
+/// `pc == EMPTY_PC` marks an empty slot.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct DispatchSlot {
+    pub pc: u64,
+    pub host: u64,
+}
+
+pub const DISPATCH_BITS: u32 = 12;
+pub const DISPATCH_SLOTS: usize = 1 << DISPATCH_BITS;
+pub const DISPATCH_MASK: u32 = (DISPATCH_SLOTS as u32) - 1;
+/// Never a valid 4-byte aligned PC; an indirect branch to it hits the miss
+/// stub, which returns to the dispatcher.
+pub const EMPTY_PC: u64 = u64::MAX;
+
+/// Slot of `pc`: higher PC bits are folded in so blocks a multiple of the
+/// table span apart do not all share one slot.
+#[inline]
+pub fn dispatch_index(pc: u64) -> usize {
+    (((pc >> 2) ^ (pc >> (2 + DISPATCH_BITS))) as u32 & DISPATCH_MASK) as usize
+}
+
+/// Byte offset of the rel32 inside a chain site (`E9 rel32`).
+const SITE_REL_OFFSET: usize = 1;
+const SITE_LEN: usize = 5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct DispatchMeta {
@@ -34,13 +78,43 @@ pub(crate) struct DispatchMeta {
     pub thunk_kind: ThunkKind,
 }
 
-#[derive(Clone, Copy)]
+pub struct CodeCache {
+    region: Allocation,
+    cursor: usize,
+    capacity: usize,
+    page: usize,
+    table: PcMap<u64, Entry>,
+    /// Budget-capped blocks keyed by (pc, instruction cap); never linked to
+    /// and never in the dispatch table.
+    capped: PcMap<(u64, u32), Capped>,
+    /// Every registered chain site that jumps to a guest PC, linked or not.
+    /// A site is linked exactly while its target is in `table`.
+    links: PcMap<u64, SmallVec<[usize; 4]>>,
+    dispatch: Box<[Cell<DispatchSlot>]>,
+    /// Instruction count and thunk of the block in the same `dispatch` slot.
+    dispatch_meta: Box<[Cell<(u32, ThunkKind)>]>,
+    thunk: *const u8,
+    xmm_free_thunk: *const u8,
+    miss_stub: *const u8,
+    patches: Vec<(usize, i32)>,
+}
+
 struct Entry {
     host_ptr: *const u8,
-    guest_start: u64,
-    guest_end: u64,
+    ranges: SmallVec<[(u64, u64); 4]>,
+    /// (target pc, absolute site address) for each chain site in the block.
+    out_sites: SmallVec<[(u64, usize); 2]>,
     guest_insns: u32,
     thunk_kind: ThunkKind,
+}
+
+struct Capped {
+    host_ptr: *const u8,
+    ranges: SmallVec<[(u64, u64); 4]>,
+}
+
+fn overlaps(ranges: &[(u64, u64)], start: u64, end: u64) -> bool {
+    ranges.iter().any(|&(s, e)| s < end && e > start)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -89,21 +163,55 @@ impl CodeCache {
         let allocation = region::alloc(bytes, Protection::READ_WRITE)
             .map_err(|e| Error::HostAlloc(e.to_string()))?;
         let capacity = allocation.len();
+        if capacity > i32::MAX as usize {
+            return Err(Error::HostAlloc(
+                "code cache must be smaller than 2 GiB (rel32 block links)".into(),
+            ));
+        }
+        let empty = DispatchSlot {
+            pc: EMPTY_PC,
+            host: 0,
+        };
         let mut this = Self {
             region: allocation,
             cursor: 0,
             capacity,
-            table: HashMap::new(),
-            dispatch_cache: std::array::from_fn(|_| Cell::new(None)),
-            pending: HashMap::new(),
+            page: region::page::size(),
+            table: PcMap::default(),
+            capped: PcMap::default(),
+            links: PcMap::default(),
+            dispatch: (0..DISPATCH_SLOTS).map(|_| Cell::new(empty)).collect(),
+            dispatch_meta: (0..DISPATCH_SLOTS)
+                .map(|_| Cell::new((0, ThunkKind::Full)))
+                .collect(),
             thunk: core::ptr::null(),
             xmm_free_thunk: core::ptr::null(),
+            miss_stub: core::ptr::null(),
+            patches: Vec::new(),
         };
-        let thunk_bytes = emit_thunk_bytes()?;
-        let thunk_ptr = this.append_raw(&thunk_bytes)?;
-        this.thunk = thunk_ptr;
-        this.publish_xmm_free_thunk()?;
+        this.install_runtime_stubs()?;
         Ok(this)
+    }
+
+    fn install_runtime_stubs(&mut self) -> Result<()> {
+        let thunk_bytes = emit_thunk_bytes()?;
+        self.thunk = self.append_raw(&thunk_bytes)?;
+        self.publish_xmm_free_thunk()?;
+        // `ret` with RAX still holding the branch target: a dispatch-table
+        // miss returns to the dispatcher.
+        self.miss_stub = self.append_raw(&[0xC3])?;
+        self.clear_dispatch();
+        Ok(())
+    }
+
+    fn clear_dispatch(&self) {
+        let empty = DispatchSlot {
+            pc: EMPTY_PC,
+            host: self.miss_stub as u64,
+        };
+        for slot in self.dispatch.iter() {
+            slot.set(empty);
+        }
     }
 
     pub fn thunk(&self) -> *const u8 {
@@ -118,8 +226,6 @@ impl CodeCache {
     }
 
     fn publish_xmm_free_thunk(&mut self) -> Result<()> {
-        // If publication fails, never leave an older epoch's lean pointer.
-        // The freshly published full thunk is always a safe fallback.
         self.xmm_free_thunk = self.thunk;
         #[cfg(target_os = "windows")]
         {
@@ -132,78 +238,158 @@ impl CodeCache {
         Ok(())
     }
 
+    /// Address of the direct-mapped dispatch table for generated code.
+    pub fn dispatch_table(&self) -> *const DispatchSlot {
+        self.dispatch.as_ptr().cast()
+    }
+
+    #[inline]
     pub fn lookup(&self, pc: u64) -> Option<*const u8> {
-        self.lookup_meta(pc).map(|(host_ptr, _)| host_ptr)
+        self.lookup_dispatch_meta(pc).map(|entry| entry.host_ptr)
     }
 
     #[inline(always)]
     pub fn lookup_meta(&self, pc: u64) -> Option<(*const u8, u32)> {
-        self.lookup_dispatch_meta(pc).map(|entry| (entry.host_ptr, entry.guest_insns))
+        self.lookup_dispatch_meta(pc)
+            .map(|entry| (entry.host_ptr, entry.guest_insns))
     }
 
     #[inline(always)]
     pub(crate) fn lookup_dispatch_meta(&self, pc: u64) -> Option<DispatchMeta> {
-        // Fold higher PC bits into the index so aligned hot blocks do
-        // not all occupy a small subset of slots. The full tag is still checked.
-        let index = ((pc >> 2) ^ (pc >> 12)) as usize & (DISPATCH_CACHE_ENTRIES - 1);
-        let slot = &self.dispatch_cache[index];
-        if let Some((tag, metadata)) = slot.get() {
-            if tag == pc {
-                return Some(metadata);
-            }
+        let index = dispatch_index(pc);
+        let slot = self.dispatch[index].get();
+        if slot.pc == pc {
+            let (guest_insns, thunk_kind) = self.dispatch_meta[index].get();
+            return Some(DispatchMeta {
+                host_ptr: slot.host as *const u8,
+                guest_insns,
+                thunk_kind,
+            });
         }
-        self.lookup_meta_miss(pc, slot)
+        self.lookup_meta_miss(pc, index)
     }
 
     #[inline(never)]
-    fn lookup_meta_miss(
-        &self,
-        pc: u64,
-        slot: &Cell<Option<(u64, DispatchMeta)>>,
-    ) -> Option<DispatchMeta> {
+    fn lookup_meta_miss(&self, pc: u64, index: usize) -> Option<DispatchMeta> {
         let entry = self.table.get(&pc)?;
-        let metadata = DispatchMeta {
+        self.dispatch[index].set(DispatchSlot {
+            pc,
+            host: entry.host_ptr as u64,
+        });
+        self.dispatch_meta[index].set((entry.guest_insns, entry.thunk_kind));
+        Some(DispatchMeta {
             host_ptr: entry.host_ptr,
             guest_insns: entry.guest_insns,
             thunk_kind: entry.thunk_kind,
-        };
-        slot.set(Some((pc, metadata)));
-        Some(metadata)
+        })
     }
 
-    fn clear_dispatch_cache(&self) {
-        for slot in &self.dispatch_cache {
-            slot.set(None);
+    pub fn contains(&self, pc: u64) -> bool {
+        self.table.contains_key(&pc)
+    }
+
+    pub fn lookup_capped(&self, pc: u64, cap: u32) -> Option<*const u8> {
+        self.capped.get(&(pc, cap)).map(|c| c.host_ptr)
+    }
+
+    pub fn len(&self) -> usize {
+        self.table.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.table.is_empty()
+    }
+
+    /// Bytes of the cache in use.
+    pub fn used_bytes(&self) -> usize {
+        self.cursor
+    }
+
+    /// Number of chain sites currently patched to jump to `pc`'s block.
+    pub fn inbound_links(&self, pc: u64) -> usize {
+        if !self.table.contains_key(&pc) {
+            return 0;
         }
+        self.links.get(&pc).map_or(0, |s| s.len())
     }
 
     pub fn invalidate_range(&mut self, start: u64, len: u64) {
-        // Clear even for overflow/full invalidation, before table pointers can
-        // cease to be authoritative. Unaffected entries refill on demand.
-        self.clear_dispatch_cache();
-        let Some(end) = start.checked_add(len) else {
-            self.table.clear();
-            self.pending.clear();
+        let (start, end) = match start.checked_add(len) {
+            Some(end) => (start, end),
+            None => (0, u64::MAX),
+        };
+        let all = start == 0 && end == u64::MAX;
+        let doomed: Vec<u64> = self
+            .table
+            .iter()
+            .filter(|(_, e)| all || overlaps(&e.ranges, start, end))
+            .map(|(&pc, _)| pc)
+            .collect();
+        for pc in doomed {
+            self.remove_block(pc);
+        }
+        self.capped
+            .retain(|_, c| !all && !overlaps(&c.ranges, start, end));
+        self.flush_patches();
+    }
+
+    /// Unpublishes one block: clears its dispatch slot, unlinks every site
+    /// that jumps to it and forgets its own outgoing sites.  The code bytes
+    /// stay in place until the next reset.
+    fn remove_block(&mut self, pc: u64) {
+        let Some(entry) = self.table.remove(&pc) else {
             return;
         };
-        self.table
-            .retain(|_, entry| entry.guest_end <= start || entry.guest_start >= end);
-        self.pending
-            .retain(|&target_pc, _| target_pc < start || target_pc >= end);
+        let slot = &self.dispatch[dispatch_index(pc)];
+        if slot.get().pc == pc {
+            slot.set(DispatchSlot {
+                pc: EMPTY_PC,
+                host: self.miss_stub as u64,
+            });
+        }
+        if let Some(sites) = self.links.get(&pc) {
+            for &site in sites {
+                self.patches.push((site, 0));
+            }
+        }
+        for (target, site) in entry.out_sites {
+            if let Some(sites) = self.links.get_mut(&target) {
+                sites.retain(|s| *s != site);
+                if sites.is_empty() {
+                    self.links.remove(&target);
+                }
+            }
+        }
     }
 
     /// Drop all translated blocks while retaining the executable allocation.
     /// The dispatcher retries compilation after a cache rollover instead of
-    /// exposing CodeCacheFull to the guest.
+    /// exposing CodeCacheFull to the guest.  Must only run while no
+    /// generated code is on the stack.
     pub fn reset(&mut self) -> Result<()> {
-        self.clear_dispatch_cache();
         self.cursor = 0;
         self.table.clear();
-        self.pending.clear();
-        let thunk_bytes = emit_thunk_bytes()?;
-        self.thunk = self.append_raw(&thunk_bytes)?;
-        self.publish_xmm_free_thunk()?;
-        Ok(())
+        self.capped.clear();
+        self.links.clear();
+        self.patches.clear();
+        self.install_runtime_stubs()
+    }
+
+    /// Makes the pages of `[addr, addr + len)` writable, runs `f`, and
+    /// returns them to read+execute.
+    fn with_writable<R>(&mut self, addr: usize, len: usize, f: impl FnOnce() -> R) -> Result<R> {
+        let lo = addr & !(self.page - 1);
+        let hi = (addr + len + self.page - 1) & !(self.page - 1);
+        unsafe {
+            region::protect(lo as *const u8, hi - lo, Protection::READ_WRITE)
+                .map_err(|e| Error::HostAlloc(e.to_string()))?;
+        }
+        let out = f();
+        unsafe {
+            region::protect(lo as *const u8, hi - lo, Protection::READ_EXECUTE)
+                .map_err(|e| Error::HostAlloc(e.to_string()))?;
+        }
+        Ok(out)
     }
 
     fn append_raw(&mut self, bytes: &[u8]) -> Result<*const u8> {
@@ -212,25 +398,63 @@ impl CodeCache {
         unsafe {
             let publish_pages = base.add(range.page_start);
             let dst = base.add(range.byte_start);
-            // Keep publication W^X, but change only the pages containing the
-            // appended bytes, not the entire (normally 256 MiB) allocation.
-            // This cache is private to a Jit and no code from it executes while
-            // that same Jit holds &mut self to install/reset a block. Published
-            // pages outside this span remain RX; unused pages remain RW.
             region::protect(publish_pages, range.page_len, Protection::READ_WRITE)
                 .map_err(|e| Error::HostAlloc(e.to_string()))?;
             core::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len());
             region::protect(publish_pages, range.page_len, Protection::READ_EXECUTE)
                 .map_err(|e| Error::HostAlloc(e.to_string()))?;
             self.cursor = range.byte_end;
-            #[cfg(target_arch = "x86_64")]
-            {
-                core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
-            }
+            core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
             Ok(dst as *const u8)
         }
     }
 
+    fn queue_link(&mut self, site: usize, target: *const u8) {
+        let rel = (target as isize) - (site as isize + SITE_LEN as isize);
+        let rel = i32::try_from(rel).expect("code cache larger than rel32 range");
+        self.patches.push((site, rel));
+    }
+
+    /// Writes every queued rel32, opening each run of adjacent pages once.
+    fn flush_patches(&mut self) {
+        if self.patches.is_empty() {
+            return;
+        }
+        let mut patches = std::mem::take(&mut self.patches);
+        patches.sort_unstable_by_key(|p| p.0);
+        let page = self.page;
+        let mut i = 0;
+        while i < patches.len() {
+            let lo = patches[i].0 & !(page - 1);
+            let mut hi = (patches[i].0 + SITE_LEN + page - 1) & !(page - 1);
+            let mut j = i + 1;
+            while j < patches.len() && patches[j].0 & !(page - 1) <= hi {
+                hi = hi.max((patches[j].0 + SITE_LEN + page - 1) & !(page - 1));
+                j += 1;
+            }
+            let group = &patches[i..j];
+            let res = self.with_writable(lo, hi - lo, || {
+                for &(site, rel) in group {
+                    unsafe {
+                        debug_assert_eq!(*(site as *const u8), 0xE9);
+                        core::ptr::write_unaligned((site + SITE_REL_OFFSET) as *mut i32, rel);
+                    }
+                }
+            });
+            // A link left unpatched or a stale link left in place cannot be
+            // recovered from, like an allocation failure.
+            if let Err(e) = res {
+                panic!("rustarmic: code cache patch failed: {e:?}");
+            }
+            i = j;
+        }
+        patches.clear();
+        self.patches = patches;
+    }
+
+    /// Publishes one block covering `[guest_pc, guest_end)` without linking
+    /// its chain sites.  `cache_block` false installs a transient block that
+    /// is never looked up.
     pub fn install(
         &mut self,
         guest_pc: u64,
@@ -241,8 +465,16 @@ impl CodeCache {
         body_offset: u32,
         cache_block: bool,
     ) -> Result<*const u8> {
-        self.install_emitted(guest_pc, guest_end, guest_insns, bytes, chains, body_offset,
-            cache_block, ThunkKind::Full)
+        self.install_emitted(
+            guest_pc,
+            guest_end,
+            guest_insns,
+            bytes,
+            chains,
+            body_offset,
+            cache_block,
+            ThunkKind::Full,
+        )
     }
 
     pub(crate) fn install_emitted(
@@ -251,35 +483,88 @@ impl CodeCache {
         guest_end: u64,
         guest_insns: u32,
         bytes: &[u8],
-        chains: &[ChainSite],
-        body_offset: u32,
+        _chains: &[ChainSite],
+        _body_offset: u32,
         cache_block: bool,
         thunk_kind: ThunkKind,
     ) -> Result<*const u8> {
-        let host_ptr = self.append_raw(bytes)?;
-        let body_addr = unsafe { host_ptr.add(body_offset as usize) };
-        if cache_block {
-            // Includes replacing a translated block at an existing PC. A
-            // transient budget-limited block never changes normal metadata.
-            self.clear_dispatch_cache();
-            self.table.insert(
-                guest_pc,
-                Entry {
-                    host_ptr,
-                    guest_start: guest_pc,
-                    guest_end: guest_end.max(guest_pc.saturating_add(4)),
-                    guest_insns: guest_insns.max(1),
-                    thunk_kind,
-                },
-            );
+        if !cache_block {
+            return self.append_raw(bytes);
         }
+        let end = guest_end.max(guest_pc.saturating_add(4));
+        self.install_block(
+            guest_pc,
+            &[(guest_pc, end)],
+            guest_insns,
+            bytes,
+            &[],
+            None,
+            thunk_kind,
+        )
+    }
 
-        // Direct patching is intentionally disabled until link slots and
-        // execution epochs are in place.  Mutable inbound JMPs can otherwise
-        // survive invalidation and jump into stale code.  The emitter emits a
-        // normal fallback return at every chain site meanwhile.
-        let _ = (body_addr, chains);
-
+    /// Publishes a translated block.  Cached blocks become dispatch targets
+    /// and link with their neighbours; capped blocks are only reusable for
+    /// the same (pc, cap) pair.
+    pub(crate) fn install_block(
+        &mut self,
+        guest_pc: u64,
+        ranges: &[(u64, u64)],
+        guest_insns: u32,
+        bytes: &[u8],
+        chains: &[ChainSite],
+        cap: Option<u32>,
+        thunk_kind: ThunkKind,
+    ) -> Result<*const u8> {
+        let host_ptr = self.append_raw(bytes)?;
+        let ranges: SmallVec<[(u64, u64); 4]> = if ranges.is_empty() {
+            smallvec::smallvec![(guest_pc, guest_pc.saturating_add(4))]
+        } else {
+            ranges
+                .iter()
+                .map(|&(s, e)| if e <= s { (s, u64::MAX) } else { (s, e) })
+                .collect()
+        };
+        if let Some(cap) = cap {
+            self.capped.insert((guest_pc, cap), Capped { host_ptr, ranges });
+            return Ok(host_ptr);
+        }
+        if self.table.contains_key(&guest_pc) {
+            self.remove_block(guest_pc);
+        }
+        let mut out_sites = SmallVec::new();
+        for c in chains {
+            let site = host_ptr as usize + c.patch_offset as usize;
+            out_sites.push((c.target_pc, site));
+            self.links.entry(c.target_pc).or_default().push(site);
+            if let Some(target) = self.table.get(&c.target_pc).map(|e| e.host_ptr) {
+                self.queue_link(site, target);
+            }
+        }
+        let guest_insns = guest_insns.max(1);
+        self.table.insert(
+            guest_pc,
+            Entry {
+                host_ptr,
+                ranges,
+                out_sites,
+                guest_insns,
+                thunk_kind,
+            },
+        );
+        let index = dispatch_index(guest_pc);
+        self.dispatch[index].set(DispatchSlot {
+            pc: guest_pc,
+            host: host_ptr as u64,
+        });
+        self.dispatch_meta[index].set((guest_insns, thunk_kind));
+        if let Some(sites) = self.links.get(&guest_pc) {
+            let sites: SmallVec<[usize; 8]> = sites.iter().copied().collect();
+            for site in sites {
+                self.queue_link(site, host_ptr);
+            }
+        }
+        self.flush_patches();
         Ok(host_ptr)
     }
 }
@@ -445,7 +730,7 @@ mod tests {
         assert_eq!(unsafe { call(&cache, transient) }, 48);
         cache.reset().unwrap();
         assert_eq!(cache.table.len(), 0);
-        assert_eq!(cache.pending.len(), 0);
+        assert_eq!(cache.links.len(), 0);
         let replacement = cache
             .install(0x1000, 0x1004, 1, &return_value(49), &[], 0, true)
             .unwrap();

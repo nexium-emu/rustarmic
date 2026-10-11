@@ -132,6 +132,22 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDMISC) -> Result<InstStatus> 
         });
     }
 
+    // Reserved arrangements (1D integer, 1D double, NOT beyond .B).
+    let reserved = match kind {
+        Kind::Neg | Kind::CmEq0 | Kind::CmGt0 | Kind::CmGe0 | Kind::CmLe0 | Kind::CmLt0 => {
+            size == 3 && !q
+        }
+        Kind::Not => size != 0,
+        Kind::FNeg | Kind::FAbs | Kind::FSqrt => bit(raw, 22) == 1 && !q,
+        _ => false,
+    };
+    if reserved {
+        return Err(Error::Unsupported {
+            pc: em.current_pc,
+            opcode: raw,
+        });
+    }
+
     let vn = em.get_v_q(rn);
     let result = match kind {
         Kind::Neg => em.vec_neg(vn, size, q),

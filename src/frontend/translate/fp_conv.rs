@@ -37,6 +37,21 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: FLOAT2INT) -> Result<InstStatus> 
         FMOV_Fd_S_S_Rn_W(i) => i.0,
         FMOV_Rd_Fn(i) => i.0,
         FMOV_Rd_W_Fn_S_S(i) => i.0,
+        FMOV_Rd_VnD1(i) => {
+            let rn = bits(i.0, 5, 5) as u8;
+            let q = em.get_v_q(rn);
+            let hi = em.vec_extract_hi64(q);
+            em.set_x(bits(i.0, 0, 5) as u8, hi);
+            return Ok(InstStatus::Continue);
+        }
+        FMOV_VdD1_Rn(i) => {
+            let rd = bits(i.0, 0, 5) as u8;
+            let x = em.get_x(bits(i.0, 5, 5) as u8);
+            let old = em.get_v_q(rd);
+            let new = em.vec_ins_gpr(old, x, 3, 1, true);
+            em.set_v_q(rd, new);
+            return Ok(InstStatus::Continue);
+        }
         _ => {
             return Err(Error::Unsupported {
                 pc: em.current_pc,
@@ -64,6 +79,13 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: FLOAT2INT) -> Result<InstStatus> 
             });
         }
     };
+
+    if rmode == 0b00 && (opcode == 0b110 || opcode == 0b111) && (sf == 1) != is_double {
+        return Err(Error::Unsupported {
+            pc: em.current_pc,
+            opcode: raw,
+        });
+    }
 
     match (rmode, opcode) {
         (0b11, 0b000 | 0b001) => return translate_float_to_int(em, raw, 0),

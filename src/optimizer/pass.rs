@@ -47,6 +47,9 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
     let mut reach_v: [ValueRef; 32] = [ValueRef::NONE; 32];
 
     let mut last_setx: [ValueRef; NUM_GPRS] = [ValueRef::NONE; NUM_GPRS];
+    // First GetX of each register since its last write, so repeated reads
+    // share one load.  Guest registers change only through SetX / SetW.
+    let mut first_getx: [ValueRef; NUM_GPRS] = [ValueRef::NONE; NUM_GPRS];
     let mut last_set_sp: ValueRef = ValueRef::NONE;
     let mut last_set_nzcv: ValueRef = ValueRef::NONE;
 
@@ -88,8 +91,11 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
                     let def = reach_x[reg];
                     if def.is_some() {
                         a.become_identity(def);
+                    } else if first_getx[reg].is_some() {
+                        a.become_identity(first_getx[reg]);
                     } else {
                         last_setx[reg] = ValueRef::NONE;
+                        first_getx[reg] = vr;
                     }
                 }
             }
@@ -143,6 +149,7 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
                     }
                     reach_x[reg] = a.args[0];
                     last_setx[reg] = vr;
+                    first_getx[reg] = ValueRef::NONE;
                 }
             }
             Op::SetW => {
@@ -159,6 +166,7 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
                     // zero-extension value exists in IR.
                     reach_x[reg] = ValueRef::NONE;
                     last_setx[reg] = vr;
+                    first_getx[reg] = ValueRef::NONE;
                 }
             }
             Op::SetSp => {
@@ -182,6 +190,8 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
             | Op::AddsFlags64
             | Op::SubsFlags32
             | Op::SubsFlags64
+            | Op::LogicFlags32
+            | Op::LogicFlags64
             | Op::Adcs32
             | Op::Adcs64
             | Op::Sbcs32
@@ -426,9 +436,11 @@ fn simplify_terminal(block: &mut Block, consts: &[Option<u64>]) {
         Terminal::CompareBranchZero {
             value,
             inverse,
+            is_64,
             taken_pc,
             not_taken_pc,
         } => const_of(value).map(|v| {
+            let v = if is_64 { v } else { v & 0xFFFF_FFFF };
             let take = (v == 0) ^ inverse;
             Terminal::DirectBranch {
                 target_pc: if take { taken_pc } else { not_taken_pc },
@@ -833,6 +845,32 @@ mod tests {
     use crate::ir::IrEmitter;
 
     #[test]
+    fn repeated_getx_shares_the_first_load_until_a_write() {
+        let mut block = Block::new(0x1000);
+        let mut em = IrEmitter::new(&mut block, 0x1000);
+        let a = em.get_x(1);
+        let b = em.get_x(1);
+        let s = em.add(a, b, RegSize::X);
+        em.set_x(2, s);
+        em.set_w(1, s);
+        let c = em.get_x(1);
+        let d = em.get_x(1);
+        let t = em.add(c, d, RegSize::X);
+        em.set_x(3, t);
+
+        optimize(&mut block);
+
+        // One context load per register state: before and after the W write.
+        let loads: Vec<ValueRef> = block
+            .iter_live()
+            .filter(|(_, x)| x.op == Op::GetX && x.imm == 1)
+            .map(|(v, _)| v)
+            .collect();
+        assert_eq!(loads, vec![a, c]);
+        let _ = (b, d);
+    }
+
+    #[test]
     fn mul_fold_collapses_mul_shift_add_chain() {
         let mut block = Block::new(0x1000);
         let mut em = IrEmitter::new(&mut block, 0x1000);
@@ -1125,6 +1163,7 @@ mod tests {
                 .with_imm(0x2000),
         );
         block.terminal = Terminal::CompareBranchZero {
+            is_64: true,
             value: v,
             inverse: false,
             taken_pc: 0x2000,
@@ -1148,6 +1187,7 @@ mod tests {
                 .with_imm(0x2000),
         );
         block.terminal = Terminal::CompareBranchZero {
+            is_64: true,
             value: v,
             inverse: true,
             taken_pc: 0x2000,

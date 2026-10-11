@@ -142,20 +142,12 @@ pub(crate) fn ldpsw(em: &mut IrEmitter<'_>, raw: u32, mode: IdxMode) -> Result<I
 }
 
 fn fp_load_q(em: &mut IrEmitter<'_>, rt: u8, addr: crate::ir::ValueRef) {
-    let lo = em.load(addr, 8);
-    let eight = em.const_u64(8);
-    let addr_hi = em.add(addr, eight, RegSize::X);
-    let hi = em.load(addr_hi, 8);
-    let q = em.vec_build_q(lo, hi);
+    // One 16-byte access: a single callback / fastmem probe.
+    let q = em.load(addr, 16);
     em.set_v_q(rt, q);
 }
 
 fn fp_store_q(em: &mut IrEmitter<'_>, rt: u8, addr: crate::ir::ValueRef) {
     let q = em.get_v_q(rt);
-    let lo = em.vec_extract_lo64(q);
-    let hi = em.vec_extract_hi64(q);
-    em.store(addr, lo, 8);
-    let eight = em.const_u64(8);
-    let addr_hi = em.add(addr, eight, RegSize::X);
-    em.store(addr_hi, hi, 8);
+    em.store(addr, q, 16);
 }

@@ -20,6 +20,9 @@ pub enum Terminal {
     CompareBranchZero {
         value: ValueRef,
         inverse: bool,
+        /// CBZ/CBNZ on an X register.  W forms test only the low 32 bits:
+        /// the optimizer may forward a 64-bit definition into a W read.
+        is_64: bool,
         taken_pc: u64,
         not_taken_pc: u64,
     },
@@ -58,6 +61,13 @@ pub struct Block {
     pub tail: u32,
     pub cycles: u32,
     pub use_fastmem: bool,
+    /// Page-table fastmem address width (0 = disabled); see `JitConfig`.
+    pub fastmem_page_bits: u8,
+    /// Emit the inline dispatch-table probe for indirect branches.
+    pub link_indirect: bool,
+    /// Guest ranges `[start, end)` this block was translated from.  More
+    /// than one when translation followed an unconditional branch.
+    pub ranges: smallvec::SmallVec<[(u64, u64); 4]>,
 }
 
 impl Block {
@@ -76,6 +86,9 @@ impl Block {
             tail: LINK_NONE,
             cycles: 0,
             use_fastmem: false,
+            fastmem_page_bits: 0,
+            link_indirect: false,
+            ranges: smallvec::SmallVec::new(),
         }
     }
 
@@ -88,6 +101,26 @@ impl Block {
         self.head = LINK_NONE;
         self.tail = LINK_NONE;
         self.cycles = 0;
+        self.ranges.clear();
+    }
+
+    /// Snapshot of the append position, for [`Block::rollback`].
+    pub fn mark(&self) -> (usize, u32) {
+        (self.code.len(), self.tail)
+    }
+
+    /// Drops every armlet appended after `mark` was taken.  Only valid
+    /// while nothing but `push` has modified the block since the mark
+    /// (translation, before optimisation).
+    pub fn rollback(&mut self, mark: (usize, u32)) {
+        let (len, tail) = mark;
+        self.code.truncate(len);
+        self.tail = tail;
+        if tail == LINK_NONE {
+            self.head = LINK_NONE;
+        } else {
+            self.code[tail as usize].next = LINK_NONE;
+        }
     }
 
     #[inline]
