@@ -232,8 +232,6 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDMISC) -> Result<InstStatus> 
     Ok(InstStatus::Continue)
 }
 
-// Arm CLZ/CLS (vector): lane widths are8/16/32, never64. Reuse the native
-// scalar CLZ32 lowerer (feature-gated LZCNT or correct BSR zero handling).
 fn translate_leading_count(em: &mut IrEmitter<'_>, raw: u32, signed: bool) -> Result<InstStatus> {
     let size = bits(raw, 22, 2);
     if size == 3 {
@@ -244,6 +242,16 @@ fn translate_leading_count(em: &mut IrEmitter<'_>, raw: u32, signed: bool) -> Re
     let rn = bits(raw, 5, 5) as u8;
     let rd = bits(raw, 0, 5) as u8;
     let source = em.get_v_q(rn);
+    if size == 1 && !signed {
+        let result = em.vec_clz16(source, q);
+        em.set_v_q(rd, result);
+        return Ok(InstStatus::Continue);
+    }
+    if size == 2 && !signed {
+        let result = em.vec_clz32(source, q);
+        em.set_v_q(rd, result);
+        return Ok(InstStatus::Continue);
+    }
     let source = if signed {
         // Invert negative lanes only. CLS(x)=CLZ(x XOR sign_mask)-1;
         // zero and minus one both produce width-1, not width.

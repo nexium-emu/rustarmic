@@ -132,6 +132,16 @@ pub fn clobbers_for_op(op: Op) -> ClobberSet {
             c.result_pinned_to_gpr = Some(gpr_id::RAX);
         }
 
+        VecClz16 => {
+            c.gpr = GprMask::RAX | GprMask::RCX;
+            c.xmm = XmmMask::XMM0 | XmmMask::XMM1;
+        }
+
+        VecClz32 => {
+            c.gpr = GprMask::RAX | GprMask::RCX;
+            c.xmm = XmmMask::XMM0 | XmmMask::XMM1 | XmmMask::XMM2;
+        }
+
         VecRev16 | VecRev32 | VecRev64 => {
             c.gpr = GprMask::RAX;
             c.xmm = XmmMask::XMM0 | XmmMask::XMM1 | XmmMask::XMM2;

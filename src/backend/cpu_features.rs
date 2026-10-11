@@ -7,6 +7,10 @@ pub struct CpuFeatures {
     pub has_sse42: bool,
     pub has_ssse3: bool,
     pub has_avx: bool,
+    pub has_avx2: bool,
+    pub has_avx512_clz16: bool,
+    pub has_avx512_clz32: bool,
+    pub prefer_avx2_clz32: bool,
     pub has_fma: bool,
     pub has_gfni: bool,
     pub has_lzcnt: bool,
@@ -47,11 +51,21 @@ pub fn with_features<T>(features: CpuFeatures, f: impl FnOnce() -> T) -> T {
 fn detect() -> CpuFeatures {
     let leaf7 = std::arch::x86_64::__cpuid_count(7, 0);
     let leaf_ext = std::arch::x86_64::__cpuid(0x80000001);
+    let avx = std::arch::is_x86_feature_detected!("avx");
+    let avx2 = std::arch::is_x86_feature_detected!("avx2");
+    let avx512_clz = avx
+        && std::arch::is_x86_feature_detected!("avx512f")
+        && std::arch::is_x86_feature_detected!("avx512cd")
+        && std::arch::is_x86_feature_detected!("avx512vl");
     CpuFeatures {
         has_sse41: std::arch::is_x86_feature_detected!("sse4.1"),
         has_sse42: std::arch::is_x86_feature_detected!("sse4.2"),
         has_ssse3: std::arch::is_x86_feature_detected!("ssse3"),
-        has_avx: std::arch::is_x86_feature_detected!("avx"),
+        has_avx: avx,
+        has_avx2: avx2,
+        has_avx512_clz16: avx512_clz && avx2,
+        has_avx512_clz32: avx512_clz,
+        prefer_avx2_clz32: false,
         has_fma: std::arch::is_x86_feature_detected!("fma"),
         has_gfni: (leaf7.ecx & (1 << 8)) != 0,
         has_lzcnt: (leaf_ext.ecx & (1 << 5)) != 0,

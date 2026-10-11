@@ -311,6 +311,22 @@ impl<'b> IrEmitter<'b> {
         )
     }
 
+    pub fn vec_clz16(&mut self, value: ValueRef, q: bool) -> ValueRef {
+        self.push(
+            Armlet::new(Op::VecClz16, Ty::U128)
+                .with_args(&[value])
+                .with_imm(q as u64),
+        )
+    }
+
+    pub fn vec_clz32(&mut self, value: ValueRef, q: bool) -> ValueRef {
+        self.push(
+            Armlet::new(Op::VecClz32, Ty::U128)
+                .with_args(&[value])
+                .with_imm(q as u64),
+        )
+    }
+
     pub fn vec_mul(&mut self, vn: ValueRef, vm: ValueRef, lane_log2: u32, q: bool) -> ValueRef {
         let op = match lane_log2 {
             0 => Op::VecMul8,

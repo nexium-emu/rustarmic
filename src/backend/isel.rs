@@ -167,6 +167,8 @@ fn dispatch_op(op: Op) -> Option<EmitFn> {
         VecNeg8 | VecNeg16 | VecNeg32 | VecNeg64 => emit_op_vec_neg,
         VecAbs8 | VecAbs16 | VecAbs32 => emit_op_vec_abs,
         VecNot => emit_op_vec_not,
+        VecClz16 => emit_op_vec_clz16,
+        VecClz32 => emit_op_vec_clz32,
 
         VecMul8 | VecMul16 | VecMul32 | VecMul64 => emit_op_vec_mul,
 
@@ -1155,6 +1157,104 @@ fn broadcast_byte_mask(asm: &mut CodeAssembler, byte: u8) -> Result<()> {
     asm.movq(xmm1, rax)?;
     asm.punpcklqdq(xmm1, xmm1)?;
     Ok(())
+}
+
+fn emit_op_vec_clz16(
+    asm: &mut CodeAssembler,
+    block: &Block,
+    alloc: &Allocation,
+    idx: usize,
+) -> Result<()> {
+    let a = block.code[idx];
+    let destination = dst_of(&a, idx).unwrap();
+    let q = a.imm & 1 != 0;
+    let features = super::cpu_features::active_features();
+    into_xmm_q(asm, alloc, a.args[0], xmm0)?;
+    if features.has_avx512_clz16 {
+        asm.vpmovzxwd(ymm0, xmm0)?;
+        asm.vplzcntd(ymm0, ymm0)?;
+        asm.vpmovdw(xmm0, ymm0)?;
+        asm.vzeroupper()?;
+        asm.pcmpeqw(xmm1, xmm1)?;
+        asm.psllw(xmm1, 4u32)?;
+        asm.paddw(xmm0, xmm1)?;
+    } else {
+        asm.pxor(xmm1, xmm1)?;
+        for lane in 0..if q { 8 } else { 4 } {
+            asm.pextrw(eax, xmm0, lane)?;
+            if features.has_lzcnt {
+                asm.lzcnt(eax, eax)?;
+            } else {
+                clz32_bsr(asm)?;
+            }
+            asm.sub(eax, 16i32)?;
+            asm.pinsrw(xmm1, eax, lane)?;
+        }
+        asm.movdqa(xmm0, xmm1)?;
+    }
+    if !q {
+        asm.movq(xmm0, xmm0)?;
+    }
+    store_xmm_q(asm, alloc, destination, xmm0)
+}
+
+fn emit_op_vec_clz32(
+    asm: &mut CodeAssembler,
+    block: &Block,
+    alloc: &Allocation,
+    idx: usize,
+) -> Result<()> {
+    let a = block.code[idx];
+    let destination = dst_of(&a, idx).unwrap();
+    let q = a.imm & 1 != 0;
+    let features = super::cpu_features::active_features();
+    into_xmm_q(asm, alloc, a.args[0], xmm0)?;
+    if features.has_avx512_clz32 {
+        asm.vplzcntd(xmm0, xmm0)?;
+    } else if features.has_avx2 && features.prefer_avx2_clz32 {
+        asm.sub(rsp, 16i32)?;
+        asm.stmxcsr(dword_ptr(rsp))?;
+        asm.mov(eax, dword_ptr(rsp))?;
+        asm.and(eax, !0x6000i32)?;
+        asm.or(eax, 0x7f80i32)?;
+        asm.mov(dword_ptr(rsp + 4), eax)?;
+        asm.ldmxcsr(dword_ptr(rsp + 4))?;
+        asm.vpsrld(xmm1, xmm0, 8u32)?;
+        asm.vpandn(xmm1, xmm1, xmm0)?;
+        asm.vcvtdq2ps(xmm0, xmm1)?;
+        asm.vpsrld(xmm0, xmm0, 23u32)?;
+        asm.mov(eax, 158i32)?;
+        asm.movd(xmm1, eax)?;
+        asm.pshufd(xmm1, xmm1, 0u32)?;
+        asm.vpsubusw(xmm0, xmm1, xmm0)?;
+        asm.mov(eax, 32i32)?;
+        asm.movd(xmm1, eax)?;
+        asm.pshufd(xmm1, xmm1, 0u32)?;
+        asm.vpminsw(xmm0, xmm0, xmm1)?;
+        asm.ldmxcsr(dword_ptr(rsp))?;
+        asm.add(rsp, 16i32)?;
+    } else {
+        asm.pxor(xmm1, xmm1)?;
+        for lane in 0..if q { 4 } else { 2 } {
+            asm.movd(eax, xmm0)?;
+            if features.has_lzcnt {
+                asm.lzcnt(eax, eax)?;
+            } else {
+                clz32_bsr(asm)?;
+            }
+            asm.movd(xmm2, eax)?;
+            if lane != 0 {
+                asm.pslldq(xmm2, lane * 4u32)?;
+            }
+            asm.por(xmm1, xmm2)?;
+            asm.psrldq(xmm0, 4u32)?;
+        }
+        asm.movdqa(xmm0, xmm1)?;
+    }
+    if !q {
+        asm.movq(xmm0, xmm0)?;
+    }
+    store_xmm_q(asm, alloc, destination, xmm0)
 }
 
 fn emit_op_vec_shl_imm(

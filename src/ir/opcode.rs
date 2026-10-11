@@ -529,6 +529,8 @@ pub enum Op {
     Sha256Schedule1 = 0x76C,
     ScalarFpPair32 = 0x770,
     ScalarFpPair64 = 0x771,
+    VecClz16 = 0x781,
+    VecClz32 = 0x785,
 
     Mrs = 0x700,
     Msr = 0x704,
