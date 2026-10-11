@@ -2384,11 +2384,32 @@ fn emit_rev_with_mask(
     let working = working_xmm_for(alloc, d, xmm0);
     into_xmm_q(asm, alloc, a.args[0], working)?;
 
-    asm.mov(rax, mask_lo as i64)?;
-    asm.movq(xmm1, rax)?;
-    asm.mov(rax, mask_hi as i64)?;
-    asm.pinsrq(xmm1, rax, 1)?;
-    asm.pshufb(working, xmm1)?;
+    let features = super::cpu_features::active_features();
+    if features.has_avx || features.has_ssse3 {
+        asm.mov(rax, mask_lo as i64)?;
+        asm.movq(xmm1, rax)?;
+        asm.mov(rax, mask_hi as i64)?;
+        asm.movq(xmm2, rax)?;
+        asm.punpcklqdq(xmm1, xmm2)?;
+        if features.has_avx {
+            asm.vpshufb(working, working, xmm1)?;
+        } else {
+            asm.pshufb(working, xmm1)?;
+        }
+    } else {
+        if (a.imm >> 2) & 3 == 0 {
+            asm.movdqa(xmm1, working)?;
+            asm.psllw(working, 8u32)?;
+            asm.psrlw(xmm1, 8u32)?;
+            asm.por(working, xmm1)?;
+        }
+        let mut shuffle = 0u32;
+        for word in 0..4 {
+            shuffle |= ((((mask_lo >> (word * 16)) & 0xff) / 2) as u32) << (word * 2);
+        }
+        asm.pshuflw(working, working, shuffle)?;
+        asm.pshufhw(working, working, shuffle)?;
+    }
 
     if !q_form {
         asm.movq(working, working)?;
