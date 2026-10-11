@@ -52,7 +52,7 @@ enum Kind {
     FMinp,
 }
 
-fn translate_minmax_number(em: &mut IrEmitter<'_>, raw: u32, minimum: bool) -> Result<InstStatus> {
+fn translate_minmax_number(em: &mut IrEmitter<'_>, raw: u32, minimum: bool, pairwise: bool) -> Result<InstStatus> {
     let double = bit(raw, 22) != 0;
     let q = bit(raw, 30) != 0;
     if double && !q {
@@ -61,8 +61,15 @@ fn translate_minmax_number(em: &mut IrEmitter<'_>, raw: u32, minimum: bool) -> R
     let rn = bits(raw, 5, 5) as u8;
     let rm = bits(raw, 16, 5) as u8;
     let rd = bits(raw, 0, 5) as u8;
-    let n = em.get_v_q(rn);
-    let m = em.get_v_q(rm);
+    let mut n = em.get_v_q(rn);
+    let mut m = em.get_v_q(rm);
+    if pairwise {
+        let original_n = n;
+        let original_m = m;
+        let size = if double { 3 } else { 2 };
+        n = em.vec_uzp1(original_n, original_m, size, q);
+        m = em.vec_uzp2(original_n, original_m, size, q);
+    }
     let zero = em.const_u64(0);
     let mut result = em.vec_build_q(zero, zero);
     for lane in 0..if double || !q { 2 } else { 4 } {
@@ -142,8 +149,8 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDSAME) -> Result<InstStatus> 
         UQSUB_Vd_Vn_Vm(i) => return translate_saturating_binary(em, i.0, false, true, true),
         FACGE_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => return translate_absolute_compare(em, i.0, false, false),
         FACGT_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => return translate_absolute_compare(em, i.0, false, true),
-        FMINNM_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => return translate_minmax_number(em, i.0, true),
-        FMAXNM_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => return translate_minmax_number(em, i.0, false),
+        FMINNM_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => return translate_minmax_number(em, i.0, true, false),
+        FMAXNM_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => return translate_minmax_number(em, i.0, false, false),
         CMTST_Vd_Vn_Vm(i) => return translate_cmtst(em, i.0, false),
         FRSQRTS_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => return super::asimd_recip::translate(em, i.0, false, true),
         FRECPS_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => return super::asimd_recip::translate_reciprocal(em, i.0, false, true),
@@ -177,38 +184,22 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDSAME) -> Result<InstStatus> 
         UMAXP_Vd_Vn_Vm(i) => (i.0, Kind::Umaxp),
         UMINP_Vd_Vn_Vm(i) => (i.0, Kind::Uminp),
         FADDP_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => (i.0, Kind::FAddp),
-        FADDP_Vd_Vn_Vm(i) => (i.0, Kind::FAddp),
         FMAXP_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => (i.0, Kind::FMaxp),
-        FMAXP_Vd_Vn_Vm(i) => (i.0, Kind::FMaxp),
         FMINP_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => (i.0, Kind::FMinp),
-        FMINP_Vd_Vn_Vm(i) => (i.0, Kind::FMinp),
-        FMAXNMP_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => (i.0, Kind::FMaxp),
-        FMAXNMP_Vd_Vn_Vm(i) => (i.0, Kind::FMaxp),
-        FMINNMP_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => (i.0, Kind::FMinp),
-        FMINNMP_Vd_Vn_Vm(i) => (i.0, Kind::FMinp),
+        FMAXNMP_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => return translate_minmax_number(em, i.0, false, true),
+        FMINNMP_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => return translate_minmax_number(em, i.0, true, true),
         FADD_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => (i.0, Kind::FAdd),
-        FADD_Vd_Vn_Vm(i) => (i.0, Kind::FAdd),
         FSUB_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => (i.0, Kind::FSub),
-        FSUB_Vd_Vn_Vm(i) => (i.0, Kind::FSub),
         FABD_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => return super::asimd_recip::translate_absolute_difference(em, i.0, false),
         FMUL_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => (i.0, Kind::FMul),
-        FMUL_Vd_Vn_Vm(i) => (i.0, Kind::FMul),
         FDIV_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => (i.0, Kind::FDiv),
-        FDIV_Vd_Vn_Vm(i) => (i.0, Kind::FDiv),
         FMAX_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => (i.0, Kind::FMax),
-        FMAX_Vd_Vn_Vm(i) => (i.0, Kind::FMax),
         FMIN_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => (i.0, Kind::FMin),
-        FMIN_Vd_Vn_Vm(i) => (i.0, Kind::FMin),
         FCMEQ_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => (i.0, Kind::FCmEq),
-        FCMEQ_Vd_Vn_Vm(i) => (i.0, Kind::FCmEq),
         FCMGT_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => (i.0, Kind::FCmGt),
-        FCMGT_Vd_Vn_Vm(i) => (i.0, Kind::FCmGt),
         FCMGE_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => (i.0, Kind::FCmGe),
-        FCMGE_Vd_Vn_Vm(i) => (i.0, Kind::FCmGe),
         FMLA_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => (i.0, Kind::FMla),
-        FMLA_Vd_Vn_Vm(i) => (i.0, Kind::FMla),
         FMLS_Vd_V_2S_Vn_V_2S_Vm_V_2S(i) => (i.0, Kind::FMls),
-        FMLS_Vd_Vn_Vm(i) => (i.0, Kind::FMls),
         _ => {
             return Err(Error::Unsupported {
                 pc: em.current_pc,
