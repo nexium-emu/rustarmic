@@ -18,6 +18,8 @@ enum Kind {
 pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDSHF) -> Result<InstStatus> {
     use ASIMDSHF::*;
     let (raw, kind) = match insn {
+        SLI_Vd_Vn_IMM_VLSL(i) => return translate_insert(em, i.0, false, true),
+        SRI_Vd_Vn_IMM_VLSR(i) => return translate_insert(em, i.0, false, false),
         SSHLL_Vd_Vn_IMM_VLSL(i) => return translate_widen_shift(em, i.0, true),
         SSHLL2_Vd_Vn_IMM_VLSL(i) => return translate_widen_shift(em, i.0, true),
         USHLL_Vd_Vn_IMM_VLSL(i) => return translate_widen_shift(em, i.0, false),
@@ -103,6 +105,8 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDSHF) -> Result<InstStatus> {
 
 pub fn translate_scalar(em: &mut IrEmitter<'_>, insn: ASISDSHF) -> Result<InstStatus> {
     match insn {
+        ASISDSHF::SLI_Sd_Sn_IMM_VLSL(i) => translate_insert(em, i.0, true, true),
+        ASISDSHF::SRI_Sd_Sn_IMM_VLSR(i) => translate_insert(em, i.0, true, false),
         ASISDSHF::SSRA_Sd_Sn_IMM_VLSR(i) => translate_accumulate(em, i.0, true, true),
         ASISDSHF::USRA_Sd_Sn_IMM_VLSR(i) => translate_accumulate(em, i.0, true, false),
         ASISDSHF::SRSHR_Sd_Sn_IMM_VLSR(i) => translate_right(em, i.0, true, true, true, false),
@@ -138,6 +142,56 @@ pub fn translate_scalar(em: &mut IrEmitter<'_>, insn: ASISDSHF) -> Result<InstSt
             opcode: 0,
         }),
     }
+}
+
+fn translate_insert(
+    em: &mut IrEmitter<'_>, raw: u32, scalar: bool, left: bool,
+) -> Result<InstStatus> {
+    let immh = bits(raw, 19, 4);
+    let q = bit(raw, 30) != 0;
+    if immh == 0 || (scalar && immh & 8 == 0) || (!scalar && immh & 8 != 0 && !q) {
+        return Err(Error::Unsupported { pc: em.current_pc, opcode: raw });
+    }
+    let size = 31 - immh.leading_zeros();
+    let width = 8u32 << size;
+    let immediate = bits(raw, 16, 7);
+    let shift = if left { immediate - width } else { 2 * width - immediate };
+    let lane_mask = u64::MAX >> (64 - width);
+    let preserved_mask = if left {
+        (1u64 << shift) - 1
+    } else if shift == 64 {
+        u64::MAX
+    } else {
+        lane_mask ^ (lane_mask >> shift)
+    };
+    let rn = bits(raw, 5, 5) as u8;
+    let rd = bits(raw, 0, 5) as u8;
+    if scalar {
+        let source = em.get_v_d(rn);
+        let old = em.get_v_d(rd);
+        let shifted = if !left && shift == 64 {
+            em.const_u64(0)
+        } else {
+            let amount = em.const_u64(shift as u64);
+            if left { em.lsl(source, amount, RegSize::X) }
+            else { em.lsr(source, amount, RegSize::X) }
+        };
+        let mask = em.const_u64(preserved_mask);
+        let retained = em.and(old, mask, RegSize::X);
+        let result = em.or(shifted, retained, RegSize::X);
+        em.set_v_d(rd, result);
+    } else {
+        let source = em.get_v_q(rn);
+        let old = em.get_v_q(rd);
+        let shifted = if left { em.vec_shl_imm(source, size, shift, q) }
+            else { em.vec_ushr_imm(source, size, shift, q) };
+        let mask = em.const_u64(preserved_mask);
+        let mask = em.vec_dup_gpr(mask, size, q);
+        let retained = em.vec_and(old, mask, q);
+        let result = em.vec_orr(shifted, retained, q);
+        em.set_v_q(rd, result);
+    }
+    Ok(InstStatus::Continue)
 }
 
 // Arm SSRA/USRA (ISA111181/2025-09_ASL1): each lane adds a truncated
