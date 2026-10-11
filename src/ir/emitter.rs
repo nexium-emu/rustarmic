@@ -311,6 +311,21 @@ impl<'b> IrEmitter<'b> {
         )
     }
 
+    pub fn vec_bit_affine(
+        &mut self,
+        value: ValueRef,
+        matrix: u64,
+        addend: u8,
+        q: bool,
+    ) -> ValueRef {
+        let matrix = self.const_u64(matrix);
+        self.push(
+            Armlet::new(Op::VecBitAffine, Ty::U128)
+                .with_args(&[value, matrix])
+                .with_imm(((addend as u64) << 8) | q as u64),
+        )
+    }
+
     pub fn vec_clz16(&mut self, value: ValueRef, q: bool) -> ValueRef {
         self.push(
             Armlet::new(Op::VecClz16, Ty::U128)

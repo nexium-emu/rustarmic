@@ -167,6 +167,7 @@ fn dispatch_op(op: Op) -> Option<EmitFn> {
         VecNeg8 | VecNeg16 | VecNeg32 | VecNeg64 => emit_op_vec_neg,
         VecAbs8 | VecAbs16 | VecAbs32 => emit_op_vec_abs,
         VecNot => emit_op_vec_not,
+        VecBitAffine => emit_op_vec_bit_affine,
         VecClz16 => emit_op_vec_clz16,
         VecClz32 => emit_op_vec_clz32,
 
@@ -1159,6 +1160,28 @@ fn broadcast_byte_mask(asm: &mut CodeAssembler, byte: u8) -> Result<()> {
     Ok(())
 }
 
+fn emit_op_vec_bit_affine(
+    asm: &mut CodeAssembler,
+    block: &Block,
+    alloc: &Allocation,
+    idx: usize,
+) -> Result<()> {
+    let a = block.code[idx];
+    let destination = dst_of(&a, idx).unwrap();
+    let matrix = block.get(a.args[1]);
+    if matrix.op != Op::ConstU64 {
+        return Err(Error::Backend(
+            "VecBitAffine requires a constant matrix".into(),
+        ));
+    }
+    into_xmm_q(asm, alloc, a.args[0], xmm0)?;
+    super::gfni::emit(asm, matrix.imm, (a.imm >> 8) as u8)?;
+    if a.imm & 1 == 0 {
+        asm.movq(xmm0, xmm0)?;
+    }
+    store_xmm_q(asm, alloc, destination, xmm0)
+}
+
 fn emit_op_vec_clz16(
     asm: &mut CodeAssembler,
     block: &Block,
@@ -1257,6 +1280,22 @@ fn emit_op_vec_clz32(
     store_xmm_q(asm, alloc, destination, xmm0)
 }
 
+fn emit_byte_shift_affine(
+    asm: &mut CodeAssembler,
+    alloc: &Allocation,
+    source: ValueRef,
+    destination: ValueRef,
+    matrix: u64,
+    q: bool,
+) -> Result<()> {
+    into_xmm_q(asm, alloc, source, xmm0)?;
+    super::gfni::emit(asm, matrix, 0)?;
+    if !q {
+        asm.movq(xmm0, xmm0)?;
+    }
+    store_xmm_q(asm, alloc, destination, xmm0)
+}
+
 fn emit_op_vec_shl_imm(
     asm: &mut CodeAssembler,
     block: &Block,
@@ -1267,6 +1306,16 @@ fn emit_op_vec_shl_imm(
     let d = dst_of(&a, idx).unwrap();
     let q_form = (a.imm & 1) != 0;
     let shift = (a.imm >> 1) as u32;
+    if a.op == Op::VecShlImm8 && super::cpu_features::active_features().has_gfni {
+        return emit_byte_shift_affine(
+            asm,
+            alloc,
+            a.args[0],
+            d,
+            super::gfni::left_shift_matrix(shift),
+            q_form,
+        );
+    }
     let working = working_xmm_for(alloc, d, xmm0);
     into_xmm_q(asm, alloc, a.args[0], working)?;
     match a.op.size_log2() {
@@ -1302,6 +1351,16 @@ fn emit_op_vec_ushr_imm(
     let d = dst_of(&a, idx).unwrap();
     let q_form = (a.imm & 1) != 0;
     let shift = (a.imm >> 1) as u32;
+    if a.op == Op::VecUshrImm8 && super::cpu_features::active_features().has_gfni {
+        return emit_byte_shift_affine(
+            asm,
+            alloc,
+            a.args[0],
+            d,
+            super::gfni::right_shift_matrix(shift, false),
+            q_form,
+        );
+    }
     let working = working_xmm_for(alloc, d, xmm0);
     into_xmm_q(asm, alloc, a.args[0], working)?;
     match a.op.size_log2() {
@@ -1337,6 +1396,16 @@ fn emit_op_vec_sshr_imm(
     let d = dst_of(&a, idx).unwrap();
     let q_form = (a.imm & 1) != 0;
     let shift = (a.imm >> 1) as u32;
+    if a.op == Op::VecSshrImm8 && super::cpu_features::active_features().has_gfni {
+        return emit_byte_shift_affine(
+            asm,
+            alloc,
+            a.args[0],
+            d,
+            super::gfni::right_shift_matrix(shift, true),
+            q_form,
+        );
+    }
     let working = working_xmm_for(alloc, d, xmm0);
     into_xmm_q(asm, alloc, a.args[0], working)?;
     match a.op.size_log2() {

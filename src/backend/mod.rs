@@ -7,6 +7,7 @@ pub mod clobbers;
 pub mod cpu_features;
 mod crypto_aes;
 mod crypto_sha256;
+pub(crate) mod gfni;
 pub mod emit;
 pub mod isel;
 pub mod operand;

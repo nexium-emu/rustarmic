@@ -7,6 +7,8 @@ use crate::ir::{Armlet, Block, Op, Terminal, Ty, ValueRef};
 pub struct Scratch {
     uses: Vec<u8>,
     consts: Vec<Option<u64>>,
+    vectors: Vec<Option<[u64; 2]>>,
+    affines: Vec<Option<super::affine::ByteMap>>,
 }
 
 impl Scratch {
@@ -19,6 +21,10 @@ impl Scratch {
         self.uses.resize(n, 0);
         self.consts.clear();
         self.consts.resize(n, None);
+        self.vectors.clear();
+        self.vectors.resize(n, None);
+        self.affines.clear();
+        self.affines.resize(n, None);
     }
 }
 
@@ -33,10 +39,12 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
         return;
     }
     scratch.resize(n);
+    super::affine::cost::seed_uses(block, &mut scratch.uses);
 
     let mut reach_x: [ValueRef; NUM_GPRS] = [ValueRef::NONE; NUM_GPRS];
     let mut reach_sp: ValueRef = ValueRef::NONE;
     let mut reach_nzcv: ValueRef = ValueRef::NONE;
+    let mut reach_v: [ValueRef; 32] = [ValueRef::NONE; 32];
 
     let mut last_setx: [ValueRef; NUM_GPRS] = [ValueRef::NONE; NUM_GPRS];
     let mut last_set_sp: ValueRef = ValueRef::NONE;
@@ -49,6 +57,10 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
         let next_cursor = block.next_of(vr);
 
         let mut a = block.code[i];
+
+        if a.op.has_side_effects() && a.op != Op::SetV {
+            reach_v.fill(ValueRef::NONE);
+        }
 
         for slot in a.args.iter_mut() {
             if slot.is_none() {
@@ -106,6 +118,20 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
                 } else {
                     last_set_nzcv = ValueRef::NONE;
                 }
+            }
+            Op::SetV => {
+                if let Some(def) = reach_v.get_mut(a.imm as usize) {
+                    *def = if block.code[a.args[0].as_usize()].ty == Ty::U128 {
+                        a.args[0]
+                    } else {
+                        ValueRef::NONE
+                    };
+                }
+                for last in last_setx.iter_mut() {
+                    *last = ValueRef::NONE;
+                }
+                last_set_sp = ValueRef::NONE;
+                last_set_nzcv = ValueRef::NONE;
             }
 
             Op::SetX => {
@@ -259,12 +285,73 @@ pub fn optimize_with_scratch(block: &mut Block, scratch: &mut Scratch) {
             _ => {}
         }
 
+        scratch.vectors.resize(n, None);
+        scratch.affines.resize(n, None);
+        let recognized = super::affine::recognize(&a, block, &scratch.consts, &scratch.vectors);
+        let forwarded = if a.op == Op::GetV && a.ty == Ty::U128 {
+            reach_v.get(a.imm as usize).copied().filter(|value| value.is_some())
+        } else {
+            None
+        };
+        scratch.vectors[i] = if let Some(source) = forwarded {
+            scratch.vectors.get(source.as_usize()).copied().flatten()
+        } else {
+            super::affine::vector_constant(
+                &a,
+                block,
+                &scratch.consts,
+                &scratch.vectors,
+                recognized,
+            )
+        };
+        if let Some(mut map) = recognized {
+            let mut replacement = None;
+            if let Some(inner) = scratch.affines.get(map.source.as_usize()).copied().flatten() {
+                if let Some(composed) = super::affine::compose(map, inner) {
+                    if super::affine::cost::worthwhile(&a, block, &scratch.uses, &scratch.vectors, map, composed, Some(inner)) {
+                        replacement = Some(composed);
+                    }
+                }
+            }
+            if replacement.is_none() && matches!(a.op, Op::VecUshl8 | Op::VecSshl8)
+                && super::affine::cost::worthwhile(&a, block, &scratch.uses, &scratch.vectors, map, map, None)
+            {
+                replacement = Some(map);
+            }
+            if let Some(composed) = replacement {
+                if block.code.len() < Block::MAX_NODES {
+                    map = composed;
+                    let mut matrix_node = Armlet::new(Op::ConstU64, Ty::U64).with_imm(map.matrix);
+                    matrix_node.pc = a.pc;
+                    let matrix = block.insert_before(vr, matrix_node);
+                    a.prev = block.code[i].prev;
+                    a.op = Op::VecBitAffine;
+                    a.args = [map.source, matrix, ValueRef::NONE, ValueRef::NONE];
+                    a.imm = ((map.addend as u64) << 8) | u64::from(map.q);
+                    n = block.code.len();
+                    scratch.consts.resize(n, None);
+                    scratch.uses.resize(n, 0);
+                    scratch.vectors.resize(n, None);
+                    scratch.affines.resize(n, None);
+                    scratch.consts[matrix.as_usize()] = Some(map.matrix);
+                    scratch.uses[matrix.as_usize()] = 1;
+                    scratch.uses[map.source.as_usize()] = scratch.uses[map.source.as_usize()].saturating_add(1);
+                }
+            }
+            scratch.affines[i] = Some(map);
+        } else if a.op == Op::Identity && a.ty == Ty::U128 {
+            scratch.affines[i] = scratch.affines.get(a.args[0].as_usize()).copied().flatten();
+        } else if let Some(source) = forwarded {
+            scratch.affines[i] = scratch.affines.get(source.as_usize()).copied().flatten();
+        }
+
         block.code[i] = a;
         cursor = next_cursor;
     }
 
     simplify_terminal(block, &scratch.consts);
     n = block.code.len();
+    scratch.uses.fill(0);
 
     let mut cursor = block.head_vr();
     while let Some(vr) = cursor {

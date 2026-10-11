@@ -58,6 +58,14 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDMISC) -> Result<InstStatus> 
         SHLL2_Vd_Vn_SHLL_IMM(i) => return translate_shift_left_width(em, i.0),
         CLZ_Vd_Vn(i) => return translate_leading_count(em, i.0, false),
         CLS_Vd_Vn(i) => return translate_leading_count(em, i.0, true),
+        RBIT_Vd_Vn(i) => {
+            let raw = i.0;
+            let source = em.get_v_q(bits(raw, 5, 5) as u8);
+            let result =
+                em.vec_bit_affine(source, 0x8040_2010_0804_0201, 0, bit(raw, 30) != 0);
+            em.set_v_q(bits(raw, 0, 5) as u8, result);
+            return Ok(InstStatus::Continue);
+        }
         FCVTL_Vd_Vn(i) => return super::asimd_widen::translate(em, i.0),
         FCVTL2_Vd_Vn(i) => return super::asimd_widen::translate(em, i.0),
         FRSQRTE_Vd_Vn(i) => return super::asimd_recip::translate(em, i.0, false, false),
