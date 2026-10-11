@@ -1618,14 +1618,17 @@ fn emit_op_vec_ext(
     let d = dst_of(&a, idx).unwrap();
     let q_form = (a.imm & 1) != 0;
     let byte_off = (a.imm >> 1) as i32;
-    let working = working_xmm_for(alloc, d, xmm0);
-    into_xmm_q(asm, alloc, a.args[1], working)?;
-    let vn = get_xmm_q(asm, alloc, a.args[0], xmm1)?;
-    asm.palignr(working, vn, byte_off)?;
-    if !q_form {
-        asm.movq(working, working)?;
+    into_xmm_q(asm, alloc, a.args[0], xmm0)?;
+    into_xmm_q(asm, alloc, a.args[1], xmm1)?;
+    if q_form {
+        asm.palignr(xmm1, xmm0, byte_off)?;
+        store_xmm_q(asm, alloc, d, xmm1)
+    } else {
+        asm.punpcklqdq(xmm0, xmm1)?;
+        asm.psrldq(xmm0, byte_off)?;
+        asm.movq(xmm0, xmm0)?;
+        store_xmm_q(asm, alloc, d, xmm0)
     }
-    store_xmm_q(asm, alloc, d, working)
 }
 
 fn emit_op_vec_zip1(
