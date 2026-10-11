@@ -67,6 +67,12 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDSHF) -> Result<InstStatus> {
             opcode: raw,
         });
     }
+    if immh & 8 != 0 && (matches!(kind, Kind::Shrn | Kind::Shrn2) || !q) {
+        return Err(Error::Unsupported {
+            pc: em.current_pc,
+            opcode: raw,
+        });
+    }
     let lane_log2 = if (immh & 0b1000) != 0 {
         3
     } else if (immh & 0b0100) != 0 {
