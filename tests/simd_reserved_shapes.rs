@@ -102,3 +102,27 @@ fn decoder_accepted_reserved_shrn_words_return_unsupported_before_any_ir() {
         assert_eq!(block.len(), 1);
     }
 }
+
+#[test]
+fn reserved_cnt_sizes_and_q0_ext_indexes_are_rejected_before_ir() {
+    let mut words = Vec::new();
+    for q in [false, true] {
+        for size in 1..4u32 {
+            words.push(0x0e20_5800 | (u32::from(q) << 30) | (size << 22) | (2 << 5) | 1);
+        }
+    }
+    for imm4 in 8..16u32 {
+        words.push(0x2e00_0000 | (3 << 16) | (imm4 << 11) | (2 << 5) | 1);
+    }
+    for raw in words {
+        let mut block = Block::new(PC);
+        let result = translate_instruction(&mut IrEmitter::new(&mut block, PC), raw);
+        check_failure(result.unwrap_err(), raw, false);
+        assert_eq!(block.len(), 1, "{raw:08x}");
+    }
+    for raw in [0x0e20_5841u32, 0x4e20_5841, 0x2e03_3841, 0x6e03_7841] {
+        let mut block = Block::new(PC);
+        let result = translate_instruction(&mut IrEmitter::new(&mut block, PC), raw);
+        assert_eq!(result.unwrap(), InstStatus::Continue, "{raw:08x}");
+    }
+}

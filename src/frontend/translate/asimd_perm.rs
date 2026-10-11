@@ -1,6 +1,6 @@
 use disarm64::decoder::{ASIMDEXT, ASIMDPERM};
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::frontend::translator::InstStatus;
 use crate::ir::IrEmitter;
 use crate::util::bits::{bit, bits};
@@ -16,11 +16,16 @@ pub fn translate_ext(em: &mut IrEmitter<'_>, insn: ASIMDEXT) -> Result<InstStatu
     let imm4 = bits(raw, 11, 4);
     let rn = bits(raw, 5, 5) as u8;
     let rd = bits(raw, 0, 5) as u8;
-    let byte_off = if q { imm4 } else { imm4 & 0x7 };
+    if !q && imm4 & 8 != 0 {
+        return Err(Error::Unsupported {
+            pc: em.current_pc,
+            opcode: raw,
+        });
+    }
 
     let vn = em.get_v_q(rn);
     let vm = em.get_v_q(rm);
-    let result = em.vec_ext(vn, vm, byte_off, q);
+    let result = em.vec_ext(vn, vm, imm4, q);
     em.set_v_q(rd, result);
     Ok(InstStatus::Continue)
 }

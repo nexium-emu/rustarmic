@@ -125,6 +125,12 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ASIMDMISC) -> Result<InstStatus> 
     let size = bits(raw, 22, 2);
     let rn = bits(raw, 5, 5) as u8;
     let rd = bits(raw, 0, 5) as u8;
+    if matches!(kind, Kind::Cnt) && size != 0 {
+        return Err(Error::Unsupported {
+            pc: em.current_pc,
+            opcode: raw,
+        });
+    }
 
     let vn = em.get_v_q(rn);
     let result = match kind {
