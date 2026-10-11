@@ -342,6 +342,11 @@ impl<'b> IrEmitter<'b> {
         )
     }
 
+    pub fn sm4_rounds(&mut self, state: ValueRef, keys: ValueRef, key_schedule: bool) -> ValueRef {
+        let op = if key_schedule { Op::Sm4KeySchedule } else { Op::Sm4Encrypt };
+        self.push(Armlet::new(op, Ty::U128).with_args(&[state, keys]))
+    }
+
     pub fn vec_mul(&mut self, vn: ValueRef, vm: ValueRef, lane_log2: u32, q: bool) -> ValueRef {
         let op = match lane_log2 {
             0 => Op::VecMul8,

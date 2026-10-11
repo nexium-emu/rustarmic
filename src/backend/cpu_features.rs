@@ -16,6 +16,7 @@ pub struct CpuFeatures {
     pub has_lzcnt: bool,
     pub has_aesni: bool,
     pub has_shani: bool,
+    pub has_sm4: bool,
 }
 
 static FEATURES: OnceLock<CpuFeatures> = OnceLock::new();
@@ -49,6 +50,7 @@ pub fn with_features<T>(features: CpuFeatures, f: impl FnOnce() -> T) -> T {
 
 #[cfg(target_arch = "x86_64")]
 fn detect() -> CpuFeatures {
+    let basic_max = std::arch::x86_64::__cpuid(0).eax;
     let leaf7 = std::arch::x86_64::__cpuid_count(7, 0);
     let leaf_ext = std::arch::x86_64::__cpuid(0x80000001);
     let avx = std::arch::is_x86_feature_detected!("avx");
@@ -57,6 +59,9 @@ fn detect() -> CpuFeatures {
         && std::arch::is_x86_feature_detected!("avx512f")
         && std::arch::is_x86_feature_detected!("avx512cd")
         && std::arch::is_x86_feature_detected!("avx512vl");
+    let sm4 = basic_max >= 7
+        && leaf7.eax >= 1
+        && std::arch::x86_64::__cpuid_count(7, 1).eax & (1 << 2) != 0;
     CpuFeatures {
         has_sse41: std::arch::is_x86_feature_detected!("sse4.1"),
         has_sse42: std::arch::is_x86_feature_detected!("sse4.2"),
@@ -71,6 +76,7 @@ fn detect() -> CpuFeatures {
         has_lzcnt: (leaf_ext.ecx & (1 << 5)) != 0,
         has_aesni: std::arch::is_x86_feature_detected!("aes"),
         has_shani: std::arch::is_x86_feature_detected!("sha"),
+        has_sm4: avx && sm4,
     }
 }
 

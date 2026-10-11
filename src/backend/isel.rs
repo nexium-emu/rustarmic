@@ -128,6 +128,7 @@ fn dispatch_op(op: Op) -> Option<EmitFn> {
         IntMinMaxReduce32 => emit_op_integer_reduce,
         AesEncrypt | AesDecrypt | AesMixColumns | AesInverseMixColumns => emit_op_crypto_aes,
         Sha256Hash | Sha256Hash2 | Sha256Schedule0 | Sha256Schedule1 => emit_op_crypto_sha256,
+        Sm4Encrypt | Sm4KeySchedule => emit_op_crypto_sm4,
         Fdiv32 | Fdiv64 => emit_op_fdiv,
         Fmax32 | Fmax64 => emit_op_fmax,
         Fmin32 | Fmin64 => emit_op_fmin,
@@ -3487,6 +3488,36 @@ fn emit_op_crypto_sha256(
     asm.add(rsp, CALL_PRECALL_SUB)?;
     asm.movdqu(xmm0, xmmword_ptr(rsp + 48))?;
     asm.add(rsp, 64)?;
+    store_xmm_q(asm, alloc, destination, xmm0)
+}
+
+fn emit_op_crypto_sm4(
+    asm: &mut CodeAssembler, block: &Block, alloc: &Allocation, idx: usize,
+) -> Result<()> {
+    let a = block.code[idx];
+    let destination = dst_of(&a, idx).unwrap();
+    into_xmm_q(asm, alloc, a.args[0], xmm0)?;
+    into_xmm_q(asm, alloc, a.args[1], xmm1)?;
+    if crate::backend::cpu_features::active_features().has_sm4 {
+        match a.op {
+            Op::Sm4Encrypt => asm.vsm4rnds4(xmm0, xmm0, xmm1)?,
+            Op::Sm4KeySchedule => asm.vsm4key4(xmm0, xmm0, xmm1)?,
+            _ => unreachable!(),
+        }
+    } else {
+        asm.sub(rsp, 48)?;
+        asm.movdqu(xmmword_ptr(rsp), xmm0)?;
+        asm.movdqu(xmmword_ptr(rsp + 16), xmm1)?;
+        asm.lea(ARG0_REG, ptr(rsp))?;
+        asm.lea(SCRATCH1, ptr(rsp + 32))?;
+        asm.mov(SCRATCH3, (a.op == Op::Sm4KeySchedule) as i64)?;
+        asm.sub(rsp, CALL_PRECALL_SUB)?;
+        asm.mov(rax, crate::backend::crypto_sm4::transform as *const () as usize as i64)?;
+        asm.call(rax)?;
+        asm.add(rsp, CALL_PRECALL_SUB)?;
+        asm.movdqu(xmm0, xmmword_ptr(rsp + 32))?;
+        asm.add(rsp, 48)?;
+    }
     store_xmm_q(asm, alloc, destination, xmm0)
 }
 

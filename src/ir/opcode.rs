@@ -532,6 +532,8 @@ pub enum Op {
     VecBitAffine = 0x77C,
     VecClz16 = 0x781,
     VecClz32 = 0x785,
+    Sm4Encrypt = 0x782,
+    Sm4KeySchedule = 0x783,
 
     Mrs = 0x700,
     Msr = 0x704,

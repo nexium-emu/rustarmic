@@ -216,6 +216,15 @@ pub fn clobbers_for_op(op: Op) -> ClobberSet {
             c.xmm = CALLER_SAVED_XMMS;
         }
 
+        Sm4Encrypt | Sm4KeySchedule => {
+            if crate::backend::cpu_features::active_features().has_sm4 {
+                c.xmm = XmmMask::XMM0 | XmmMask::XMM1;
+            } else {
+                c.gpr = CALLER_SAVED_GPRS;
+                c.xmm = CALLER_SAVED_XMMS;
+            }
+        }
+
         AesEncrypt | AesDecrypt | AesMixColumns | AesInverseMixColumns => {
             if crate::backend::cpu_features::active_features().has_aesni {
                 c.xmm = XmmMask::XMM0 | XmmMask::XMM1;
