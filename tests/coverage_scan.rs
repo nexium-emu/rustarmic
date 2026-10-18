@@ -12,7 +12,7 @@
 use disarm64::decoder;
 use disarm64_defn::InsnFeatureSet;
 use disarm64_defn::defn::InsnOpcode;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use rustarmic::Error;
 use rustarmic::backend::emit::emit_block;
@@ -98,7 +98,7 @@ fn scan(words: u64, seed: u64) -> BTreeMap<String, (u64, u32, String)> {
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
     let mut gaps: BTreeMap<String, (u64, u32, String)> = BTreeMap::new();
     for _ in 0..words {
-        let w: u32 = rng.r#gen();
+        let w: u32 = rng.random();
         let Some(op) = decoder::decode(w) else {
             continue;
         };

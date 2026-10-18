@@ -12,7 +12,7 @@
 //! With `--features unicorn` the programs (minus LSE, which Unicorn's CPU
 //! model lacks) are additionally checked against Unicorn.
 
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use rustarmic::jit::context::{PAGE_DIRECT_READ, PAGE_DIRECT_WRITE};
 use rustarmic::{CpuContext, ExitReason, Jit, JitConfig, Memory};
@@ -117,15 +117,15 @@ struct Gen<'a> {
 }
 
 fn reg(rng: &mut ChaCha8Rng) -> u32 {
-    rng.gen_range(0..16)
+    rng.random_range(0..16)
 }
 
 /// A valid logical-immediate encoding (N, immr, imms) for width `sf`.
 fn bitmask_imm(rng: &mut ChaCha8Rng, sf: u32) -> (u32, u32, u32) {
     let sizes: &[u32] = if sf == 1 { &[2, 4, 8, 16, 32, 64] } else { &[2, 4, 8, 16, 32] };
-    let e = sizes[rng.gen_range(0..sizes.len())];
-    let ones = rng.gen_range(1..e);
-    let immr = rng.gen_range(0..e);
+    let e = sizes[rng.random_range(0..sizes.len())];
+    let ones = rng.random_range(1..e);
+    let immr = rng.random_range(0..e);
     let (n, prefix) = match e {
         64 => (1, 0),
         32 => (0, 0b000000),
@@ -139,54 +139,54 @@ fn bitmask_imm(rng: &mut ChaCha8Rng, sf: u32) -> (u32, u32, u32) {
 
 impl Gen<'_> {
     fn cond(&mut self) -> u32 {
-        self.rng.gen_range(0..14)
+        self.rng.random_range(0..14)
     }
 
     fn alu(&mut self) {
         let r = &mut *self.rng;
-        let sf: u32 = r.gen_range(0..2);
+        let sf: u32 = r.random_range(0..2);
         let width = if sf == 1 { 64 } else { 32 };
         let (rd, rn, rm, ra) = (reg(r), reg(r), reg(r), reg(r));
-        let w = match r.gen_range(0..16) {
-            0 => (sf << 31) | (r.gen_range(0..2) << 30) | 0x1100_0000 | (r.gen_range(0..2) << 22)
-                | (r.gen_range(0..0x1000) << 10) | (rn << 5) | rd,
-            1 => (sf << 31) | (r.gen_range(0..2) << 30) | 0x0B00_0000 | (r.gen_range(0..3) << 22)
-                | (rm << 16) | (r.gen_range(0..width) << 10) | (rn << 5) | rd,
+        let w = match r.random_range(0..16) {
+            0 => (sf << 31) | (r.random_range(0..2) << 30) | 0x1100_0000 | (r.random_range(0..2) << 22)
+                | (r.random_range(0..0x1000) << 10) | (rn << 5) | rd,
+            1 => (sf << 31) | (r.random_range(0..2) << 30) | 0x0B00_0000 | (r.random_range(0..3) << 22)
+                | (rm << 16) | (r.random_range(0..width) << 10) | (rn << 5) | rd,
             2 => {
-                let opc = r.gen_range(0..3); // and/orr/eor
-                (sf << 31) | (opc << 29) | 0x0A00_0000 | (r.gen_range(0..4) << 22)
-                    | (r.gen_range(0..2) << 21) | (rm << 16) | (r.gen_range(0..width) << 10)
+                let opc = r.random_range(0..3); // and/orr/eor
+                (sf << 31) | (opc << 29) | 0x0A00_0000 | (r.random_range(0..4) << 22)
+                    | (r.random_range(0..2) << 21) | (rm << 16) | (r.random_range(0..width) << 10)
                     | (rn << 5) | rd
             }
             3 => {
-                let opc = r.gen_range(0..3);
+                let opc = r.random_range(0..3);
                 let (n, immr, imms) = bitmask_imm(r, sf);
                 (sf << 31) | (opc << 29) | 0x1200_0000 | (n << 22) | (immr << 16) | (imms << 10)
                     | (rn << 5) | rd
             }
-            4 => (sf << 31) | (r.gen_range(0..2) << 30) | 0x1A00_0000 | (rm << 16) | (rn << 5) | rd,
+            4 => (sf << 31) | (r.random_range(0..2) << 30) | 0x1A00_0000 | (rm << 16) | (rn << 5) | rd,
             5 => {
-                let (op, o2) = (r.gen_range(0..2), r.gen_range(0..2));
-                (sf << 31) | (op << 30) | 0x1A80_0000 | (rm << 16) | (r.gen_range(0..14) << 12)
+                let (op, o2) = (r.random_range(0..2), r.random_range(0..2));
+                (sf << 31) | (op << 30) | 0x1A80_0000 | (rm << 16) | (r.random_range(0..14) << 12)
                     | (o2 << 10) | (rn << 5) | rd
             }
-            6 => (sf << 31) | 0x1B00_0000 | (rm << 16) | (r.gen_range(0..2) << 15) | (ra << 10)
+            6 => (sf << 31) | 0x1B00_0000 | (rm << 16) | (r.random_range(0..2) << 15) | (ra << 10)
                 | (rn << 5) | rd,
-            7 => (sf << 31) | 0x1AC0_0800 | (rm << 16) | (r.gen_range(0..2) << 10) | (rn << 5) | rd,
-            8 => (sf << 31) | 0x1AC0_2000 | (rm << 16) | (r.gen_range(0..4) << 10) | (rn << 5) | rd,
+            7 => (sf << 31) | 0x1AC0_0800 | (rm << 16) | (r.random_range(0..2) << 10) | (rn << 5) | rd,
+            8 => (sf << 31) | 0x1AC0_2000 | (rm << 16) | (r.random_range(0..4) << 10) | (rn << 5) | rd,
             9 => {
-                let opc = if r.gen_bool(0.5) { 0b10 } else { 0b00 };
-                (sf << 31) | (opc << 29) | 0x1300_0000 | (sf << 22) | (r.gen_range(0..width) << 16)
-                    | (r.gen_range(0..width) << 10) | (rn << 5) | rd
+                let opc = if r.random_bool(0.5) { 0b10 } else { 0b00 };
+                (sf << 31) | (opc << 29) | 0x1300_0000 | (sf << 22) | (r.random_range(0..width) << 16)
+                    | (r.random_range(0..width) << 10) | (rn << 5) | rd
             }
-            10 => (sf << 31) | 0x1380_0000 | (sf << 22) | (rm << 16) | (r.gen_range(0..width) << 10)
+            10 => (sf << 31) | 0x1380_0000 | (sf << 22) | (rm << 16) | (r.random_range(0..width) << 10)
                 | (rn << 5) | rd,
-            11 => (sf << 31) | 0x5AC0_1000 | (r.gen_range(0..2) << 10) | (rn << 5) | rd, // clz/cls
+            11 => (sf << 31) | 0x5AC0_1000 | (r.random_range(0..2) << 10) | (rn << 5) | rd, // clz/cls
             12 => (sf << 31) | 0x5AC0_0000 | (rn << 5) | rd, // rbit
             13 => {
-                let hw = r.gen_range(0..if sf == 1 { 4 } else { 2 });
-                let opc = [0b00u32, 0b10, 0b11][r.gen_range(0..3)]; // movn/movz/movk
-                (sf << 31) | (opc << 29) | 0x1280_0000 | (hw << 21) | (r.gen_range(0..0x10000) << 5) | rd
+                let hw = r.random_range(0..if sf == 1 { 4 } else { 2 });
+                let opc = [0b00u32, 0b10, 0b11][r.random_range(0..3)]; // movn/movz/movk
+                (sf << 31) | (opc << 29) | 0x1280_0000 | (hw << 21) | (r.random_range(0..0x10000) << 5) | rd
             }
             14 => (sf << 31) | 0x5AC0_0800 | (sf << 10) | (rn << 5) | rd, // rev
             _ => 0xD503_201F,
@@ -197,34 +197,34 @@ impl Gen<'_> {
     /// One flag-setting instruction of a random form.
     fn flag_setter(&mut self) {
         let r = &mut *self.rng;
-        let sf: u32 = r.gen_range(0..2);
+        let sf: u32 = r.random_range(0..2);
         let width = if sf == 1 { 64 } else { 32 };
         // Rd = zr sometimes (cmp/cmn/tst).
-        let rd = if r.gen_bool(0.4) { 31 } else { reg(r) };
+        let rd = if r.random_bool(0.4) { 31 } else { reg(r) };
         let (rn, rm) = (reg(r), reg(r));
-        let w = match r.gen_range(0..8) {
-            0 => (sf << 31) | (r.gen_range(0..2) << 30) | 0x3100_0000 | (r.gen_range(0..2) << 22)
-                | (r.gen_range(0..0x1000) << 10) | (rn << 5) | rd,
-            1 => (sf << 31) | (r.gen_range(0..2) << 30) | 0x2B00_0000 | (r.gen_range(0..3) << 22)
-                | (rm << 16) | (r.gen_range(0..width) << 10) | (rn << 5) | rd,
+        let w = match r.random_range(0..8) {
+            0 => (sf << 31) | (r.random_range(0..2) << 30) | 0x3100_0000 | (r.random_range(0..2) << 22)
+                | (r.random_range(0..0x1000) << 10) | (rn << 5) | rd,
+            1 => (sf << 31) | (r.random_range(0..2) << 30) | 0x2B00_0000 | (r.random_range(0..3) << 22)
+                | (rm << 16) | (r.random_range(0..width) << 10) | (rn << 5) | rd,
             2 => {
                 let (n, immr, imms) = bitmask_imm(r, sf);
                 (sf << 31) | (0b11 << 29) | 0x1200_0000 | (n << 22) | (immr << 16) | (imms << 10)
                     | (rn << 5) | rd
             }
-            3 => (sf << 31) | (0b11 << 29) | 0x0A00_0000 | (r.gen_range(0..4) << 22)
-                | (r.gen_range(0..2) << 21) | (rm << 16) | (r.gen_range(0..width) << 10)
+            3 => (sf << 31) | (0b11 << 29) | 0x0A00_0000 | (r.random_range(0..4) << 22)
+                | (r.random_range(0..2) << 21) | (rm << 16) | (r.random_range(0..width) << 10)
                 | (rn << 5) | rd,
-            4 => (sf << 31) | (r.gen_range(0..2) << 30) | (1 << 29) | 0x1A00_0000 | (rm << 16)
+            4 => (sf << 31) | (r.random_range(0..2) << 30) | (1 << 29) | 0x1A00_0000 | (rm << 16)
                 | (rn << 5) | rd,
-            5 => (sf << 31) | (r.gen_range(0..2) << 30) | (1 << 29) | 0x1A40_0800
-                | (r.gen_range(0..32) << 16) | (r.gen_range(0..16) << 12) | (rn << 5)
-                | r.gen_range(0..16),
-            6 => (sf << 31) | (r.gen_range(0..2) << 30) | (1 << 29) | 0x1A40_0000 | (rm << 16)
-                | (r.gen_range(0..16) << 12) | (rn << 5) | r.gen_range(0..16),
+            5 => (sf << 31) | (r.random_range(0..2) << 30) | (1 << 29) | 0x1A40_0800
+                | (r.random_range(0..32) << 16) | (r.random_range(0..16) << 12) | (rn << 5)
+                | r.random_range(0..16),
+            6 => (sf << 31) | (r.random_range(0..2) << 30) | (1 << 29) | 0x1A40_0000 | (rm << 16)
+                | (r.random_range(0..16) << 12) | (rn << 5) | r.random_range(0..16),
             // cmp with a small immediate against a register likely to be
             // small, so equal / near-equal cases are common.
-            _ => (sf << 31) | 0x7100_001F | (r.gen_range(0..4) << 10) | (rn << 5),
+            _ => (sf << 31) | 0x7100_001F | (r.random_range(0..4) << 10) | (rn << 5),
         };
         self.asm.emit(w);
     }
@@ -232,24 +232,24 @@ impl Gen<'_> {
     fn mem(&mut self) {
         let r = &mut *self.rng;
         let rt = reg(r);
-        let load = r.gen_bool(0.5);
-        match r.gen_range(0..9) {
+        let load = r.random_bool(0.5);
+        match r.random_range(0..9) {
             0 => {
                 // ldr/str unsigned offset, all sizes, plus sign-extending loads.
-                let size = r.gen_range(0..4u32);
-                let opc = if load { [1u32, 2, 3][r.gen_range(0..if size == 3 { 1 } else if size == 2 { 2 } else { 3 })] } else { 0 };
-                let imm = r.gen_range(0..(DATA_SIZE as u32 >> size).min(4096));
+                let size = r.random_range(0..4u32);
+                let opc = if load { [1u32, 2, 3][r.random_range(0..if size == 3 { 1 } else if size == 2 { 2 } else { 3 })] } else { 0 };
+                let imm = r.random_range(0..(DATA_SIZE as u32 >> size).min(4096));
                 self.asm.emit((size << 30) | 0x3900_0000 | (opc << 22) | (imm << 10) | (R_DATA << 5) | rt);
             }
             1 => {
                 // ldur/stur, unaligned, possibly crossing a page.
-                let size = r.gen_range(0..4u32);
-                let imm9 = r.gen_range(0..256u32);
+                let size = r.random_range(0..4u32);
+                let imm9 = r.random_range(0..256u32);
                 // add x19, x20, #k  or  #k, lsl 12 (k < 15 pages)
-                let (sh, k) = if r.gen_bool(0.5) {
-                    (1u32, r.gen_range(0..15u32))
+                let (sh, k) = if r.random_bool(0.5) {
+                    (1u32, r.random_range(0..15u32))
                 } else {
-                    (0, r.gen_range(0..0x1000u32))
+                    (0, r.random_range(0..0x1000u32))
                 };
                 self.asm.emit(0x9100_0000 | (sh << 22) | (k << 10) | (R_DATA << 5) | R_PTR);
                 let w = (size << 30) | 0x3800_0000 | ((load as u32) << 22) | (imm9 << 12) | (R_PTR << 5) | rt;
@@ -257,19 +257,19 @@ impl Gen<'_> {
             }
             2 => {
                 // pre/post-index writeback on x19.
-                let size = r.gen_range(0..4u32);
-                let imm9 = r.gen_range(0..512u32);
-                self.asm.emit(0x9100_0000 | (1 << 22) | (r.gen_range(1..14u32) << 10) | (R_DATA << 5) | R_PTR);
-                let idx = if r.gen_bool(0.5) { 0b11 } else { 0b01 };
+                let size = r.random_range(0..4u32);
+                let imm9 = r.random_range(0..512u32);
+                self.asm.emit(0x9100_0000 | (1 << 22) | (r.random_range(1..14u32) << 10) | (R_DATA << 5) | R_PTR);
+                let idx = if r.random_bool(0.5) { 0b11 } else { 0b01 };
                 self.asm.emit((size << 30) | 0x3800_0000 | ((load as u32) << 22) | (imm9 << 12) | (idx << 10) | (R_PTR << 5) | rt);
             }
             3 => {
                 // register offset with a masked index.
-                let size = r.gen_range(0..4u32);
+                let size = r.random_range(0..4u32);
                 let idx = reg(r);
                 // and x9, x_idx, #0xFFF8 (N=1 immr=61 imms=12 -> 13 ones rotated by 3)
                 self.asm.emit(0x9240_0000 | (61 << 16) | (12 << 10) | (idx << 5) | 9);
-                let s = r.gen_range(0..2u32);
+                let s = r.random_range(0..2u32);
                 let w = (size << 30) | 0x3820_0800 | ((load as u32) << 22) | (9 << 16) | (0b011 << 13) | (s << 12) | (R_DATA << 5) | rt;
                 // With S=1 the index is scaled; keep it in range by halving
                 // the mask's reach for wide sizes (0xFFF8 << 3 > 64 KiB).
@@ -282,66 +282,66 @@ impl Gen<'_> {
             }
             4 => {
                 // ldp / stp (w or x).
-                let wide = r.gen_range(0..2u32);
+                let wide = r.random_range(0..2u32);
                 let rt2 = loop {
                     let x = reg(r);
                     if x != rt || !load {
                         break x;
                     }
                 };
-                let imm7 = r.gen_range(0..64u32);
+                let imm7 = r.random_range(0..64u32);
                 self.asm.emit((wide << 31) | 0x2900_0000 | ((load as u32) << 22) | (imm7 << 15) | (rt2 << 10) | (R_DATA << 5) | rt);
             }
             5 => {
                 // ldr/str q and ldp/stp q (v0..v7).
-                let (vt, vt2) = (r.gen_range(0..8u32), r.gen_range(0..8u32));
-                if r.gen_bool(0.5) {
-                    let imm = r.gen_range(0..(DATA_SIZE as u32 / 16).min(4096));
+                let (vt, vt2) = (r.random_range(0..8u32), r.random_range(0..8u32));
+                if r.random_bool(0.5) {
+                    let imm = r.random_range(0..(DATA_SIZE as u32 / 16).min(4096));
                     let base = if load { 0x3DC0_0000 } else { 0x3D80_0000 };
                     self.asm.emit(base | (imm << 10) | (R_DATA << 5) | vt);
                 } else {
                     let vt2 = if load && vt2 == vt { (vt + 1) & 7 } else { vt2 };
-                    let imm7 = r.gen_range(0..64u32);
+                    let imm7 = r.random_range(0..64u32);
                     self.asm.emit(0xAD00_0000 | ((load as u32) << 22) | (imm7 << 15) | (vt2 << 10) | (R_DATA << 5) | vt);
                 }
             }
             6 => {
                 // ldaxr / stlxr pair, maybe with an intervening store.
-                let size = r.gen_range(0..4u32);
-                let off = r.gen_range(0..256u32) << 4;
+                let size = r.random_range(0..4u32);
+                let off = r.random_range(0..256u32) << 4;
                 self.asm.emit(0x9100_0000 | (off << 10) | (R_DATA << 5) | R_PTR);
                 self.asm.emit((size << 30) | 0x085F_FC00 | (R_PTR << 5) | rt);
-                if r.gen_bool(0.3) {
+                if r.random_bool(0.3) {
                     self.asm.emit(0x9100_0400 | (rt << 5) | rt); // add rt, rt, #1
                 }
                 let src = reg(r);
-                let status = (src + 1 + r.gen_range(0..15)) % 16;
+                let status = (src + 1 + r.random_range(0..15)) % 16;
                 self.asm.emit((size << 30) | 0x0800_FC00 | (status << 16) | (R_PTR << 5) | src);
             }
             7 if self.opts.lse => {
-                let size = r.gen_range(0..4u32);
-                let off = r.gen_range(0..256u32) << 4;
+                let size = r.random_range(0..4u32);
+                let off = r.random_range(0..256u32) << 4;
                 self.asm.emit(0x9100_0000 | (off << 10) | (R_DATA << 5) | R_PTR);
                 let rs = reg(r);
-                if r.gen_bool(0.2) {
+                if r.random_bool(0.2) {
                     // cas{a,l,al}{b,h,}
-                    self.asm.emit((size << 30) | 0x08A0_7C00 | (r.gen_range(0..2) << 22) | (r.gen_range(0..2) << 15) | (rs << 16) | (R_PTR << 5) | rt);
+                    self.asm.emit((size << 30) | 0x08A0_7C00 | (r.random_range(0..2) << 22) | (r.random_range(0..2) << 15) | (rs << 16) | (R_PTR << 5) | rt);
                 } else {
-                    let opc = r.gen_range(0..9u32);
+                    let opc = r.random_range(0..9u32);
                     let (o3, opc) = if opc == 8 { (1, 0) } else { (0, opc) };
-                    self.asm.emit((size << 30) | 0x3820_0000 | (r.gen_range(0..4) << 22) | (rs << 16) | (o3 << 15) | (opc << 12) | (R_PTR << 5) | rt);
+                    self.asm.emit((size << 30) | 0x3820_0000 | (r.random_range(0..4) << 22) | (rs << 16) | (o3 << 15) | (opc << 12) | (R_PTR << 5) | rt);
                 }
             }
             _ => {
                 // ldrsw / ldrsh into x, and strb of a computed value.
-                self.asm.emit(0xB980_0000 | (r.gen_range(0..1024) << 10) | (R_DATA << 5) | rt);
+                self.asm.emit(0xB980_0000 | (r.random_range(0..1024) << 10) | (R_DATA << 5) | rt);
             }
         }
     }
 
     /// Simple straight-line instruction (no control flow).
     fn simple(&mut self) {
-        match self.rng.gen_range(0..13) {
+        match self.rng.random_range(0..13) {
             0..=5 => self.alu(),
             6 | 7 => self.mem(),
             8 | 9 => self.flag_setter(),
@@ -355,35 +355,35 @@ impl Gen<'_> {
     fn simd_mem(&mut self) {
         let r = &mut *self.rng;
         // x19 = x20 + k, far enough from both ends of the data region.
-        let k = r.gen_range(0x400..0xF000u32) & !0xF;
-        let k = k + r.gen_range(0..16u32); // often unaligned
+        let k = r.random_range(0x400..0xF000u32) & !0xF;
+        let k = k + r.random_range(0..16u32); // often unaligned
         self.asm.emit(0x9100_0000 | ((k & 0xFFF) << 10) | (R_DATA << 5) | R_PTR); // add x19, x20, #k_lo
         self.asm.emit(0x9140_0000 | ((k >> 12) << 10) | (R_PTR << 5) | R_PTR); // add x19, x19, #k_hi, lsl 12
-        let q: u32 = r.gen_range(0..2);
-        let l: u32 = r.gen_range(0..2);
-        let rt: u32 = r.gen_range(0..32);
-        let post = r.gen_bool(0.5);
+        let q: u32 = r.random_range(0..2);
+        let l: u32 = r.random_range(0..2);
+        let rt: u32 = r.random_range(0..32);
+        let post = r.random_bool(0.5);
         // Post-index register: x0..x15 (random, possibly huge: x19 is
         // reset before every use) or 31 for the immediate form.
-        let rm: u32 = if r.gen_bool(0.5) { 31 } else { reg(r) };
-        let w = match r.gen_range(0..5) {
+        let rm: u32 = if r.random_bool(0.5) { 31 } else { reg(r) };
+        let w = match r.random_range(0..5) {
             0 => {
-                let opcode = [0b0000u32, 0b0010, 0b0100, 0b0110, 0b0111, 0b1000, 0b1010][r.gen_range(0..7)];
+                let opcode = [0b0000u32, 0b0010, 0b0100, 0b0110, 0b0111, 0b1000, 0b1010][r.random_range(0..7)];
                 let selem1 = matches!(opcode, 0b0010 | 0b0110 | 0b0111 | 0b1010);
-                let size = if q == 0 && !selem1 { r.gen_range(0..3u32) } else { r.gen_range(0..4u32) };
+                let size = if q == 0 && !selem1 { r.random_range(0..3u32) } else { r.random_range(0..4u32) };
                 let base = if post { 0x0C80_0000 | (rm << 16) } else { 0x0C00_0000 };
                 (q << 30) | base | (l << 22) | (opcode << 12) | (size << 10) | (R_PTR << 5) | rt
             }
             1 => {
-                let rr: u32 = r.gen_range(0..2);
-                let (opcode, s, size) = if l == 1 && r.gen_bool(0.3) {
-                    (0b110 | r.gen_range(0..2u32), 0, r.gen_range(0..4u32))
+                let rr: u32 = r.random_range(0..2);
+                let (opcode, s, size) = if l == 1 && r.random_bool(0.3) {
+                    (0b110 | r.random_range(0..2u32), 0, r.random_range(0..4u32))
                 } else {
-                    match r.gen_range(0..4) {
-                        0 => (r.gen_range(0..2u32), r.gen_range(0..2u32), r.gen_range(0..4u32)),
-                        1 => (0b010 | r.gen_range(0..2u32), r.gen_range(0..2u32), r.gen_range(0..2u32) << 1),
-                        2 => (0b100 | r.gen_range(0..2u32), r.gen_range(0..2u32), 0),
-                        _ => (0b100 | r.gen_range(0..2u32), 0, 1),
+                    match r.random_range(0..4) {
+                        0 => (r.random_range(0..2u32), r.random_range(0..2u32), r.random_range(0..4u32)),
+                        1 => (0b010 | r.random_range(0..2u32), r.random_range(0..2u32), r.random_range(0..2u32) << 1),
+                        2 => (0b100 | r.random_range(0..2u32), r.random_range(0..2u32), 0),
+                        _ => (0b100 | r.random_range(0..2u32), 0, 1),
                     }
                 };
                 let base = if post { 0x0D80_0000 | (rm << 16) } else { 0x0D00_0000 };
@@ -391,7 +391,7 @@ impl Gen<'_> {
             }
             2 => {
                 // LDNP / STNP: GPR forms only target x0..x15.
-                let (opc, v) = [(0u32, 0u32), (2, 0), (0, 1), (1, 1), (2, 1)][r.gen_range(0..5)];
+                let (opc, v) = [(0u32, 0u32), (2, 0), (0, 1), (1, 1), (2, 1)][r.random_range(0..5)];
                 let (t, t2) = if v == 0 {
                     let a = reg(r);
                     let b = loop {
@@ -402,22 +402,22 @@ impl Gen<'_> {
                     };
                     (a, b)
                 } else {
-                    let a = r.gen_range(0..32u32);
-                    (a, (a + 1 + r.gen_range(0..30u32)) % 32)
+                    let a = r.random_range(0..32u32);
+                    (a, (a + 1 + r.random_range(0..30u32)) % 32)
                 };
-                let imm7 = r.gen_range(0..64u32);
+                let imm7 = r.random_range(0..64u32);
                 (opc << 30) | 0x2800_0000 | (v << 26) | (l << 22) | (imm7 << 15) | (t2 << 10) | (R_PTR << 5) | t
             }
             3 => {
                 // LDTR* / STTR*, signed offset around x19.
                 let (size, opc) = [(0u32, 0u32), (1, 0), (2, 0), (3, 0), (0, 1), (1, 1), (2, 1), (3, 1), (0, 2), (1, 2), (2, 2), (0, 3), (1, 3)]
-                    [r.gen_range(0..13)];
-                let imm9 = r.gen_range(0..512u32);
+                    [r.random_range(0..13)];
+                let imm9 = r.random_range(0..512u32);
                 (size << 30) | 0x3800_0800 | (opc << 22) | (imm9 << 12) | (R_PTR << 5) | reg(r)
             }
             _ => {
                 // The instruction that stopped a game: st1 {vT.s}[idx], [x19]
-                0x0D00_8000 | (q << 30) | (r.gen_range(0..2u32) << 12) | (R_PTR << 5) | r.gen_range(0..8u32)
+                0x0D00_8000 | (q << 30) | (r.random_range(0..2u32) << 12) | (R_PTR << 5) | r.random_range(0..8u32)
             }
         };
         self.asm.emit(w);
@@ -449,8 +449,8 @@ impl Gen<'_> {
             (0x5E28_0800, (3 << 12) | RD_RN, false),                                          // sha 2-reg
         ];
         loop {
-            let (fixed, random, gpr_dst) = T[self.rng.gen_range(0..T.len())];
-            let mut w = fixed | (self.rng.r#gen::<u32>() & random);
+            let (fixed, random, gpr_dst) = T[self.rng.random_range(0..T.len())];
+            let mut w = fixed | (self.rng.random::<u32>() & random);
             // Vector templates: integer ops only (inline FP paths are not
             // NaN-exact), and nothing beyond ARMv8.0.
             if fixed == 0x0F00_0400 && ((w >> 19) & 0xF == 0 || (w >> 11) & 0x1F >= 0b11100) {
@@ -483,26 +483,26 @@ impl Gen<'_> {
     fn forward_branch(&mut self) {
         let l = self.asm.label();
         let r = &mut *self.rng;
-        match r.gen_range(0..4) {
+        match r.random_range(0..4) {
             0 | 1 => {
                 // flag setter immediately followed by b.cond (fusion
                 // candidate) or separated by non-flag work.
                 self.flag_setter();
-                if self.rng.gen_bool(0.3) {
+                if self.rng.random_bool(0.3) {
                     self.alu_no_flags();
                 }
                 let c = self.cond();
                 self.asm.emit_fix(Fix::B19(0x5400_0000 | c), l);
             }
             2 => {
-                let sf: u32 = r.gen_range(0..2);
-                let op: u32 = r.gen_range(0..2);
+                let sf: u32 = r.random_range(0..2);
+                let op: u32 = r.random_range(0..2);
                 let rt = reg(r);
                 self.asm.emit_fix(Fix::B19((sf << 31) | 0x3400_0000 | (op << 24) | rt), l);
             }
             _ => {
-                let bit: u32 = r.gen_range(0..64);
-                let op: u32 = r.gen_range(0..2);
+                let bit: u32 = r.random_range(0..64);
+                let op: u32 = r.random_range(0..2);
                 let rt = reg(r);
                 self.asm.emit_fix(
                     Fix::B14(((bit >> 5) << 31) | 0x3600_0000 | (op << 24) | ((bit & 31) << 19) | rt),
@@ -510,13 +510,13 @@ impl Gen<'_> {
                 );
             }
         }
-        let n = self.rng.gen_range(1..5);
+        let n = self.rng.random_range(1..5);
         for _ in 0..n {
             self.simple();
         }
         self.asm.bind(l);
         // Flag consumers that are not branches.
-        if self.rng.gen_bool(0.3) {
+        if self.rng.random_bool(0.3) {
             self.alu();
         }
     }
@@ -525,7 +525,7 @@ impl Gen<'_> {
     fn alu_no_flags(&mut self) {
         let r = &mut *self.rng;
         let (rd, rn) = (reg(r), reg(r));
-        self.asm.emit(0x9100_0000 | (r.gen_range(0..0x1000) << 10) | (rn << 5) | rd);
+        self.asm.emit(0x9100_0000 | (r.random_range(0..0x1000) << 10) | (rn << 5) | rd);
     }
 
     fn seq(&mut self, depth: usize, len: usize, in_func: bool) {
@@ -534,25 +534,25 @@ impl Gen<'_> {
                 return;
             }
             self.budget -= 1;
-            let pick = self.rng.gen_range(0..100);
+            let pick = self.rng.random_range(0..100);
             match pick {
                 0..=39 => self.simple(),
                 40..=64 => self.forward_branch(),
                 65..=72 if !in_func && depth < 2 || in_func && depth < 1 => {
                     // counted loop
                     let counter = if in_func { R_LOOP[2] } else { R_LOOP[depth] };
-                    let n = self.rng.gen_range(1..6u32);
+                    let n = self.rng.random_range(1..6u32);
                     self.asm.emit(0xD280_0000 | (n << 5) | counter); // movz
                     let top = self.asm.label();
                     self.asm.bind(top);
-                    let body = self.rng.gen_range(1..8);
+                    let body = self.rng.random_range(1..8);
                     self.seq(depth + 1, body, in_func);
                     self.asm.emit(0xF100_0400 | (counter << 5) | counter); // subs xC, xC, #1
                     self.asm.emit_fix(Fix::B19(0x5400_0001), top); // b.ne top
                 }
                 73..=80 if !in_func && !self.funcs.is_empty() => {
-                    let f = self.funcs[self.rng.gen_range(0..self.funcs.len())];
-                    if self.rng.gen_bool(0.5) {
+                    let f = self.funcs[self.rng.random_range(0..self.funcs.len())];
+                    if self.rng.random_bool(0.5) {
                         self.asm.emit_fix(Fix::B26(0x9400_0000), f); // bl
                     } else {
                         self.asm.emit_fix(Fix::Adr(R_IND), f);
@@ -579,8 +579,8 @@ impl Gen<'_> {
                     // (movz x14, #imm) of a function, then leave the block
                     // through an indirect branch so the store is never
                     // followed by stale code in the same host block.
-                    let f = self.funcs[self.rng.gen_range(0..self.funcs.len())];
-                    let imm = self.rng.gen_range(0..0x10000u32);
+                    let f = self.funcs[self.rng.random_range(0..self.funcs.len())];
+                    let imm = self.rng.random_range(0..0x10000u32);
                     let word = 0xD280_0000 | (imm << 5) | 14;
                     self.asm.emit(0x5280_0000 | ((word & 0xFFFF) << 5) | 13); // movz w13, lo
                     self.asm.emit(0x72A0_0000 | ((word >> 16) << 5) | 13); // movk w13, hi, lsl 16
@@ -607,7 +607,7 @@ pub(crate) struct Program {
 
 pub(crate) fn gen_program(seed: u64, opts: GenOpts) -> Program {
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
-    let nfuncs = rng.gen_range(0..4);
+    let nfuncs = rng.random_range(0..4);
     let mut g = Gen {
         rng: &mut rng,
         asm: Asm::new(),
@@ -619,16 +619,16 @@ pub(crate) fn gen_program(seed: u64, opts: GenOpts) -> Program {
         let l = g.asm.label();
         g.funcs.push(l);
     }
-    g.budget = g.rng.gen_range(10..60);
+    g.budget = g.rng.random_range(10..60);
     let len = g.budget;
     g.seq(0, len, false);
     g.asm.emit(BRK_0);
     let funcs = g.funcs.clone();
     for f in funcs {
         g.asm.bind(f);
-        let imm = g.rng.gen_range(0..0x10000u32);
+        let imm = g.rng.random_range(0..0x10000u32);
         g.asm.emit(0xD280_0000 | (imm << 5) | 14); // movz x14, #imm (SMC slot)
-        g.budget = g.rng.gen_range(2..15);
+        g.budget = g.rng.random_range(2..15);
         let len = g.budget;
         g.seq(0, len, true);
         g.asm.emit(0xD65F_03C0); // ret
@@ -637,11 +637,11 @@ pub(crate) fn gen_program(seed: u64, opts: GenOpts) -> Program {
 
     let mut init_x = [0u64; 31];
     for (i, x) in init_x.iter_mut().enumerate() {
-        *x = match rng.gen_range(0..4) {
-            0 => rng.gen_range(0..8),
-            1 => rng.r#gen::<u32>() as u64,
-            2 => rng.r#gen::<u64>(),
-            _ => (rng.r#gen::<i8>() as i64) as u64,
+        *x = match rng.random_range(0..4) {
+            0 => rng.random_range(0..8),
+            1 => rng.random::<u32>() as u64,
+            2 => rng.random::<u64>(),
+            _ => (rng.random::<i8>() as i64) as u64,
         };
         let _ = i;
     }
@@ -654,7 +654,7 @@ pub(crate) fn gen_program(seed: u64, opts: GenOpts) -> Program {
     init_x[30] = 0;
     let mut init_v = [[0u64; 2]; 8];
     for v in &mut init_v {
-        *v = [rng.r#gen(), rng.r#gen()];
+        *v = [rng.random(), rng.random()];
     }
     let mut data = vec![0u8; DATA_SIZE as usize];
     rng.fill(&mut data[..]);
@@ -662,7 +662,7 @@ pub(crate) fn gen_program(seed: u64, opts: GenOpts) -> Program {
         words,
         init_x,
         init_v,
-        init_nzcv: rng.gen_range(0..16),
+        init_nzcv: rng.random_range(0..16),
         data,
     }
 }

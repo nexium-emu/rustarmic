@@ -3,7 +3,7 @@
 mod harness;
 
 use harness::{RegState, run_pair};
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 const CODE_BASE: u64 = 0x1000;
@@ -15,11 +15,11 @@ fn baseline_state(seed: u64) -> RegState {
     s.pc = CODE_BASE;
     s.sp = STACK_BASE;
     for i in 0..31 {
-        s.x[i] = rng.r#gen::<u32>() as u64;
+        s.x[i] = rng.random::<u32>() as u64;
     }
     let mask = 0xBFFF_BFFF_BFFF_BFFFu64;
     for i in 0..32 {
-        s.v[i] = [rng.r#gen::<u64>() & mask, rng.r#gen::<u64>() & mask];
+        s.v[i] = [rng.random::<u64>() & mask, rng.random::<u64>() & mask];
     }
     s
 }
@@ -35,12 +35,12 @@ fn gen_block(rng: &mut ChaCha8Rng, n: usize) -> Vec<u8> {
 }
 
 fn gen_inst(rng: &mut ChaCha8Rng) -> u32 {
-    let pick: u32 = rng.r#gen_range(0..14);
-    let rd: u32 = rng.r#gen_range(0..28);
-    let rn: u32 = rng.r#gen_range(0..28);
-    let rm: u32 = rng.r#gen_range(0..28);
-    let imm12: u32 = rng.r#gen_range(0..0x1000);
-    let shift_amt: u32 = rng.r#gen_range(0..63);
+    let pick: u32 = rng.r#random_range(0..14);
+    let rd: u32 = rng.r#random_range(0..28);
+    let rn: u32 = rng.r#random_range(0..28);
+    let rm: u32 = rng.r#random_range(0..28);
+    let imm12: u32 = rng.r#random_range(0..0x1000);
+    let shift_amt: u32 = rng.r#random_range(0..63);
     match pick {
         0 => 0x9100_0000 | (imm12 << 10) | (rn << 5) | rd,
         1 => 0xD100_0000 | (imm12 << 10) | (rn << 5) | rd,
@@ -75,7 +75,7 @@ fn fuzz_with_seed(seed: u64, cases: u32, min_len: usize, max_len: usize, label: 
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
     let mut fail_count = 0;
     for case in 0..cases {
-        let len = rng.r#gen_range(min_len..max_len);
+        let len = rng.r#random_range(min_len..max_len);
         let code = gen_block(&mut rng, len);
         let init = baseline_state(seed ^ (case as u64));
         let (uni, jit) = run_pair(&code, init);
@@ -115,10 +115,10 @@ fn gen_neon_inst(rng: &mut ChaCha8Rng) -> u32 {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(37);
-    let pick: u32 = rng.r#gen_range(0..max_pick);
-    let vd: u32 = rng.r#gen_range(0..16);
-    let vn: u32 = rng.r#gen_range(0..16);
-    let vm: u32 = rng.r#gen_range(0..16);
+    let pick: u32 = rng.r#random_range(0..max_pick);
+    let vd: u32 = rng.r#random_range(0..16);
+    let vn: u32 = rng.r#random_range(0..16);
+    let vm: u32 = rng.r#random_range(0..16);
 
     fn enc_same(q: u32, u: u32, size: u32, rm: u32, opcode: u32, rn: u32, rd: u32) -> u32 {
         (0 << 31)
@@ -159,11 +159,11 @@ fn gen_neon_inst(rng: &mut ChaCha8Rng) -> u32 {
             | rd
     }
     fn pick_q_size(rng: &mut ChaCha8Rng, max_size: u32) -> (u32, u32) {
-        let q = rng.r#gen_range(0..2);
+        let q = rng.r#random_range(0..2);
         let size = if q == 0 {
-            rng.r#gen_range(0..max_size.min(3))
+            rng.r#random_range(0..max_size.min(3))
         } else {
-            rng.r#gen_range(0..max_size)
+            rng.r#random_range(0..max_size)
         };
         (q, size)
     }
@@ -177,13 +177,13 @@ fn gen_neon_inst(rng: &mut ChaCha8Rng) -> u32 {
             let (q, s) = pick_q_size(rng, 4);
             enc_same(q, 1, s, vm, 0b10000, vn, vd)
         }
-        2 => enc_same(rng.r#gen_range(0..2), 0, 0b00, vm, 0b00011, vn, vd),
-        3 => enc_same(rng.r#gen_range(0..2), 0, 0b10, vm, 0b00011, vn, vd),
-        4 => enc_same(rng.r#gen_range(0..2), 1, 0b00, vm, 0b00011, vn, vd),
-        5 => enc_same(rng.r#gen_range(0..2), 0, 0b01, vm, 0b00011, vn, vd),
-        6 => enc_same(rng.r#gen_range(0..2), 0, 0b11, vm, 0b00011, vn, vd),
+        2 => enc_same(rng.r#random_range(0..2), 0, 0b00, vm, 0b00011, vn, vd),
+        3 => enc_same(rng.r#random_range(0..2), 0, 0b10, vm, 0b00011, vn, vd),
+        4 => enc_same(rng.r#random_range(0..2), 1, 0b00, vm, 0b00011, vn, vd),
+        5 => enc_same(rng.r#random_range(0..2), 0, 0b01, vm, 0b00011, vn, vd),
+        6 => enc_same(rng.r#random_range(0..2), 0, 0b11, vm, 0b00011, vn, vd),
         7 => enc_same(
-            rng.r#gen_range(0..2),
+            rng.r#random_range(0..2),
             0,
             [1u32, 2].choose_rng(rng),
             vm,
@@ -192,36 +192,36 @@ fn gen_neon_inst(rng: &mut ChaCha8Rng) -> u32 {
             vd,
         ),
         8 => enc_same(
-            rng.r#gen_range(0..2),
+            rng.r#random_range(0..2),
             0,
-            rng.r#gen_range(0..3),
+            rng.r#random_range(0..3),
             vm,
             0b01100,
             vn,
             vd,
         ),
         9 => enc_same(
-            rng.r#gen_range(0..2),
+            rng.r#random_range(0..2),
             0,
-            rng.r#gen_range(0..3),
+            rng.r#random_range(0..3),
             vm,
             0b01101,
             vn,
             vd,
         ),
         10 => enc_same(
-            rng.r#gen_range(0..2),
+            rng.r#random_range(0..2),
             1,
-            rng.r#gen_range(0..3),
+            rng.r#random_range(0..3),
             vm,
             0b01100,
             vn,
             vd,
         ),
         11 => enc_same(
-            rng.r#gen_range(0..2),
+            rng.r#random_range(0..2),
             1,
-            rng.r#gen_range(0..3),
+            rng.r#random_range(0..3),
             vm,
             0b01101,
             vn,
@@ -258,15 +258,15 @@ fn gen_neon_inst(rng: &mut ChaCha8Rng) -> u32 {
             let (q, s) = pick_q_size(rng, 3);
             enc_misc(q, 0, s, 0b01011, vn, vd)
         }
-        22 => enc_misc(rng.r#gen_range(0..2), 1, 0b00, 0b00101, vn, vd),
+        22 => enc_misc(rng.r#random_range(0..2), 1, 0b00, 0b00101, vn, vd),
         23 => {
-            let q = rng.r#gen_range(0..2);
+            let q = rng.r#random_range(0..2);
             let size = if q == 1 {
-                rng.r#gen_range(0..4)
+                rng.r#random_range(0..4)
             } else {
-                rng.r#gen_range(0..3)
+                rng.r#random_range(0..3)
             };
-            let zip2 = rng.r#gen_range(0..2) == 1;
+            let zip2 = rng.r#random_range(0..2) == 1;
             let opcode_high = if zip2 { 0b111 } else { 0b011 };
             (0 << 31)
                 | (q << 30)
@@ -282,66 +282,66 @@ fn gen_neon_inst(rng: &mut ChaCha8Rng) -> u32 {
                 | (vn << 5)
                 | vd
         }
-        24 => enc_misc(rng.r#gen_range(0..2), 0, 0b00, 0b00001, vn, vd),
+        24 => enc_misc(rng.r#random_range(0..2), 0, 0b00, 0b00001, vn, vd),
         25 => {
-            let s = rng.r#gen_range(0..2);
-            enc_misc(rng.r#gen_range(0..2), 1, s, 0b00000, vn, vd)
+            let s = rng.r#random_range(0..2);
+            enc_misc(rng.r#random_range(0..2), 1, s, 0b00000, vn, vd)
         }
         26 => {
-            let s = rng.r#gen_range(0..3);
-            enc_misc(rng.r#gen_range(0..2), 0, s, 0b00000, vn, vd)
+            let s = rng.r#random_range(0..3);
+            enc_misc(rng.r#random_range(0..2), 0, s, 0b00000, vn, vd)
         }
         28 => enc_diff(
-            rng.r#gen_range(0..2),
+            rng.r#random_range(0..2),
             0,
-            rng.r#gen_range(0..3),
+            rng.r#random_range(0..3),
             vm,
             0b0010,
             vn,
             vd,
         ),
         29 => enc_diff(
-            rng.r#gen_range(0..2),
+            rng.r#random_range(0..2),
             1,
-            rng.r#gen_range(0..3),
+            rng.r#random_range(0..3),
             vm,
             0b0010,
             vn,
             vd,
         ),
         30 => enc_diff(
-            rng.r#gen_range(0..2),
+            rng.r#random_range(0..2),
             0,
-            rng.r#gen_range(0..2),
+            rng.r#random_range(0..2),
             vm,
             0b1100,
             vn,
             vd,
         ),
         31 => enc_diff(
-            rng.r#gen_range(0..2),
+            rng.r#random_range(0..2),
             1,
-            rng.r#gen_range(0..2),
+            rng.r#random_range(0..2),
             vm,
             0b1100,
             vn,
             vd,
         ),
         32 => enc_misc(
-            rng.r#gen_range(0..2),
+            rng.r#random_range(0..2),
             0,
-            rng.r#gen_range(0..3),
+            rng.r#random_range(0..3),
             0b10010,
             vn,
             vd,
         ),
         33 => {
-            let (q, sz) = if rng.r#gen_range(0..2) == 0 {
-                (rng.r#gen_range(0..2), 0u32)
+            let (q, sz) = if rng.r#random_range(0..2) == 0 {
+                (rng.r#random_range(0..2), 0u32)
             } else {
                 (1, 1u32)
             };
-            let (u, bit23) = match rng.r#gen_range(0..3) {
+            let (u, bit23) = match rng.r#random_range(0..3) {
                 0 => (0u32, 0u32),
                 1 => (1, 0),
                 _ => (1, 1),
@@ -360,8 +360,8 @@ fn gen_neon_inst(rng: &mut ChaCha8Rng) -> u32 {
                 | vd
         }
         34 => {
-            let q = rng.r#gen_range(0..2);
-            let len = rng.r#gen_range(1..3);
+            let q = rng.r#random_range(0..2);
+            let len = rng.r#random_range(1..3);
             (0 << 31)
                 | (q << 30)
                 | (0 << 29)
@@ -375,7 +375,7 @@ fn gen_neon_inst(rng: &mut ChaCha8Rng) -> u32 {
                 | vd
         }
         36 => {
-            let pick = rng.r#gen_range(0..6);
+            let pick = rng.r#random_range(0..6);
             let (u, bit23, op_low) = match pick {
                 0 => (0u32, 0u32, 0b11000u32),
                 1 => (0, 0, 0b11001),
@@ -384,8 +384,8 @@ fn gen_neon_inst(rng: &mut ChaCha8Rng) -> u32 {
                 4 => (1, 0, 0b11000),
                 _ => (1, 0, 0b11001),
             };
-            let (q, sz) = if rng.r#gen_range(0..2) == 0 {
-                (rng.r#gen_range(0..2), 0u32)
+            let (q, sz) = if rng.r#random_range(0..2) == 0 {
+                (rng.r#random_range(0..2), 0u32)
             } else {
                 (1, 1u32)
             };
@@ -403,12 +403,12 @@ fn gen_neon_inst(rng: &mut ChaCha8Rng) -> u32 {
                 | vd
         }
         35 => {
-            let (q, sz) = if rng.r#gen_range(0..2) == 0 {
-                (rng.r#gen_range(0..2), 0u32)
+            let (q, sz) = if rng.r#random_range(0..2) == 0 {
+                (rng.r#random_range(0..2), 0u32)
             } else {
                 (1, 1u32)
             };
-            let bit23 = rng.r#gen_range(0..2);
+            let bit23 = rng.r#random_range(0..2);
             (0 << 31)
                 | (q << 30)
                 | (0 << 29)
@@ -423,13 +423,13 @@ fn gen_neon_inst(rng: &mut ChaCha8Rng) -> u32 {
                 | vd
         }
         27 => {
-            let q = rng.r#gen_range(0..2);
+            let q = rng.r#random_range(0..2);
             let size = if q == 1 {
-                rng.r#gen_range(0..4)
+                rng.r#random_range(0..4)
             } else {
-                rng.r#gen_range(0..3)
+                rng.r#random_range(0..3)
             };
-            let op_pick = rng.r#gen_range(0..4);
+            let op_pick = rng.r#random_range(0..4);
             let opcode_high = match op_pick {
                 0 => 0b001,
                 1 => 0b101,
@@ -459,7 +459,7 @@ trait ChooseRng<T> {
 }
 impl<T: Copy> ChooseRng<T> for [T] {
     fn choose_rng(&self, rng: &mut ChaCha8Rng) -> T {
-        self[rng.r#gen_range(0..self.len())]
+        self[rng.r#random_range(0..self.len())]
     }
 }
 
@@ -482,7 +482,7 @@ fn fuzz_neon_with_seed(seed: u64, cases: u32, min_len: usize, max_len: usize, la
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
     let mut fail_count = 0;
     for case in 0..cases {
-        let len = rng.r#gen_range(min_len..max_len);
+        let len = rng.r#random_range(min_len..max_len);
         let code = gen_neon_block(&mut rng, len);
         let init = baseline_state(seed ^ (case as u64));
         let (uni, jit) = run_pair(&code, init);

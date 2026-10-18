@@ -39,8 +39,8 @@ unicorn-engine = { version = "2", optional = true }
 log = { version = "0.4", optional = true }
 
 [dev-dependencies]
-rand = "0.8"
-rand_chacha = "0.3"
+rand = "0.10"
+rand_chacha = "0.10"
 # Instruction metadata (feature sets) for the coverage scan in tests/.
 disarm64_defn = "0.1"
 

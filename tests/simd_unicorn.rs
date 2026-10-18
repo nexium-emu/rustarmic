@@ -12,7 +12,7 @@
 
 mod simd_harness;
 
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use rustarmic::frontend::{TranslateOptions, translate_block_into};
 use rustarmic::ir::{Block, Op};
@@ -107,16 +107,16 @@ fn lane_value(rng: &mut ChaCha8Rng, nan_free: bool) -> u128 {
     let mut v = 0u128;
     let mut bit = 0u32;
     while bit < 128 {
-        let pick = rng.gen_range(0..10);
+        let pick = rng.random_range(0..10);
         let (val, width): (u64, u32) = match pick {
-            0..=2 => (rng.r#gen::<u64>(), 64),
-            3 => (F32_EDGE[rng.gen_range(0..F32_EDGE.len())] as u64, 32),
-            4 => (F64_EDGE[rng.gen_range(0..F64_EDGE.len())], 64),
-            5 => (INT_EDGE[rng.gen_range(0..INT_EDGE.len())], [8, 16, 32, 64][rng.gen_range(0..4)]),
-            6 => (((rng.gen_range(-300i32..300) as f32) * if rng.gen_bool(0.5) { 0.5 } else { 1.0 }).to_bits() as u64, 32),
-            7 => ((rng.gen_range(-1e6f64..1e6)).to_bits(), 64),
-            8 => (rng.gen_range(0..16u64), [8, 16, 32, 64][rng.gen_range(0..4)]),
-            _ => ((rng.r#gen::<f32>() * 4.0 - 2.0).to_bits() as u64, 32),
+            0..=2 => (rng.random::<u64>(), 64),
+            3 => (F32_EDGE[rng.random_range(0..F32_EDGE.len())] as u64, 32),
+            4 => (F64_EDGE[rng.random_range(0..F64_EDGE.len())], 64),
+            5 => (INT_EDGE[rng.random_range(0..INT_EDGE.len())], [8, 16, 32, 64][rng.random_range(0..4)]),
+            6 => (((rng.random_range(-300i32..300) as f32) * if rng.random_bool(0.5) { 0.5 } else { 1.0 }).to_bits() as u64, 32),
+            7 => ((rng.random_range(-1e6f64..1e6)).to_bits(), 64),
+            8 => (rng.random_range(0..16u64), [8, 16, 32, 64][rng.random_range(0..4)]),
+            _ => ((rng.random::<f32>() * 4.0 - 2.0).to_bits() as u64, 32),
         };
         let width = width.min(128 - bit);
         let m = if width >= 64 { u64::MAX } else { (1u64 << width) - 1 };
@@ -134,17 +134,17 @@ fn lane_value(rng: &mut ChaCha8Rng, nan_free: bool) -> u128 {
 fn random_state(rng: &mut ChaCha8Rng, nan_free: bool) -> State {
     let mut s = State::new();
     for x in s.x.iter_mut() {
-        *x = if rng.gen_bool(0.5) {
-            INT_EDGE[rng.gen_range(0..INT_EDGE.len())]
+        *x = if rng.random_bool(0.5) {
+            INT_EDGE[rng.random_range(0..INT_EDGE.len())]
         } else {
-            rng.r#gen()
+            rng.random()
         };
     }
     for v in s.v.iter_mut() {
         let x = lane_value(rng, nan_free);
         *v = [x as u64, (x >> 64) as u64];
     }
-    s.nzcv = rng.gen_range(0..16);
+    s.nzcv = rng.random_range(0..16);
     s
 }
 
@@ -158,7 +158,7 @@ struct Stats {
 
 fn check(tpl: &Template, rng: &mut ChaCha8Rng, uni: &mut Uni, rj: &mut Rj, n: u64, stats: &mut Stats) {
     for case in 0..n {
-        let insn = tpl.fixed | (rng.r#gen::<u32>() & tpl.random);
+        let insn = tpl.fixed | (rng.random::<u32>() & tpl.random);
         if tpl.name.ends_with("shf") && (insn >> 19) & 0xF == 0 {
             continue; // modified immediate, not a shift
         }
@@ -169,14 +169,14 @@ fn check(tpl: &Template, rng: &mut ChaCha8Rng, uni: &mut Uni, rj: &mut Rj, n: u6
         let mut s = random_state(rng, nan_free);
         if helper {
             let mut fpcr = 0u32;
-            if rng.gen_bool(0.3) {
+            if rng.random_bool(0.3) {
                 fpcr |= 1 << 24; // FZ
             }
-            if rng.gen_bool(0.3) {
+            if rng.random_bool(0.3) {
                 fpcr |= 1 << 25; // DN
             }
-            if tpl.rmode && rng.gen_bool(0.5) {
-                fpcr |= rng.gen_range(0..4u32) << 22;
+            if tpl.rmode && rng.random_bool(0.5) {
+                fpcr |= rng.random_range(0..4u32) << 22;
             }
             s.fpcr = fpcr;
         }
@@ -281,21 +281,21 @@ fn helper_sequences_match_unicorn() {
     let tpls = templates();
     for case in 0..cases() / 4 {
         let mut words = Vec::new();
-        let n = rng.gen_range(2..12);
+        let n = rng.random_range(2..12);
         while words.len() < n {
-            let tpl = &tpls[rng.gen_range(0..tpls.len())];
-            let insn = tpl.fixed | (rng.r#gen::<u32>() & tpl.random);
+            let tpl = &tpls[rng.random_range(0..tpls.len())];
+            let insn = tpl.fixed | (rng.random::<u32>() & tpl.random);
             if !uses_helper(insn) {
                 continue;
             }
             words.push(insn);
-            match rng.gen_range(0..4) {
+            match rng.random_range(0..4) {
                 // add x<a>, x<b>, x<c>
-                0 => words.push(0x8B00_0000 | (rng.gen_range(0..31u32) << 16) | (rng.gen_range(0..31u32) << 5) | rng.gen_range(0..29u32)),
+                0 => words.push(0x8B00_0000 | (rng.random_range(0..31u32) << 16) | (rng.random_range(0..31u32) << 5) | rng.random_range(0..29u32)),
                 // eor v<a>.16b, v<b>.16b, v<c>.16b
-                1 => words.push(0x6E20_1C00 | (rng.gen_range(0..32u32) << 16) | (rng.gen_range(0..32u32) << 5) | rng.gen_range(0..32u32)),
+                1 => words.push(0x6E20_1C00 | (rng.random_range(0..32u32) << 16) | (rng.random_range(0..32u32) << 5) | rng.random_range(0..32u32)),
                 // str q<a>, [x29, #off]
-                2 => words.push(0x3D80_0000 | (rng.gen_range(0..64u32) << 10) | (29 << 5) | rng.gen_range(0..32u32)),
+                2 => words.push(0x3D80_0000 | (rng.random_range(0..64u32) << 10) | (29 << 5) | rng.random_range(0..32u32)),
                 _ => {}
             }
         }
@@ -345,15 +345,15 @@ fn scalar_fmax_fmin_inline_match_unicorn() {
         0xFFF8_0000_0000_1234, 0x7FF0_0000_0000_0000, 0xFFF0_0000_0000_0000, 1, (1 << 63) | 1,
     ];
     for case in 0..2000 {
-        let double = rng.gen_bool(0.5);
-        let op = rng.gen_range(0b0100..0b1000u32);
+        let double = rng.random_bool(0.5);
+        let op = rng.random_range(0b0100..0b1000u32);
         let insn = 0x1E20_0800 | ((double as u32) << 22) | (1 << 16) | (op << 12) | (2 << 5) | 3;
         let vals = if double { d_vals } else { s_vals };
         let mut s = State::new();
         for v in s.v.iter_mut() {
-            *v = [rng.r#gen(), rng.r#gen()];
+            *v = [rng.random(), rng.random()];
         }
-        let pick = |rng: &mut ChaCha8Rng| if rng.gen_bool(0.8) { vals[rng.gen_range(0..vals.len())] } else { rng.r#gen::<u32>() as u64 & 0x3FFF_FFFF };
+        let pick = |rng: &mut ChaCha8Rng| if rng.random_bool(0.8) { vals[rng.random_range(0..vals.len())] } else { rng.random::<u32>() as u64 & 0x3FFF_FFFF };
         s.v[2] = [pick(&mut rng), 0];
         s.v[1] = [pick(&mut rng), 0];
         assert!(!uses_helper(insn));
