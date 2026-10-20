@@ -53,7 +53,7 @@ pub struct DispatchSlot {
     pub host: u64,
 }
 
-pub const DISPATCH_BITS: u32 = 12;
+pub const DISPATCH_BITS: u32 = 16;
 pub const DISPATCH_SLOTS: usize = 1 << DISPATCH_BITS;
 pub const DISPATCH_MASK: u32 = (DISPATCH_SLOTS as u32) - 1;
 /// Never a valid 4-byte aligned PC; an indirect branch to it hits the miss
@@ -79,7 +79,7 @@ pub(crate) struct DispatchMeta {
 }
 
 pub struct CodeCache {
-    region: Allocation,
+    memory: CodeMemory,
     cursor: usize,
     capacity: usize,
     page: usize,
@@ -152,6 +152,142 @@ fn publication_range(cursor: usize, len: usize, capacity: usize) -> Result<Publi
     })
 }
 
+enum CodeMemory {
+    Allocated { allocation: Allocation, rwx: bool },
+    #[cfg(windows)]
+    Reserved(ReservedCode),
+}
+
+impl CodeMemory {
+    fn new(bytes: usize, rwx: bool) -> Result<Self> {
+        #[cfg(windows)]
+        {
+            if rwx {
+                return ReservedCode::reserve(bytes).map(Self::Reserved);
+            }
+        }
+        let protection = if rwx {
+            Protection::READ_WRITE_EXECUTE
+        } else {
+            Protection::READ_WRITE
+        };
+        let allocation =
+            region::alloc(bytes, protection).map_err(|e| Error::HostAlloc(e.to_string()))?;
+        Ok(Self::Allocated { allocation, rwx })
+    }
+
+    fn base(&self) -> *mut u8 {
+        match self {
+            Self::Allocated { allocation, .. } => allocation.as_ptr::<u8>().cast_mut(),
+            #[cfg(windows)]
+            Self::Reserved(code) => code.ptr,
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Self::Allocated { allocation, .. } => allocation.len(),
+            #[cfg(windows)]
+            Self::Reserved(code) => code.len,
+        }
+    }
+
+    fn rwx(&self) -> bool {
+        match self {
+            Self::Allocated { rwx, .. } => *rwx,
+            #[cfg(windows)]
+            Self::Reserved(_) => true,
+        }
+    }
+
+    fn prepare(&mut self, end: usize) -> Result<()> {
+        match self {
+            Self::Allocated { .. } => Ok(()),
+            #[cfg(windows)]
+            Self::Reserved(code) => code.commit_to(end),
+        }
+    }
+}
+
+#[cfg(windows)]
+struct ReservedCode {
+    ptr: *mut u8,
+    len: usize,
+    committed: usize,
+}
+
+#[cfg(windows)]
+mod reserved_os {
+    use core::ffi::c_void;
+
+    pub const COMMIT_CHUNK: usize = 2 << 20;
+    const MEM_COMMIT: u32 = 0x1000;
+    const MEM_RESERVE: u32 = 0x2000;
+    const MEM_RELEASE: u32 = 0x8000;
+    const PAGE_NOACCESS: u32 = 0x01;
+    const PAGE_EXECUTE_READWRITE: u32 = 0x40;
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn VirtualAlloc(addr: *mut c_void, size: usize, kind: u32, protect: u32) -> *mut c_void;
+        fn VirtualFree(addr: *mut c_void, size: usize, kind: u32) -> i32;
+    }
+
+    pub fn reserve(len: usize) -> Option<*mut u8> {
+        let p = unsafe { VirtualAlloc(core::ptr::null_mut(), len, MEM_RESERVE, PAGE_NOACCESS) };
+        (!p.is_null()).then_some(p.cast())
+    }
+
+    pub fn commit(ptr: *mut u8, len: usize) -> bool {
+        !unsafe { VirtualAlloc(ptr.cast(), len, MEM_COMMIT, PAGE_EXECUTE_READWRITE) }.is_null()
+    }
+
+    pub fn release(ptr: *mut u8) {
+        unsafe { VirtualFree(ptr.cast(), 0, MEM_RELEASE) };
+    }
+}
+
+#[cfg(windows)]
+impl ReservedCode {
+    fn reserve(bytes: usize) -> Result<Self> {
+        let page = region::page::size();
+        let len = bytes.checked_add(page - 1).ok_or(Error::CodeCacheFull)? / page * page;
+        let ptr = reserved_os::reserve(len)
+            .ok_or_else(|| Error::HostAlloc("code cache reservation failed".into()))?;
+        Ok(Self {
+            ptr,
+            len,
+            committed: 0,
+        })
+    }
+
+    fn commit_to(&mut self, end: usize) -> Result<()> {
+        if end <= self.committed {
+            return Ok(());
+        }
+        if end > self.len {
+            return Err(Error::CodeCacheFull);
+        }
+        let target = end
+            .div_ceil(reserved_os::COMMIT_CHUNK)
+            .saturating_mul(reserved_os::COMMIT_CHUNK)
+            .min(self.len);
+        let start = unsafe { self.ptr.add(self.committed) };
+        if !reserved_os::commit(start, target - self.committed) {
+            return Err(Error::HostAlloc("code cache commit failed".into()));
+        }
+        self.committed = target;
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ReservedCode {
+    fn drop(&mut self) {
+        reserved_os::release(self.ptr);
+    }
+}
+
 unsafe impl Send for CodeCache {}
 
 #[cfg(all(test, target_os = "windows"))]
@@ -160,9 +296,12 @@ mod xmm_thunk_tests;
 
 impl CodeCache {
     pub fn new(bytes: usize) -> Result<Self> {
-        let allocation = region::alloc(bytes, Protection::READ_WRITE)
-            .map_err(|e| Error::HostAlloc(e.to_string()))?;
-        let capacity = allocation.len();
+        Self::with_rwx(bytes, false)
+    }
+
+    pub fn with_rwx(bytes: usize, rwx: bool) -> Result<Self> {
+        let memory = CodeMemory::new(bytes, rwx)?;
+        let capacity = memory.len();
         if capacity > i32::MAX as usize {
             return Err(Error::HostAlloc(
                 "code cache must be smaller than 2 GiB (rel32 block links)".into(),
@@ -173,7 +312,7 @@ impl CodeCache {
             host: 0,
         };
         let mut this = Self {
-            region: allocation,
+            memory,
             cursor: 0,
             capacity,
             page: region::page::size(),
@@ -378,6 +517,9 @@ impl CodeCache {
     /// Makes the pages of `[addr, addr + len)` writable, runs `f`, and
     /// returns them to read+execute.
     fn with_writable<R>(&mut self, addr: usize, len: usize, f: impl FnOnce() -> R) -> Result<R> {
+        if self.memory.rwx() {
+            return Ok(f());
+        }
         let lo = addr & !(self.page - 1);
         let hi = (addr + len + self.page - 1) & !(self.page - 1);
         unsafe {
@@ -394,15 +536,21 @@ impl CodeCache {
 
     fn append_raw(&mut self, bytes: &[u8]) -> Result<*const u8> {
         let range = publication_range(self.cursor, bytes.len(), self.capacity)?;
-        let base = self.region.as_mut_ptr::<u8>();
+        self.memory.prepare(range.page_start + range.page_len)?;
+        let base = self.memory.base();
+        let rwx = self.memory.rwx();
         unsafe {
             let publish_pages = base.add(range.page_start);
             let dst = base.add(range.byte_start);
-            region::protect(publish_pages, range.page_len, Protection::READ_WRITE)
-                .map_err(|e| Error::HostAlloc(e.to_string()))?;
+            if !rwx {
+                region::protect(publish_pages, range.page_len, Protection::READ_WRITE)
+                    .map_err(|e| Error::HostAlloc(e.to_string()))?;
+            }
             core::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len());
-            region::protect(publish_pages, range.page_len, Protection::READ_EXECUTE)
-                .map_err(|e| Error::HostAlloc(e.to_string()))?;
+            if !rwx {
+                region::protect(publish_pages, range.page_len, Protection::READ_EXECUTE)
+                    .map_err(|e| Error::HostAlloc(e.to_string()))?;
+            }
             self.cursor = range.byte_end;
             core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
             Ok(dst as *const u8)
@@ -574,7 +722,7 @@ mod tests {
     use super::*;
 
     fn protection(cache: &CodeCache, offset: usize) -> Protection {
-        let ptr = unsafe { cache.region.as_ptr::<u8>().add(offset) };
+        let ptr = unsafe { cache.memory.base().add(offset) };
         region::query(ptr).unwrap().protection()
     }
 
@@ -643,7 +791,7 @@ mod tests {
         let mut cache = CodeCache::new(page * 4).unwrap();
         assert_eq!(protection(&cache, 0), Protection::READ_EXECUTE);
         assert_eq!(protection(&cache, page), Protection::READ_WRITE);
-        let sentinel = unsafe { cache.region.as_mut_ptr::<u8>().add(page * 3) };
+        let sentinel = unsafe { cache.memory.base().add(page * 3) };
         unsafe { region::protect(sentinel, page, Protection::READ).unwrap() };
         let first = cache.append_raw(&return_value(41)).unwrap();
         let second = cache.append_raw(&return_value(42)).unwrap();
@@ -707,6 +855,41 @@ mod tests {
         assert_eq!(cache.cursor, cursor);
         assert_eq!(protection(&cache, 0), Protection::READ_EXECUTE);
         assert_eq!(unsafe { call(&cache, first) }, 45);
+    }
+
+    #[test]
+    fn rwx_publication_and_linking_keep_pages_writable_and_executable() {
+        let page = region::page::size();
+        let mut cache = CodeCache::with_rwx(page * 3, true).unwrap();
+        let first = cache
+            .install(0x1000, 0x1004, 1, &return_value(50), &[], 0, true)
+            .unwrap();
+        let transient = cache.append_raw(&return_value(51)).unwrap();
+        assert_eq!(unsafe { call(&cache, first) }, 50);
+        assert_eq!(unsafe { call(&cache, transient) }, 51);
+        assert_eq!(protection(&cache, 0), Protection::READ_WRITE_EXECUTE);
+        assert_eq!(protection(&cache, page), Protection::READ_WRITE_EXECUTE);
+        cache.invalidate_range(0x1000, 4);
+        assert!(cache.lookup(0x1000).is_none());
+        cache.reset().unwrap();
+        let replacement = cache
+            .install(0x1000, 0x1004, 1, &return_value(52), &[], 0, true)
+            .unwrap();
+        assert_eq!(unsafe { call(&cache, replacement) }, 52);
+        assert_eq!(protection(&cache, 0), Protection::READ_WRITE_EXECUTE);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rwx_cache_commits_only_the_pages_it_publishes() {
+        let mut cache = CodeCache::with_rwx(1 << 30, true).unwrap();
+        let block = cache
+            .install(0x1000, 0x1004, 1, &return_value(53), &[], 0, true)
+            .unwrap();
+        assert_eq!(unsafe { call(&cache, block) }, 53);
+        assert_eq!(protection(&cache, 0), Protection::READ_WRITE_EXECUTE);
+        let far = unsafe { cache.memory.base().add(512 << 20) };
+        assert!(!region::query(far).unwrap().is_committed());
     }
 
     #[test]

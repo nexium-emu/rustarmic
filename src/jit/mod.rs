@@ -53,6 +53,7 @@ pub struct JitConfig {
     /// `ctx.pc` is the last callback access the block reached, so
     /// re-entering an unchanged mapping faults again.
     pub resume_after_fault: bool,
+    pub rwx_code_cache: bool,
 }
 
 impl Default for JitConfig {
@@ -65,6 +66,7 @@ impl Default for JitConfig {
             link_blocks: true,
             host_features: None,
             resume_after_fault: false,
+            rwx_code_cache: false,
         }
     }
 }
@@ -179,7 +181,7 @@ impl Jit {
             return Err(Error::UnsupportedHost);
         }
         Ok(Self {
-            cache: CodeCache::new(config.code_cache_bytes)?,
+            cache: CodeCache::with_rwx(config.code_cache_bytes, config.rwx_code_cache)?,
             scratch: Scratch::new(),
             block: Block::new(0),
             config,

@@ -147,6 +147,7 @@ impl SharedRuntime {
             link_blocks: true,
             host_features: Some(config.host_features),
             resume_after_fault: false,
+            rwx_code_cache: false,
             translate: crate::frontend::TranslateOptions {
                 max_insts: config.max_block_insts,
                 ..Default::default()
