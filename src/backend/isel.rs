@@ -4237,11 +4237,14 @@ enum FastmemMode {
     Window,
     /// Per-page permission table; the payload is the guest address width.
     PageTable(u8),
+    Direct(u8),
 }
 
 impl FastmemMode {
     fn of(block: &Block) -> Self {
-        if block.fastmem_page_bits >= 13 && block.fastmem_page_bits <= 42 {
+        if block.fastmem_direct_bits >= 1 && block.fastmem_direct_bits <= 63 {
+            FastmemMode::Direct(block.fastmem_direct_bits)
+        } else if block.fastmem_page_bits >= 13 && block.fastmem_page_bits <= 42 {
             FastmemMode::PageTable(block.fastmem_page_bits)
         } else if block.use_fastmem {
             FastmemMode::Window
@@ -4251,19 +4254,76 @@ impl FastmemMode {
     }
 }
 
+#[derive(Clone, Copy)]
+pub struct DirectSiteLabels {
+    pub access: CodeLabel,
+    pub slow: Option<CodeLabel>,
+}
+
+thread_local! {
+    static DIRECT_SITES: core::cell::RefCell<Vec<DirectSiteLabels>> =
+        const { core::cell::RefCell::new(Vec::new()) };
+}
+
+pub fn take_direct_sites() -> Vec<DirectSiteLabels> {
+    DIRECT_SITES.with(|sites| core::mem::take(&mut *sites.borrow_mut()))
+}
+
+fn mark_direct_site(asm: &mut CodeAssembler, mode: FastmemMode) -> Result<()> {
+    if !matches!(mode, FastmemMode::Direct(_)) {
+        return Ok(());
+    }
+    let mut access = asm.create_label();
+    asm.set_label(&mut access)?;
+    DIRECT_SITES.with(|sites| {
+        sites.borrow_mut().push(DirectSiteLabels {
+            access,
+            slow: None,
+        })
+    });
+    Ok(())
+}
+
+fn bind_direct_slow(mode: FastmemMode, slow: CodeLabel) {
+    if !matches!(mode, FastmemMode::Direct(_)) {
+        return;
+    }
+    DIRECT_SITES.with(|sites| {
+        for site in sites
+            .borrow_mut()
+            .iter_mut()
+            .rev()
+            .take_while(|site| site.slow.is_none())
+        {
+            site.slow = Some(slow);
+        }
+    });
+}
+
 /// Emits the inline guard for a direct access.  On entry SCRATCH1 holds the
-/// guest address; on fallthrough `SCRATCH0 + SCRATCH2` addresses the host
-/// byte.  SCRATCH1 and ARG3 (the store value) are preserved on every path.
+/// guest address; on fallthrough `SCRATCH0` plus the returned index register
+/// addresses the host byte.  SCRATCH1 and ARG3 (the store value) are
+/// preserved on every path.
 fn emit_fastmem_guard(
     asm: &mut CodeAssembler,
     mode: FastmemMode,
     bytes: u32,
     perm_bit: u8,
     lbl_slow: CodeLabel,
-) -> Result<()> {
+) -> Result<AsmRegister64> {
     match mode {
         FastmemMode::Off => unreachable!(),
         FastmemMode::Window => emit_fastmem_bounds_check(asm, bytes, lbl_slow)?,
+        FastmemMode::Direct(bits) => {
+            asm.mov(SCRATCH2, SCRATCH1)?;
+            asm.shr(SCRATCH2, i32::from(bits))?;
+            asm.jnz(lbl_slow)?;
+            asm.mov(
+                SCRATCH0,
+                qword_ptr(CTX_REG + cpu_offsets::mem_base() as i32),
+            )?;
+            return Ok(SCRATCH1);
+        }
         FastmemMode::PageTable(bits) => {
             if bytes > 1 {
                 // Accesses that straddle a page boundary take the callback:
@@ -4288,14 +4348,14 @@ fn emit_fastmem_guard(
                 SCRATCH0,
                 qword_ptr(CTX_REG + cpu_offsets::mem_base() as i32),
             )?;
-            return Ok(());
+            return Ok(SCRATCH2);
         }
     }
     asm.mov(
         SCRATCH0,
         qword_ptr(CTX_REG + cpu_offsets::mem_base() as i32),
     )?;
-    Ok(())
+    Ok(SCRATCH2)
 }
 
 fn emit_load(
@@ -4312,23 +4372,25 @@ fn emit_load(
     if mode != FastmemMode::Off {
         let mut lbl_slow = asm.create_label();
         let mut lbl_done = asm.create_label();
-        emit_fastmem_guard(
+        let index = emit_fastmem_guard(
             asm,
             mode,
             bytes,
             crate::jit::context::PAGE_DIRECT_READ,
             lbl_slow,
         )?;
+        mark_direct_site(asm, mode)?;
         match bytes {
-            1 => asm.movzx(eax, byte_ptr(SCRATCH0 + SCRATCH2))?,
-            2 => asm.movzx(eax, word_ptr(SCRATCH0 + SCRATCH2))?,
-            4 => asm.mov(eax, dword_ptr(SCRATCH0 + SCRATCH2))?,
-            8 => asm.mov(rax, qword_ptr(SCRATCH0 + SCRATCH2))?,
-            16 => asm.movdqu(xmm0, xmmword_ptr(SCRATCH0 + SCRATCH2))?,
+            1 => asm.movzx(eax, byte_ptr(SCRATCH0 + index))?,
+            2 => asm.movzx(eax, word_ptr(SCRATCH0 + index))?,
+            4 => asm.mov(eax, dword_ptr(SCRATCH0 + index))?,
+            8 => asm.mov(rax, qword_ptr(SCRATCH0 + index))?,
+            16 => asm.movdqu(xmm0, xmmword_ptr(SCRATCH0 + index))?,
             _ => return Err(Error::Backend("unsupported load width".into())),
         }
         asm.jmp(lbl_done)?;
         asm.set_label(&mut lbl_slow)?;
+        bind_direct_slow(mode, lbl_slow);
         emit_load_slow_path(asm, bytes, elem, a.pc)?;
         asm.set_label(&mut lbl_done)?;
     } else {
@@ -4364,23 +4426,25 @@ fn emit_store(
     if mode != FastmemMode::Off {
         let mut lbl_slow = asm.create_label();
         let mut lbl_done = asm.create_label();
-        emit_fastmem_guard(
+        let index = emit_fastmem_guard(
             asm,
             mode,
             bytes,
             crate::jit::context::PAGE_DIRECT_WRITE,
             lbl_slow,
         )?;
+        mark_direct_site(asm, mode)?;
         match bytes {
-            1 => asm.mov(byte_ptr(SCRATCH0 + SCRATCH2), gpr8(arg3_reg_id()))?,
-            2 => asm.mov(word_ptr(SCRATCH0 + SCRATCH2), gpr16(arg3_reg_id()))?,
-            4 => asm.mov(dword_ptr(SCRATCH0 + SCRATCH2), gpr32(arg3_reg_id()))?,
-            8 => asm.mov(qword_ptr(SCRATCH0 + SCRATCH2), ARG3_REG)?,
-            16 => asm.movdqu(xmmword_ptr(SCRATCH0 + SCRATCH2), xmm0)?,
+            1 => asm.mov(byte_ptr(SCRATCH0 + index), gpr8(arg3_reg_id()))?,
+            2 => asm.mov(word_ptr(SCRATCH0 + index), gpr16(arg3_reg_id()))?,
+            4 => asm.mov(dword_ptr(SCRATCH0 + index), gpr32(arg3_reg_id()))?,
+            8 => asm.mov(qword_ptr(SCRATCH0 + index), ARG3_REG)?,
+            16 => asm.movdqu(xmmword_ptr(SCRATCH0 + index), xmm0)?,
             _ => return Err(Error::Backend("unsupported store width".into())),
         }
         asm.jmp(lbl_done)?;
         asm.set_label(&mut lbl_slow)?;
+        bind_direct_slow(mode, lbl_slow);
         emit_store_slow_path(asm, bytes, elem, a.pc)?;
         asm.set_label(&mut lbl_done)?;
     } else {
@@ -4661,18 +4725,19 @@ fn emit_atomic_core(
     let mut lbl_done = asm.create_label();
     let direct = mode != FastmemMode::Off;
     if direct {
-        emit_fastmem_guard(
+        let index = emit_fastmem_guard(
             asm,
             mode,
             bytes,
             crate::jit::context::PAGE_DIRECT_WRITE,
             lbl_slow,
         )?;
-        asm.lea(r10, qword_ptr(SCRATCH0 + SCRATCH2))?;
+        asm.lea(r10, qword_ptr(SCRATCH0 + index))?;
         let m = sized_mem(bytes, r10);
         match op {
             A::Add | A::Swp => {
                 asm.mov(rax, ARG3_REG)?;
+                mark_direct_site(asm, mode)?;
                 let is_add = op == A::Add;
                 match (bytes, is_add) {
                     (1, true) => asm.lock().xadd(m, al)?,
@@ -4688,10 +4753,12 @@ fn emit_atomic_core(
             }
             A::Cas => {
                 asm.mov(rax, r11)?;
+                mark_direct_site(asm, mode)?;
                 cmpxchg_sized(asm, bytes, arg3)?;
                 zext_rax(asm, bytes)?;
             }
             _ => {
+                mark_direct_site(asm, mode)?;
                 match bytes {
                     1 => asm.movzx(eax, byte_ptr(r10))?,
                     2 => asm.movzx(eax, word_ptr(r10))?,
@@ -4726,6 +4793,7 @@ fn emit_atomic_core(
                     }
                     _ => unreachable!(),
                 }
+                mark_direct_site(asm, mode)?;
                 cmpxchg_sized(asm, bytes, 11)?;
                 asm.jne(lbl_retry)?;
                 zext_rax(asm, bytes)?;
@@ -4733,6 +4801,7 @@ fn emit_atomic_core(
         }
         asm.jmp(lbl_done)?;
         asm.set_label(&mut lbl_slow)?;
+        bind_direct_slow(mode, lbl_slow);
     }
     let io_off = cpu_offsets::io_value() as i32;
     asm.mov(qword_ptr(CTX_REG + io_off), ARG3_REG)?;

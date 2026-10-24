@@ -2,6 +2,7 @@ pub mod atomic;
 pub mod code_cache;
 pub mod context;
 pub mod dispatcher;
+pub mod fastmem_direct;
 pub mod helpers;
 pub mod memory;
 pub mod page_table;
@@ -34,6 +35,7 @@ pub struct JitConfig {
     /// leaving those pages' bits clear.  The table must cover
     /// `1 << (bits - 12)` bytes.  Takes precedence over `use_fastmem`.
     pub fastmem_page_bits: Option<u8>,
+    pub fastmem_direct_bits: Option<u8>,
     /// Patch direct-branch exits to jump straight into their (cached) target
     /// blocks and let indirect branches probe the dispatch table in
     /// generated code.  `false` returns to the dispatcher after every block,
@@ -63,6 +65,7 @@ impl Default for JitConfig {
             code_cache_bytes: 256 * 1024 * 1024,
             use_fastmem: false,
             fastmem_page_bits: None,
+            fastmem_direct_bits: None,
             link_blocks: true,
             host_features: None,
             resume_after_fault: false,
@@ -70,6 +73,8 @@ impl Default for JitConfig {
         }
     }
 }
+
+const DIRECT_BITS_RANGE: core::ops::RangeInclusive<u8> = 1..=63;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExitReason {
@@ -180,6 +185,18 @@ impl Jit {
         if !host_features.has_sse41 {
             return Err(Error::UnsupportedHost);
         }
+        if let Some(bits) = config.fastmem_direct_bits {
+            if !DIRECT_BITS_RANGE.contains(&bits) {
+                return Err(Error::Backend(format!(
+                    "fastmem_direct_bits must be in {DIRECT_BITS_RANGE:?}, got {bits}"
+                )));
+            }
+            if !fastmem_direct::install_handler() {
+                return Err(Error::HostAlloc(
+                    "direct fastmem fault handler could not be installed".into(),
+                ));
+            }
+        }
         Ok(Self {
             cache: CodeCache::with_rwx(config.code_cache_bytes, config.rwx_code_cache)?,
             scratch: Scratch::new(),
@@ -193,6 +210,10 @@ impl Jit {
 
     pub fn invalidate_range(&mut self, start: u64, len: u64) {
         self.cache.invalidate_range(start, len);
+    }
+
+    pub fn direct_sites_patched(&self) -> u64 {
+        self.cache.direct_sites_patched()
     }
 
     pub fn run(&mut self, ctx: &mut CpuContext, mem: &mut dyn Memory) -> Result<ExitReason> {
@@ -224,6 +245,7 @@ impl Jit {
             optimize_with_scratch(&mut self.block, &mut self.scratch);
             self.block.use_fastmem = self.config.use_fastmem;
             self.block.fastmem_page_bits = self.config.fastmem_page_bits.unwrap_or(0);
+            self.block.fastmem_direct_bits = self.config.fastmem_direct_bits.unwrap_or(0);
             self.block.link_indirect = self.config.link_blocks;
             let emitted = crate::backend::cpu_features::with_features(self.host_features, || {
                 crate::backend::emit_block(&self.block)
@@ -264,6 +286,7 @@ impl Jit {
                     block.cycles,
                     &emitted.code,
                     chains,
+                    &emitted.direct_sites,
                     cap_key,
                     emitted.thunk_kind,
                 )
@@ -295,6 +318,7 @@ impl Jit {
         budget: u64,
     ) -> Result<RunOutcome> {
         let mut retired = 0u64;
+        let direct = self.config.fastmem_direct_bits.is_some();
         // Fault state belongs to one run invocation.  Helpers publish it
         // before returning; clear stale state before the next guest slice.
         ctx.mem_fault = 0;
@@ -333,7 +357,10 @@ impl Jit {
                 let thunk: JitFn =
                     unsafe { core::mem::transmute(self.cache.thunk_for(entry_thunk)) };
                 ctx.budget_remaining = slice as i64;
+                let entered = direct
+                    .then(|| fastmem_direct::Entered::new(self.cache.direct_site_registry()));
                 let next_pc = unsafe { thunk(host_fn as u64, ctx as *mut CpuContext) };
+                drop(entered);
                 let executed = slice - ctx.budget_remaining.max(0) as u64;
                 let refused = executed == 0
                     && next_pc == pc

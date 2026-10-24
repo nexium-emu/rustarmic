@@ -8,8 +8,9 @@ use region::{Allocation, Protection};
 use smallvec::SmallVec;
 
 use crate::backend::thunk::{emit_thunk_bytes_for, ThunkKind};
-use crate::backend::{emit_thunk_bytes, ChainSite};
+use crate::backend::{emit_thunk_bytes, ChainSite, DirectSite};
 use crate::error::{Error, Result};
+use crate::jit::fastmem_direct::SiteRegistry;
 
 pub type ThunkFn =
     unsafe extern "C" fn(block_fn: u64, ctx: *mut crate::jit::context::CpuContext) -> u64;
@@ -97,6 +98,7 @@ pub struct CodeCache {
     xmm_free_thunk: *const u8,
     miss_stub: *const u8,
     patches: Vec<(usize, i32)>,
+    direct_sites: SiteRegistry,
 }
 
 struct Entry {
@@ -311,6 +313,7 @@ impl CodeCache {
             pc: EMPTY_PC,
             host: 0,
         };
+        let direct_sites = SiteRegistry::new(memory.base() as usize, memory.rwx());
         let mut this = Self {
             memory,
             cursor: 0,
@@ -327,9 +330,22 @@ impl CodeCache {
             xmm_free_thunk: core::ptr::null(),
             miss_stub: core::ptr::null(),
             patches: Vec::new(),
+            direct_sites,
         };
         this.install_runtime_stubs()?;
         Ok(this)
+    }
+
+    pub(crate) fn direct_site_registry(&self) -> *const SiteRegistry {
+        &self.direct_sites
+    }
+
+    pub fn direct_site_count(&self) -> usize {
+        self.direct_sites.len()
+    }
+
+    pub fn direct_sites_patched(&self) -> u64 {
+        self.direct_sites.patched()
     }
 
     fn install_runtime_stubs(&mut self) -> Result<()> {
@@ -511,6 +527,7 @@ impl CodeCache {
         self.capped.clear();
         self.links.clear();
         self.patches.clear();
+        self.direct_sites.clear();
         self.install_runtime_stubs()
     }
 
@@ -646,6 +663,7 @@ impl CodeCache {
             guest_insns,
             bytes,
             &[],
+            &[],
             None,
             thunk_kind,
         )
@@ -661,10 +679,12 @@ impl CodeCache {
         guest_insns: u32,
         bytes: &[u8],
         chains: &[ChainSite],
+        direct_sites: &[DirectSite],
         cap: Option<u32>,
         thunk_kind: ThunkKind,
     ) -> Result<*const u8> {
         let host_ptr = self.append_raw(bytes)?;
+        self.direct_sites.register(host_ptr as usize, direct_sites);
         let ranges: SmallVec<[(u64, u64); 4]> = if ranges.is_empty() {
             smallvec::smallvec![(guest_pc, guest_pc.saturating_add(4))]
         } else {

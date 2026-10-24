@@ -20,5 +20,5 @@ mod scalar_fp_pair;
 mod simd_binary_status;
 pub mod thunk;
 
-pub use emit::{ChainSite, EmittedBlock, emit_block};
+pub use emit::{ChainSite, DirectSite, EmittedBlock, emit_block};
 pub use thunk::emit_thunk_bytes;

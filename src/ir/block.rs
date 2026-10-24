@@ -63,6 +63,7 @@ pub struct Block {
     pub use_fastmem: bool,
     /// Page-table fastmem address width (0 = disabled); see `JitConfig`.
     pub fastmem_page_bits: u8,
+    pub fastmem_direct_bits: u8,
     /// Emit the inline dispatch-table probe for indirect branches.
     pub link_indirect: bool,
     /// Guest ranges `[start, end)` this block was translated from.  More
@@ -87,6 +88,7 @@ impl Block {
             cycles: 0,
             use_fastmem: false,
             fastmem_page_bits: 0,
+            fastmem_direct_bits: 0,
             link_indirect: false,
             ranges: smallvec::SmallVec::new(),
         }

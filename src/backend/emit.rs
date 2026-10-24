@@ -17,6 +17,7 @@ use crate::jit::context::cpu_offsets;
 pub struct EmittedBlock {
     pub code: Vec<u8>,
     pub chains: Vec<ChainSite>,
+    pub direct_sites: Vec<DirectSite>,
     pub body_offset: u32,
     pub thunk_kind: ThunkKind,
 }
@@ -126,7 +127,50 @@ pub struct ChainSite {
     pub target_pc: u64,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct DirectSite {
+    pub offset: u32,
+    pub len: u8,
+    pub slow_offset: u32,
+}
+
 const BITNESS: u32 = 64;
+
+const DIRECT_SITE_MIN_LEN: usize = 3;
+
+fn resolve_direct_sites(result: &CodeAssemblerResult) -> Result<Vec<DirectSite>> {
+    use iced_x86::{Decoder, DecoderOptions, OpKind};
+    let pending = crate::backend::isel::take_direct_sites();
+    let code = &result.inner.code_buffer;
+    let mut sites = Vec::with_capacity(pending.len());
+    for site in pending {
+        let offset = result
+            .label_ip(&site.access)
+            .map_err(|e| Error::Backend(e.to_string()))? as usize;
+        let slow = site
+            .slow
+            .ok_or_else(|| Error::Backend("direct access site without a slow path".into()))?;
+        let slow = result
+            .label_ip(&slow)
+            .map_err(|e| Error::Backend(e.to_string()))? as usize;
+        let instruction = Decoder::new(BITNESS, &code[offset..], DecoderOptions::NONE).decode();
+        let len = instruction.len();
+        let accesses_memory = !instruction.is_invalid()
+            && (0..instruction.op_count()).any(|i| instruction.op_kind(i) == OpKind::Memory);
+        let rel = slow as isize - (offset as isize + 2);
+        if !accesses_memory || len < DIRECT_SITE_MIN_LEN || i8::try_from(rel).is_err() {
+            return Err(Error::Backend(format!(
+                "direct access site at {offset:#x} (len {len}, slow path {slow:#x}) cannot be patched"
+            )));
+        }
+        sites.push(DirectSite {
+            offset: offset as u32,
+            len: len as u8,
+            slow_offset: slow as u32,
+        });
+    }
+    Ok(sites)
+}
 
 /// Generated block layout:
 ///
@@ -149,6 +193,7 @@ const BITNESS: u32 = 64;
 /// honours halt / fault requests, so chained execution stays bounded.  A
 /// block that does not fit returns its own PC with the budget untouched.
 pub fn emit_block(block: &Block) -> Result<EmittedBlock> {
+    drop(crate::backend::isel::take_direct_sites());
     let fused = fusable_flag_producer(block);
     let fused_uses: [ValueRef; 2] = match fused {
         Some(p) => [p.args[0], p.args[1]],
@@ -353,12 +398,14 @@ pub fn emit_block(block: &Block) -> Result<EmittedBlock> {
     let body_offset = result
         .label_ip(&body_label)
         .map_err(|e| Error::Backend(e.to_string()))? as u32;
+    let direct_sites = resolve_direct_sites(&result)?;
 
     let code = result.inner.code_buffer;
     let thunk_kind = emitted_thunk_kind(block, &alloc, &code);
     Ok(EmittedBlock {
         code,
         chains,
+        direct_sites,
         body_offset,
         thunk_kind,
     })

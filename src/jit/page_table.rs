@@ -112,7 +112,7 @@ mod os {
 }
 
 #[cfg(windows)]
-mod os {
+pub(crate) mod os {
     use core::ffi::c_void;
     use std::sync::Once;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -128,26 +128,26 @@ mod os {
     const PAGE: usize = 4096;
 
     #[repr(C)]
-    struct ExceptionRecord {
-        code: u32,
-        flags: u32,
-        record: *mut ExceptionRecord,
-        address: *mut c_void,
-        parameters: u32,
-        information: [usize; 15],
+    pub(crate) struct ExceptionRecord {
+        pub(crate) code: u32,
+        pub(crate) flags: u32,
+        pub(crate) record: *mut ExceptionRecord,
+        pub(crate) address: *mut c_void,
+        pub(crate) parameters: u32,
+        pub(crate) information: [usize; 15],
     }
 
     #[repr(C)]
-    struct ExceptionPointers {
-        record: *mut ExceptionRecord,
-        context: *mut c_void,
+    pub(crate) struct ExceptionPointers {
+        pub(crate) record: *mut ExceptionRecord,
+        pub(crate) context: *mut c_void,
     }
 
     #[link(name = "kernel32")]
     unsafe extern "system" {
         fn VirtualAlloc(addr: *mut c_void, size: usize, kind: u32, protect: u32) -> *mut c_void;
         fn VirtualFree(addr: *mut c_void, size: usize, kind: u32) -> i32;
-        fn AddVectoredExceptionHandler(
+        pub(crate) fn AddVectoredExceptionHandler(
             first: u32,
             handler: unsafe extern "system" fn(*mut ExceptionPointers) -> i32,
         ) -> *mut c_void;
