@@ -1,7 +1,7 @@
 use disarm64::decoder::DP_2SRC;
 
 use crate::arch::RegSize;
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::frontend::translator::InstStatus;
 use crate::ir::{Armlet, IrEmitter, Op, Ty};
 use crate::util::bits::{bit, bits};
@@ -32,13 +32,11 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: DP_2SRC) -> Result<InstStatus> {
         CRC32CH_Rd_Rn_Rm(i) => return translate_crc(em, i.0),
         CRC32CW_Rd_Rn_Rm(i) => return translate_crc(em, i.0),
         CRC32CX_Rd_Rn_Rm(i) => return translate_crc(em, i.0),
+        IRG_Rd_SP_Rn_SP_Rm(i) => return super::mte::data_processing(em, i.0),
+        GMI_Rd_Rn_SP_Rm(i) => return super::mte::data_processing(em, i.0),
+        SUBP_Rd_Rn_SP_Rm_SP(i) => return super::mte::data_processing(em, i.0),
+        SUBPS_Rd_Rn_SP_Rm_SP(i) => return super::mte::data_processing(em, i.0),
         PACGA_Rd_Rn_Rm_SP(i) => return translate_pacga(em, i.0),
-        _ => {
-            return Err(Error::Unsupported {
-                pc: em.current_pc,
-                opcode: 0,
-            });
-        }
     };
 
     let sf = bit(raw, 31);

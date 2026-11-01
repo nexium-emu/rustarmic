@@ -33,6 +33,11 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: LDST_UNSCALED) -> Result<InstStat
         STURH_Rt_ADDR_SIMM9(i) => (i.0, Kind::Store, false),
         LDUR_Ft_ADDR_SIMM9(i) => (i.0, Kind::FpLoad, false),
         STUR_Ft_ADDR_SIMM9(i) => (i.0, Kind::FpStore, false),
+        STG_Rt_SP_ADDR_SIMM13(i) => return super::mte::tag_store(em, i.0),
+        STZG_Rt_SP_ADDR_SIMM13(i) => return super::mte::tag_store(em, i.0),
+        ST2G_Rt_SP_ADDR_SIMM13(i) => return super::mte::tag_store(em, i.0),
+        STZ2G_Rt_SP_ADDR_SIMM13(i) => return super::mte::tag_store(em, i.0),
+        LDG_Rt_ADDR_SIMM13(i) => return super::mte::tag_store(em, i.0),
         _ => {
             return Err(Error::Unsupported {
                 pc: em.current_pc,

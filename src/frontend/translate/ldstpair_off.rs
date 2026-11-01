@@ -14,12 +14,7 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: LDSTPAIR_OFF) -> Result<InstStatu
         STP_Ft_Ft2_ADDR_SIMM7(i) => (i.0, false, true),
         LDP_Ft_Ft2_ADDR_SIMM7(i) => (i.0, true, true),
         LDPSW_Rt_Rt2_ADDR_SIMM7(i) => return ldpsw(em, i.0, IdxMode::Off),
-        _ => {
-            return Err(Error::Unsupported {
-                pc: em.current_pc,
-                opcode: 0,
-            });
-        }
+        STGP_Rt_Rt2_ADDR_SIMM11(i) => return super::mte::store_pair(em, i.0),
     };
 
     let opc = bits(raw, 30, 2);

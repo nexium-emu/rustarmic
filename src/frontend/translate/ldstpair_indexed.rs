@@ -23,12 +23,7 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: LDSTPAIR_INDEXED) -> Result<InstS
             };
             return super::ldstpair_off::ldpsw(em, raw, idx);
         }
-        _ => {
-            return Err(Error::Unsupported {
-                pc: em.current_pc,
-                opcode: 0,
-            });
-        }
+        STGP_Rt_X_Rt2_X_ADDR_SIMM11_imm_tag(i) => return super::mte::store_pair(em, i.0),
     };
 
     let opc = bits(raw, 30, 2);

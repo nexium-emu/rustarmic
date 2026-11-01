@@ -1,7 +1,7 @@
 use disarm64::decoder::ADDSUB_IMM;
 
 use crate::arch::RegSize;
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::frontend::translator::InstStatus;
 use crate::ir::IrEmitter;
 use crate::util::bits::{bit, bits};
@@ -13,12 +13,8 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: ADDSUB_IMM) -> Result<InstStatus>
         ADDS_Rd_Rn_SP_AIMM(i) => (i.0, false, true),
         SUB_Rd_SP_Rn_SP_AIMM(i) => (i.0, true, false),
         SUBS_Rd_Rn_SP_AIMM(i) => (i.0, true, true),
-        _ => {
-            return Err(Error::Unsupported {
-                pc: em.current_pc,
-                opcode: 0,
-            });
-        }
+        ADDG_Rd_SP_Rn_SP_UIMM10_UIMM4_ADDG(i) => return super::mte::add_tagged(em, i.0),
+        SUBG_Rd_SP_Rn_SP_UIMM10_UIMM4_ADDG(i) => return super::mte::add_tagged(em, i.0),
     };
 
     let sf = bit(raw, 31);

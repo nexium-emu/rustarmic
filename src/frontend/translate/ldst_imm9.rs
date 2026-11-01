@@ -29,12 +29,10 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: LDST_IMM9) -> Result<InstStatus> 
         STRH_Rt_ADDR_SIMM9(i) => (i.0, Kind::Store, false),
         LDR_Ft_ADDR_SIMM9(i) => (i.0, Kind::FpLoad, false),
         STR_Ft_ADDR_SIMM9(i) => (i.0, Kind::FpStore, false),
-        _ => {
-            return Err(Error::Unsupported {
-                pc: em.current_pc,
-                opcode: 0,
-            });
-        }
+        STG_Rt_SP_X_ADDR_SIMM13_imm_tag(i) => return super::mte::tag_store(em, i.0),
+        STZG_Rt_SP_X_ADDR_SIMM13_imm_tag(i) => return super::mte::tag_store(em, i.0),
+        ST2G_Rt_SP_X_ADDR_SIMM13_imm_tag(i) => return super::mte::tag_store(em, i.0),
+        STZ2G_Rt_SP_X_ADDR_SIMM13_imm_tag(i) => return super::mte::tag_store(em, i.0),
     };
 
     let size = bits(raw, 30, 2);
