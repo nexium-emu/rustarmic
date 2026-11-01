@@ -47,6 +47,7 @@ pub mod fp_sel;
 pub mod helper;
 pub mod ic_system;
 pub mod ldst_alias;
+pub mod ldst_pac;
 pub mod ldst_imm9;
 pub mod ldst_pos;
 pub mod ldst_regoff;

@@ -32,6 +32,7 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: DP_2SRC) -> Result<InstStatus> {
         CRC32CH_Rd_Rn_Rm(i) => return translate_crc(em, i.0),
         CRC32CW_Rd_Rn_Rm(i) => return translate_crc(em, i.0),
         CRC32CX_Rd_Rn_Rm(i) => return translate_crc(em, i.0),
+        PACGA_Rd_Rn_Rm_SP(i) => return translate_pacga(em, i.0),
         _ => {
             return Err(Error::Unsupported {
                 pc: em.current_pc,
@@ -65,6 +66,16 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: DP_2SRC) -> Result<InstStatus> {
         }
     };
     em.set_gpr(rd, result, size);
+    Ok(InstStatus::Continue)
+}
+
+fn translate_pacga(em: &mut IrEmitter<'_>, raw: u32) -> Result<InstStatus> {
+    let data = em.get_x(bits(raw, 5, 5) as u8);
+    let modifier = em.get_x_or_sp(bits(raw, 16, 5) as u8, true);
+    let mixed = em.eor(data, modifier, RegSize::X);
+    let mask = em.const_u64(0xFFFF_FFFF_0000_0000);
+    let code = em.and(mixed, mask, RegSize::X);
+    em.set_x(bits(raw, 0, 5) as u8, code);
     Ok(InstStatus::Continue)
 }
 
