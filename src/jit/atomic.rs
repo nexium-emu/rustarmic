@@ -199,10 +199,10 @@ pub unsafe fn cmpxchg16b(ptr: *mut u8, expected: u128, new: u128) -> (bool, u128
     unsafe {
         core::arch::asm!(
             "xchg {nlo}, rbx",
-            "lock cmpxchg16b xmmword ptr [{p}]",
+            "lock cmpxchg16b xmmword ptr [rdi]",
             "sete {ok}",
             "mov rbx, {nlo}",
-            p = in(reg) ptr,
+            in("rdi") ptr,
             nlo = inout(reg) new as u64 => _,
             ok = out(reg_byte) ok,
             inout("rax") lo,
