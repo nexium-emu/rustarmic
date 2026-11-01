@@ -289,6 +289,7 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: LDSTEXCL) -> Result<InstStatus> {
             let val_size = if bytes == 8 { RegSize::X } else { RegSize::W };
             let val = em.get_gpr(rt, val_size);
             em.store(addr, val, bytes);
+            em.push(Armlet::new(Op::MemoryBarrier, Ty::Void).with_imm(1));
         }
     }
     Ok(InstStatus::Continue)

@@ -249,7 +249,8 @@ fn dispatch_op(op: Op) -> Option<EmitFn> {
         VecTrn1 => emit_op_vec_trn1,
         VecTrn2 => emit_op_vec_trn2,
 
-        Hint | MemoryBarrier => emit_nop,
+        Hint => emit_nop,
+        MemoryBarrier => emit_op_memory_barrier,
         Clrex => emit_op_clrex,
         CallHelper => emit_op_call_helper,
 
@@ -261,6 +262,18 @@ fn dispatch_op(op: Op) -> Option<EmitFn> {
 }
 
 fn emit_nop(_: &mut CodeAssembler, _: &Block, _: &Allocation, _: usize) -> Result<()> {
+    Ok(())
+}
+
+fn emit_op_memory_barrier(
+    asm: &mut CodeAssembler,
+    block: &Block,
+    _: &Allocation,
+    idx: usize,
+) -> Result<()> {
+    if block.code[idx].imm != 0 {
+        asm.mfence()?;
+    }
     Ok(())
 }
 

@@ -6,6 +6,13 @@ use crate::frontend::translator::InstStatus;
 use crate::ir::{Armlet, IrEmitter, Op, Ty};
 use crate::util::bits::{bit, bits};
 
+fn data_barrier(em: &mut IrEmitter<'_>, raw: u32) {
+    let orders_stores_before_loads = matches!(bits(raw, 8, 2), 0 | 3);
+    em.push(
+        Armlet::new(Op::MemoryBarrier, Ty::Void).with_imm(u64::from(orders_stores_before_loads)),
+    );
+}
+
 pub fn translate(em: &mut IrEmitter<'_>, insn: IC_SYSTEM) -> Result<InstStatus> {
     use IC_SYSTEM::*;
     match insn {
@@ -15,7 +22,12 @@ pub fn translate(em: &mut IrEmitter<'_>, insn: IC_SYSTEM) -> Result<InstStatus> 
         HINT_UIMM7(_) | DGH(_) | SB(_) => {
             em.push(Armlet::new(Op::Hint, Ty::Void));
         }
-        DMB_BARRIER(_) | DSB_BARRIER(_) | DSB_BARRIER_DSB_NXS(_) | ISB_BARRIER_ISB(_) => {
+        DMB_BARRIER(i) => data_barrier(em, i.0),
+        DSB_BARRIER(i) => data_barrier(em, i.0),
+        DSB_BARRIER_DSB_NXS(_) => {
+            em.push(Armlet::new(Op::MemoryBarrier, Ty::Void).with_imm(1));
+        }
+        ISB_BARRIER_ISB(_) => {
             em.push(Armlet::new(Op::MemoryBarrier, Ty::Void));
         }
         MSR_PSTATEFIELD_UIMM4(_) => {

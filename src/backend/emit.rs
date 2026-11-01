@@ -706,6 +706,21 @@ mod tests {
         block
     }
 
+    fn fences(words: &[u32]) -> usize {
+        let code = emit_block(&block_of(&[words, &[0xD65F_03C0]].concat())).unwrap().code;
+        code.windows(3).filter(|bytes| *bytes == [0x0F, 0xAE, 0xF0]).count()
+    }
+
+    #[test]
+    fn store_to_load_ordering_barriers_emit_mfence() {
+        assert_eq!(fences(&[0xD503_3BBF]), 1);
+        assert_eq!(fences(&[0xD503_3F9F]), 1);
+        assert_eq!(fences(&[0x889F_FC01]), 1);
+        assert_eq!(fences(&[0xD503_39BF]), 0);
+        assert_eq!(fences(&[0xD503_3ABF]), 0);
+        assert_eq!(fences(&[0xB900_0001]), 0);
+    }
+
     #[test]
     fn compare_branch_is_fused_only_when_nothing_else_writes_nzcv() {
         // cmp x0, x1 ; add x2, x2, #1 ; b.lt +8
