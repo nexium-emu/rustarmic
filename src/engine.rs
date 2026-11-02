@@ -167,13 +167,13 @@ impl SharedRuntime {
         self.generation.load(Ordering::Acquire)
     }
 
-    /// Guest counter in the architecturally exposed 19.2 MHz domain.
+    /// Guest counter in the configured counter frequency domain.
     pub fn guest_ticks(&self) -> u64 {
         let ticks = self
             .clock_start
             .elapsed()
             .as_nanos()
-            .saturating_mul(19_200_000)
+            .saturating_mul(u128::from(CpuContext::counter_frequency()))
             / 1_000_000_000;
         ticks.min(u128::from(u64::MAX)) as u64
     }

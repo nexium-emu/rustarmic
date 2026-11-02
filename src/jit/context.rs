@@ -1,4 +1,8 @@
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use crate::arch::{NUM_GPRS, NUM_VREGS};
+
+static COUNTER_FREQUENCY: AtomicU64 = AtomicU64::new(19_200_000);
 
 pub type MemReadFn = unsafe extern "C" fn(*mut CpuContext, addr: u64, size: u8);
 pub type MemWriteFn = unsafe extern "C" fn(*mut CpuContext, addr: u64, size: u8);
@@ -82,7 +86,15 @@ unsafe extern "C" fn default_read_cntpct(_ctx: *mut CpuContext) -> u64 {
 }
 
 impl CpuContext {
-    /// Read the same process-wide 19.2MHz monotonic clock used by the default
+    pub fn set_counter_frequency(hz: u64) {
+        COUNTER_FREQUENCY.store(hz, Ordering::Relaxed);
+    }
+
+    pub fn counter_frequency() -> u64 {
+        COUNTER_FREQUENCY.load(Ordering::Relaxed)
+    }
+
+    /// Read the same process-wide monotonic guest clock used by the default
     /// CNTPCT_EL0/CNTVCT_EL0 callback, without borrowing or mutating a context.
     /// Embedders may use this to keep host services in the guest clock's epoch.
     /// This deliberately does not invoke a custom `read_cntpct` callback:
@@ -92,7 +104,7 @@ impl CpuContext {
         use std::time::Instant;
         static START: OnceLock<Instant> = OnceLock::new();
         let elapsed = START.get_or_init(Instant::now).elapsed().as_nanos();
-        let ticks = elapsed.saturating_mul(19_200_000) / 1_000_000_000;
+        let ticks = elapsed.saturating_mul(u128::from(Self::counter_frequency())) / 1_000_000_000;
         ticks.min(u128::from(u64::MAX)) as u64
     }
 }
@@ -127,7 +139,7 @@ impl Default for CpuContext {
             stop_token: core::ptr::null(),
             tpidr_el0: 0,
             tpidrro_el0: 0,
-            cntfrq_el0: 19_200_000,
+            cntfrq_el0: Self::counter_frequency(),
             read_cntpct: default_read_cntpct,
             mem_read: default_mem_read,
             mem_write: default_mem_write,
